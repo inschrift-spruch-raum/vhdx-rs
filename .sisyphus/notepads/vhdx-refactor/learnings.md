@@ -135,3 +135,27 @@
 - Module compiles successfully with `cargo test bat --lib`
 - All 3 BAT tests pass
 - Original `src/bat.rs` preserved for backward compatibility (renamed temporarily during testing)
+
+## Wave 1 Task 11: Update main.rs to Use New Module Paths
+
+**Date:** 2026-03-14
+
+### What was done:
+- Updated `src/main.rs` import statement from `use linkfs::{DiskType, VhdxBuilder, VhdxFile}` to `use linkfs::file::{DiskType, VhdxBuilder, VhdxFile}`
+- Changed to use the new `file/` module path instead of re-exports from lib.rs root
+
+### Design decisions:
+- Binary target (`main.rs`) imports from library using `linkfs::file::` path
+- This is because `main.rs` is a separate binary target, not part of the library crate
+- Cannot use `crate::file::` in binary targets (only available within the library itself)
+- CLI command interfaces (`info`, `create`, `read`, `check`) remain unchanged
+- No functional logic modified - only import path updated
+
+### Files modified:
+- `src/main.rs` - Updated import on line 3
+
+### Verification:
+- `cargo build --release` completed successfully
+- Binary `vhdx-tool.exe` generated in `target/release/`
+- Only pre-existing warnings remain (unused imports/variables in library code)
+- All CLI commands preserved: `info`, `create`, `read`, `write`, `check`

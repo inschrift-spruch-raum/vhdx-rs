@@ -690,7 +690,7 @@ Max Concurrent: 2 (Waves 1-5 alternate)
   **Commit**: YES
   - Message: `refactor: update lib.rs with new module structure`
 
-- [ ] 11. 创建 tests/ 目录及集成测试框架 (依赖 Wave 1-10)
+- [x] 11. 创建 tests/ 目录及集成测试框架 (依赖 Wave 1-10)
 
   **What to do**:
   1. 创建 `tests/` 目录结构：
@@ -757,7 +757,7 @@ Max Concurrent: 2 (Waves 1-5 alternate)
   **Commit**: YES
   - Message: `test: add tests/ directory with integration tests`
 
-- [ ] 12. 更新 main.rs 及 CLI 工具 (依赖 Wave 1-11)
+- [x] 12. 更新 main.rs 及 CLI 工具 (依赖 Wave 1-11)
 
   **What to do**:
   1. 更新 `src/main.rs`:
@@ -814,26 +814,26 @@ Max Concurrent: 2 (Waves 1-5 alternate)
 
 > 4 review agents run in PARALLEL. ALL must APPROVE. Rejection → fix → re-run.
 
-- [ ] F1. 完整编译验证
+- [x] F1. 完整编译验证
   执行完整编译检查，验证所有模块能正确编译
   - `cargo check --lib`
   - `cargo build --lib`
   - `cargo build --release` (包含 CLI)
   Output: `Build [PASS/FAIL] | VERDICT`
 
-- [ ] F2. 单元测试验证
+- [x] F2. 单元测试验证
   运行所有单元测试
   - `cargo test --lib`
   - 统计通过/失败数量
   Output: `Unit Tests [N pass/N fail] | VERDICT`
 
-- [ ] F3. 集成测试验证
+- [x] F3. 集成测试验证
   运行所有集成测试
   - `cargo test --test full_workflow`
   - 验证完整工作流
   Output: `Integration Tests [PASS/FAIL] | VERDICT`
 
-- [ ] F4. CLI 工具验证
+- [x] F4. CLI 工具验证
   验证 CLI 工具功能完整
   - `./target/release/vhdx-tool --help`
   - `./target/release/vhdx-tool info <test.vhdx>`
