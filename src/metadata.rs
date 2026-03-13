@@ -47,8 +47,8 @@ pub struct MetadataTableHeader {
 }
 
 impl MetadataTableHeader {
-    /// Size of header
-    pub const SIZE: usize = 64 * 1024; // 64KB
+    /// Size of header (32 bytes per MS-VHDX spec)
+    pub const SIZE: usize = 32;
 
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
@@ -376,7 +376,8 @@ fn read_utf16_string(data: &[u8], offset: u32, length: u16) -> Result<String> {
 pub struct MetadataRegion {
     pub header: MetadataTableHeader,
     pub entries: Vec<MetadataTableEntry>,
-    pub data: Vec<u8>, // Raw metadata data after the table
+    pub data: Vec<u8>,  // Raw metadata data after the table
+    data_offset: usize, // Offset from region start to data (header + entries)
 }
 
 impl MetadataRegion {
@@ -411,6 +412,7 @@ impl MetadataRegion {
             header,
             entries,
             data: metadata_data,
+            data_offset,
         })
     }
 
@@ -422,7 +424,7 @@ impl MetadataRegion {
             .find(|e| e.item_id == FILE_PARAMETERS_GUID)
             .ok_or_else(|| VhdxError::InvalidMetadata("FileParameters not found".to_string()))?;
 
-        let offset = entry.offset as usize - MetadataTableHeader::SIZE;
+        let offset = entry.offset as usize - self.data_offset;
         let data = &self.data[offset..offset + entry.length as usize];
         FileParameters::from_bytes(data)
     }
@@ -435,7 +437,7 @@ impl MetadataRegion {
             .find(|e| e.item_id == VIRTUAL_DISK_SIZE_GUID)
             .ok_or_else(|| VhdxError::InvalidMetadata("VirtualDiskSize not found".to_string()))?;
 
-        let offset = entry.offset as usize - MetadataTableHeader::SIZE;
+        let offset = entry.offset as usize - self.data_offset;
         let data = &self.data[offset..offset + entry.length as usize];
         VirtualDiskSize::from_bytes(data)
     }
@@ -448,7 +450,7 @@ impl MetadataRegion {
             .find(|e| e.item_id == LOGICAL_SECTOR_SIZE_GUID)
             .ok_or_else(|| VhdxError::InvalidMetadata("LogicalSectorSize not found".to_string()))?;
 
-        let offset = entry.offset as usize - MetadataTableHeader::SIZE;
+        let offset = entry.offset as usize - self.data_offset;
         let data = &self.data[offset..offset + entry.length as usize];
         SectorSize::from_bytes(data)
     }
@@ -463,7 +465,7 @@ impl MetadataRegion {
                 VhdxError::InvalidMetadata("PhysicalSectorSize not found".to_string())
             })?;
 
-        let offset = entry.offset as usize - MetadataTableHeader::SIZE;
+        let offset = entry.offset as usize - self.data_offset;
         let data = &self.data[offset..offset + entry.length as usize];
         SectorSize::from_bytes(data)
     }
@@ -476,7 +478,7 @@ impl MetadataRegion {
             .find(|e| e.item_id == VIRTUAL_DISK_ID_GUID)
             .ok_or_else(|| VhdxError::InvalidMetadata("VirtualDiskId not found".to_string()))?;
 
-        let offset = entry.offset as usize - MetadataTableHeader::SIZE;
+        let offset = entry.offset as usize - self.data_offset;
         let data = &self.data[offset..offset + entry.length as usize];
         VirtualDiskId::from_bytes(data)
     }
@@ -489,7 +491,7 @@ impl MetadataRegion {
             .find(|e| e.item_id == PARENT_LOCATOR_GUID)
             .ok_or_else(|| VhdxError::InvalidMetadata("ParentLocator not found".to_string()))?;
 
-        let offset = entry.offset as usize - MetadataTableHeader::SIZE;
+        let offset = entry.offset as usize - self.data_offset;
         let data = &self.data[offset..offset + entry.length as usize];
         ParentLocator::from_bytes(data)
     }

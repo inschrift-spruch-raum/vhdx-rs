@@ -102,7 +102,7 @@ impl VhdxFile {
 
         // Replay log if needed
         if !header.log_guid.is_zero() {
-            Self::replay_log(&mut file, &mut header)?;
+            Self::replay_log(&mut file, &mut header, read_only)?;
         }
 
         // Read metadata region
@@ -223,7 +223,7 @@ impl VhdxFile {
     }
 
     /// Replay log entries
-    fn replay_log(file: &mut File, header: &mut VhdxHeader) -> Result<()> {
+    fn replay_log(file: &mut File, header: &mut VhdxHeader, read_only: bool) -> Result<()> {
         if header.log_offset == 0 || header.log_length == 0 || header.log_guid.is_zero() {
             return Ok(());
         }
@@ -243,6 +243,12 @@ impl VhdxFile {
         if let Some(sequence) =
             LogReplayer::find_active_sequence(&log_data, header.log_length, &header.log_guid)?
         {
+            if read_only {
+                // In read-only mode, skip replay but return Ok
+                // The file is still valid for reading
+                return Ok(());
+            }
+
             // Replay the sequence
             let flushed_offset = LogReplayer::replay_sequence(&sequence, file)?;
 
@@ -685,7 +691,7 @@ impl VhdxBuilder {
         file.write_all(&bat_data)?;
 
         // Step 5: Create Metadata Region
-        let metadata_table_header_size = 64 * 1024; // 64KB
+        let metadata_table_header_size = crate::metadata::MetadataTableHeader::SIZE; // 32 bytes
         let mut metadata_data = vec![0u8; metadata_size as usize];
 
         // Metadata Table Header (at start of metadata region)
@@ -698,33 +704,26 @@ impl VhdxBuilder {
         };
         LittleEndian::write_u16(&mut metadata_data[10..12], entry_count);
 
-        // The metadata layout expected by MetadataRegion::from_bytes is:
-        // 1. First 64KB: header (with "metadata" signature)
-        // 2. Next (entry_count * 32) bytes: entries table at offset 64KB
-        // 3. Remaining bytes: actual metadata values starting at (64KB + entry_count * 32)
+        // The metadata layout:
+        // 1. First 32 bytes: header (with "metadata" signature)
+        // 2. Next (entry_count * 32) bytes: entries table at offset 32
+        // 3. Remaining bytes: actual metadata values starting at (32 + entry_count * 32)
         //
         // entry.offset should be the absolute offset from start of metadata region
-        // When accessing: offset = entry.offset - 64KB
-        // And data is read from: self.data[offset..] where self.data starts at (64KB + entry_count * 32)
-        //
-        // So data location in buffer = (64KB + entry_count * 32) + (entry.offset - 64KB)
-        //                            = entry_count * 32 + entry.offset
-        //
-        // For FileParameters to be at buffer position (64KB + entry_count * 32):
-        // entry.offset = 64KB
+        // When accessing: offset = entry.offset - data_offset
+        // where data_offset = 32 + entry_count * 32
 
-        let entries_start = metadata_table_header_size; // 64KB
+        let entries_start = metadata_table_header_size; // 32 bytes
         let data_start = entries_start + entry_count as usize * 32; // After entries
 
         // Prepare entries
-        // entry.offset = 64KB + offset_within_data_area
-        let data_area_start = data_start;
+        // entry.offset = absolute offset from start of metadata region
         let mut metadata_entries = Vec::new();
-        let mut current_data_offset = data_area_start;
+        let mut current_data_offset = data_start;
 
         // File Parameters (16 bytes total: 4 + 4 + 4 + 4)
         let fp_guid = crate::metadata::FILE_PARAMETERS_GUID;
-        let fp_entry_offset = metadata_table_header_size + (current_data_offset - data_area_start);
+        let fp_entry_offset = current_data_offset;
         metadata_entries.push((fp_guid, fp_entry_offset, 16u32));
         LittleEndian::write_u32(
             &mut metadata_data[current_data_offset..current_data_offset + 4],
@@ -751,7 +750,7 @@ impl VhdxBuilder {
 
         // Virtual Disk Size (8 bytes)
         let vds_guid = crate::metadata::VIRTUAL_DISK_SIZE_GUID;
-        let vds_entry_offset = metadata_table_header_size + (current_data_offset - data_area_start);
+        let vds_entry_offset = current_data_offset;
         metadata_entries.push((vds_guid, vds_entry_offset, 8u32));
         LittleEndian::write_u64(
             &mut metadata_data[current_data_offset..current_data_offset + 8],
@@ -761,7 +760,7 @@ impl VhdxBuilder {
 
         // Virtual Disk ID (16 bytes)
         let vdi_guid = crate::metadata::VIRTUAL_DISK_ID_GUID;
-        let vdi_entry_offset = metadata_table_header_size + (current_data_offset - data_area_start);
+        let vdi_entry_offset = current_data_offset;
         metadata_entries.push((vdi_guid, vdi_entry_offset, 16u32));
         metadata_data[current_data_offset..current_data_offset + 16]
             .copy_from_slice(&virtual_disk_id.to_bytes());
@@ -769,7 +768,7 @@ impl VhdxBuilder {
 
         // Logical Sector Size (4 bytes)
         let lss_guid = crate::metadata::LOGICAL_SECTOR_SIZE_GUID;
-        let lss_entry_offset = metadata_table_header_size + (current_data_offset - data_area_start);
+        let lss_entry_offset = current_data_offset;
         metadata_entries.push((lss_guid, lss_entry_offset, 4u32));
         LittleEndian::write_u32(
             &mut metadata_data[current_data_offset..current_data_offset + 4],
@@ -779,7 +778,7 @@ impl VhdxBuilder {
 
         // Physical Sector Size (4 bytes)
         let pss_guid = crate::metadata::PHYSICAL_SECTOR_SIZE_GUID;
-        let pss_entry_offset = metadata_table_header_size + (current_data_offset - data_area_start);
+        let pss_entry_offset = current_data_offset;
         metadata_entries.push((pss_guid, pss_entry_offset, 4u32));
         LittleEndian::write_u32(
             &mut metadata_data[current_data_offset..current_data_offset + 4],

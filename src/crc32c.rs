@@ -2,10 +2,12 @@
 //!
 //! VHDX uses CRC-32C with polynomial 0x1EDC6F41 for all checksums
 
-/// CRC-32C polynomial (Castagnoli)
-const CRC32C_POLYNOMIAL: u32 = 0x1EDC6F41;
+/// CRC-32C reversed polynomial (for reflected table lookup)
+/// Original polynomial: 0x1EDC6F41
+/// Reversed: 0x82F63B78
+const CRC32C_REV_POLYNOMIAL: u32 = 0x82F63B78;
 
-/// CRC-32C lookup table
+/// CRC-32C lookup table (lazy initialized)
 static CRC32C_TABLE: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
 
 fn init_crc32c_table() -> [u32; 256] {
@@ -14,7 +16,7 @@ fn init_crc32c_table() -> [u32; 256] {
         let mut crc = i as u32;
         for _ in 0..8 {
             if crc & 1 == 1 {
-                crc = (crc >> 1) ^ CRC32C_POLYNOMIAL;
+                crc = (crc >> 1) ^ CRC32C_REV_POLYNOMIAL;
             } else {
                 crc >>= 1;
             }
@@ -68,11 +70,11 @@ mod tests {
 
     #[test]
     fn test_crc32c_basic() {
-        // Test vector
+        // Test vector for CRC-32C (Castagnoli)
+        // "123456789" should produce 0xE3069283
         let data = b"123456789";
         let checksum = crc32c(data);
-        // Our implementation produces this value (4068743102)
-        assert_eq!(checksum, 4068743102);
+        assert_eq!(checksum, 0xE3069283);
     }
 
     #[test]
@@ -85,7 +87,26 @@ mod tests {
     fn test_crc32c_zeros() {
         let data = vec![0u8; 4096];
         let checksum = crc32c(&data);
-        // Pre-calculated value
-        assert_ne!(checksum, 0);
+        // CRC-32C of 4096 zeros (actual value from implementation)
+        assert_eq!(checksum, 2566472073);
+    }
+
+    #[test]
+    fn test_crc32c_with_zero_field() {
+        // Test data with embedded checksum field
+        let mut data = vec![0u8; 16];
+        data[0] = b'h';
+        data[1] = b'e';
+        data[2] = b'a';
+        data[3] = b'd';
+        // Bytes 4-7 are the "checksum field" and should be treated as zero
+        data[8] = 0x08; // sequence number (little endian)
+
+        let checksum = crc32c_with_zero_field(&data, 4, 4);
+        // The checksum should be the same as calculating over data with bytes 4-7 = 0
+        let mut expected_data = data.clone();
+        expected_data[4..8].fill(0);
+        let expected = crc32c(&expected_data);
+        assert_eq!(checksum, expected);
     }
 }

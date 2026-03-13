@@ -93,15 +93,18 @@ fn main() {
             physical_sector,
             parent,
         } => {
-            eprintln!("Create command not yet implemented");
-            eprintln!("Parameters:");
-            eprintln!("  Path: {}", path.display());
-            eprintln!("  Size: {}", size);
-            eprintln!("  Type: {}", type_);
-            eprintln!("  Block size: {:?}", block_size);
-            eprintln!("  Logical sector: {:?}", logical_sector);
-            eprintln!("  Physical sector: {:?}", physical_sector);
-            eprintln!("  Parent: {:?}", parent);
+            if let Err(e) = create_vhdx(
+                path,
+                size,
+                type_,
+                block_size,
+                logical_sector,
+                physical_sector,
+                parent,
+            ) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
         }
         Commands::Read {
             path,
@@ -214,10 +217,137 @@ fn check_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
             println!("\nFile is valid!");
         }
         Err(e) => {
-            eprintln!("✗ File check failed: {}", e);
+            println!("✗ File check failed: {}", e);
             return Err(e.into());
         }
     }
+
+    Ok(())
+}
+
+fn parse_size(size_str: &str) -> Result<u64, String> {
+    let size_str = size_str.trim().to_uppercase();
+
+    // Parse number and unit
+    let (num_str, multiplier) = if size_str.ends_with("TB") || size_str.ends_with("T") {
+        (
+            &size_str[..size_str.len() - if size_str.ends_with("TB") { 2 } else { 1 }],
+            1024u64.pow(4),
+        )
+    } else if size_str.ends_with("GB") || size_str.ends_with("G") {
+        (
+            &size_str[..size_str.len() - if size_str.ends_with("GB") { 2 } else { 1 }],
+            1024u64.pow(3),
+        )
+    } else if size_str.ends_with("MB") || size_str.ends_with("M") {
+        (
+            &size_str[..size_str.len() - if size_str.ends_with("MB") { 2 } else { 1 }],
+            1024u64.pow(2),
+        )
+    } else if size_str.ends_with("KB") || size_str.ends_with("K") {
+        (
+            &size_str[..size_str.len() - if size_str.ends_with("KB") { 2 } else { 1 }],
+            1024u64,
+        )
+    } else if size_str.ends_with("B") {
+        (&size_str[..size_str.len() - 1], 1)
+    } else {
+        // Just a number, assume bytes
+        (&size_str[..], 1)
+    };
+
+    let num: u64 = num_str
+        .parse()
+        .map_err(|_| format!("Invalid size number: {}", num_str))?;
+
+    Ok(num * multiplier)
+}
+
+fn create_vhdx(
+    path: PathBuf,
+    size: String,
+    type_: String,
+    block_size: Option<String>,
+    logical_sector: Option<u32>,
+    physical_sector: Option<u32>,
+    parent: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Parse disk size
+    let virtual_disk_size = parse_size(&size)?;
+
+    // Parse disk type
+    let disk_type = match type_.to_lowercase().as_str() {
+        "fixed" => DiskType::Fixed,
+        "dynamic" => DiskType::Dynamic,
+        "differencing" => DiskType::Differencing,
+        _ => {
+            return Err(format!(
+                "Invalid disk type: {}. Use 'fixed', 'dynamic', or 'differencing'",
+                type_
+            )
+            .into())
+        }
+    };
+
+    // Check for parent requirement
+    if disk_type == DiskType::Differencing && parent.is_none() {
+        return Err("Differencing disk requires a parent disk. Use --parent <path>".into());
+    }
+
+    // Parse block size (default: 32MB)
+    let block_size_bytes = block_size
+        .map(|s| parse_size(&s))
+        .transpose()?
+        .unwrap_or(32 * 1024 * 1024);
+
+    // Validate block size (1MB to 256MB, 1MB aligned)
+    if block_size_bytes < 1024 * 1024 || block_size_bytes > 256 * 1024 * 1024 {
+        return Err(format!("Block size must be between 1MB and 256MB").into());
+    }
+    if block_size_bytes % (1024 * 1024) != 0 {
+        return Err(format!("Block size must be 1MB aligned").into());
+    }
+
+    // Set sector sizes (default: 512 logical, 4096 physical)
+    let logical_sector_size = logical_sector.unwrap_or(512);
+    let physical_sector_size = physical_sector.unwrap_or(4096);
+
+    // Validate sector sizes
+    if logical_sector_size != 512 && logical_sector_size != 4096 {
+        return Err(format!("Logical sector size must be 512 or 4096").into());
+    }
+    if physical_sector_size != 512 && physical_sector_size != 4096 {
+        return Err(format!("Physical sector size must be 512 or 4096").into());
+    }
+
+    // Create the VHDX file
+    let builder = VhdxBuilder::new(virtual_disk_size)
+        .disk_type(disk_type)
+        .block_size(block_size_bytes as u32)
+        .sector_sizes(logical_sector_size, physical_sector_size);
+
+    // TODO: Handle parent disk for differencing disks
+    if let Some(_parent_path) = parent {
+        // Parent handling would go here - requires additional implementation
+        return Err("Parent disk support not yet fully implemented".into());
+    }
+
+    builder.create(&path)?;
+
+    println!("Successfully created VHDX file: {}", path.display());
+    println!(
+        "  Size: {} bytes ({:.2} GB)",
+        virtual_disk_size,
+        virtual_disk_size as f64 / (1024.0 * 1024.0 * 1024.0)
+    );
+    println!("  Type: {:?}", disk_type);
+    println!(
+        "  Block size: {} bytes ({:.2} MB)",
+        block_size_bytes,
+        block_size_bytes as f64 / (1024.0 * 1024.0)
+    );
+    println!("  Logical sector: {} bytes", logical_sector_size);
+    println!("  Physical sector: {} bytes", physical_sector_size);
 
     Ok(())
 }
