@@ -12,7 +12,6 @@ pub mod guid;
 pub mod header;
 pub mod log;
 pub mod metadata;
-pub mod region;
 pub mod utils;
 pub mod vhdx;
 

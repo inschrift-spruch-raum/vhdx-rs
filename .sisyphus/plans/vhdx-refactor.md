@@ -225,7 +225,7 @@ Max Concurrent: 2 (Waves 1-5 alternate)
 
   **Commit**: YES (groups with Task 1)
 
-- [ ] 3. 创建 header/ 目录模块 (依赖 Wave 1)
+- [x] 3. 创建 header/ 目录模块 (依赖 Wave 1)
 
   **What to do**:
   1. 创建 `src/header/` 目录
@@ -279,7 +279,7 @@ Max Concurrent: 2 (Waves 1-5 alternate)
   **Commit**: YES
   - Message: `refactor: create header/ directory module`
 
-- [ ] 4. 创建 bat/ 目录模块 (依赖 Wave 1)
+- [x] 4. 创建 bat/ 目录模块 (依赖 Wave 1)
 
   **What to do**:
   1. 创建 `src/bat/` 目录

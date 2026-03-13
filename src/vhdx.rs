@@ -13,11 +13,11 @@ use crate::block::{BlockIo, FixedBlockIo};
 use crate::error::{Result, VhdxError};
 use crate::guid::Guid;
 use crate::header::{
-    read_headers, update_headers, FileTypeIdentifier, VhdxHeader, HEADER_SIGNATURE,
+    read_headers, read_region_tables, update_headers, FileTypeIdentifier, RegionTable, VhdxHeader,
+    HEADER_SIGNATURE, REGION_SIGNATURE,
 };
 use crate::log::LogReplayer;
 use crate::metadata::MetadataRegion;
-use crate::region::{read_region_tables, RegionTable, REGION_SIGNATURE};
 
 /// VHDX disk type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -628,7 +628,7 @@ impl VhdxBuilder {
 
         // BAT Region Entry
         let entry1_offset = region_header_size;
-        let bat_guid = crate::region::BAT_GUID;
+        let bat_guid = crate::header::BAT_GUID;
         region_data[entry1_offset..entry1_offset + 16].copy_from_slice(&bat_guid.to_bytes());
         LittleEndian::write_u64(
             &mut region_data[entry1_offset + 16..entry1_offset + 24],
@@ -642,7 +642,7 @@ impl VhdxBuilder {
 
         // Metadata Region Entry
         let entry2_offset = entry1_offset + region_entry_size;
-        let metadata_guid = crate::region::METADATA_GUID;
+        let metadata_guid = crate::header::METADATA_GUID;
         region_data[entry2_offset..entry2_offset + 16].copy_from_slice(&metadata_guid.to_bytes());
         LittleEndian::write_u64(
             &mut region_data[entry2_offset + 16..entry2_offset + 24],
