@@ -5,6 +5,7 @@
 
 pub mod bat;
 pub mod block;
+pub mod block_io;
 pub mod common;
 pub mod crc32c;
 pub mod error;
@@ -12,6 +13,7 @@ pub mod guid;
 pub mod header;
 pub mod log;
 pub mod metadata;
+pub mod payload;
 pub mod utils;
 pub mod vhdx;
 

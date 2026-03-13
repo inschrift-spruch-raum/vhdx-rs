@@ -463,7 +463,7 @@ Max Concurrent: 2 (Waves 1-5 alternate)
   **Commit**: YES
   - Message: `refactor: create log/ directory module`
 
-- [ ] 7. 创建 payload/ 目录模块 (依赖 Wave 1-4)
+- [x] 7. 创建 payload/ 目录模块 (依赖 Wave 1-4)
 
   **What to do**:
   1. 创建 `src/payload/` 目录
@@ -518,7 +518,7 @@ Max Concurrent: 2 (Waves 1-5 alternate)
   **Commit**: YES
   - Message: `refactor: create payload/ directory module`
 
-- [ ] 8. 创建 block_io/ 目录模块 (依赖 Wave 1-7)
+- [x] 8. 创建 block_io/ 目录模块 (依赖 Wave 1-7)
 
   **What to do**:
   1. 创建 `src/block_io/` 目录
