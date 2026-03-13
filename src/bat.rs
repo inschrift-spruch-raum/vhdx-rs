@@ -160,6 +160,8 @@ pub struct Bat {
     pub chunk_ratio: u64,
     /// Chunk size in bytes
     pub chunk_size: u64,
+    /// File offset of BAT region (for updates)
+    pub bat_file_offset: u64,
 }
 
 impl Bat {
@@ -220,7 +222,18 @@ impl Bat {
             num_sector_bitmap_blocks,
             chunk_ratio,
             chunk_size,
+            bat_file_offset: 0, // Must be set by caller after creation
         })
+    }
+
+    /// Set BAT file offset
+    pub fn set_bat_file_offset(&mut self, offset: u64) {
+        self.bat_file_offset = offset;
+    }
+
+    /// Get file offset of a BAT entry
+    pub fn get_bat_entry_file_offset(&self, bat_index: usize) -> u64 {
+        self.bat_file_offset + (bat_index as u64 * 8)
     }
 
     /// Calculate BAT index for a payload block
@@ -435,6 +448,7 @@ mod tests {
             num_sector_bitmap_blocks: 25,   // 100K / 4096
             chunk_ratio: 4096,
             chunk_size: 4 * 1024 * 1024 * 1024, // 4GB
+            bat_file_offset: 1024 * 1024,       // 1MB
         };
 
         // Block 0 should be at index 0

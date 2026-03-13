@@ -5,32 +5,43 @@
 
 use crate::bat::{Bat, BatEntry, PayloadBlockState};
 use crate::error::{Result, VhdxError};
+use crate::log::LogWriter;
+use byteorder::{ByteOrder, LittleEndian};
 use std::io::{Read, Seek, SeekFrom, Write};
 
 /// Block I/O handler
 pub struct BlockIo<'a> {
     /// Reference to file handle
     pub file: &'a mut std::fs::File,
-    /// Reference to BAT
-    pub bat: &'a Bat,
+    /// Reference to BAT (mutable for writes)
+    pub bat: &'a mut Bat,
     /// Parent VHDX (for differencing disks)
     pub parent: Option<Box<BlockIo<'a>>>,
     /// Next free file offset for allocation
     pub next_free_offset: u64,
     /// Virtual disk size
     pub virtual_disk_size: u64,
+    /// Optional log writer for metadata updates
+    log_writer: Option<LogWriter>,
 }
 
 impl<'a> BlockIo<'a> {
     /// Create new Block I/O handler
-    pub fn new(file: &'a mut std::fs::File, bat: &'a Bat, virtual_disk_size: u64) -> Self {
+    pub fn new(file: &'a mut std::fs::File, bat: &'a mut Bat, virtual_disk_size: u64) -> Self {
         BlockIo {
             file,
             bat,
             parent: None,
             next_free_offset: 1024 * 1024, // Start after 1MB header
             virtual_disk_size,
+            log_writer: None,
         }
+    }
+
+    /// Set log writer for metadata updates
+    pub fn with_log_writer(mut self, log_writer: LogWriter) -> Self {
+        self.log_writer = Some(log_writer);
+        self
     }
 
     /// Set parent for differencing disks
@@ -194,10 +205,10 @@ impl<'a> BlockIo<'a> {
         Ok(bytes_written)
     }
 
-    /// Allocate a new block
+    /// Allocate a new block with optional log-based BAT update
     ///
     /// Returns the file offset of the allocated block
-    fn allocate_block(&mut self, _block_idx: u64) -> Result<u64> {
+    fn allocate_block(&mut self, block_idx: u64) -> Result<u64> {
         // Align next free offset to 1MB
         let aligned_offset = (self.next_free_offset + (1024 * 1024 - 1)) & !(1024 * 1024 - 1);
 
@@ -210,11 +221,37 @@ impl<'a> BlockIo<'a> {
             .seek(SeekFrom::Start(aligned_offset + block_size - 1))?;
         self.file.write_all(&[0])?;
 
-        // Note: In real implementation, we'd update BAT through log
-        let _new_entry = BatEntry::new(PayloadBlockState::FullyPresent, file_offset_mb);
+        // Calculate BAT entry location
+        let bat_index = self
+            .bat
+            .payload_bat_index(block_idx)
+            .ok_or(VhdxError::InvalidBatEntry)?;
+        let bat_entry_offset = self.bat.get_bat_entry_file_offset(bat_index);
 
-        // Note: In real implementation, we'd update BAT through log
-        // For now, this is handled by the caller
+        // Create new BAT entry
+        let new_entry = BatEntry::new(PayloadBlockState::FullyPresent, file_offset_mb);
+
+        // If we have a log writer, use it for atomic BAT update
+        if let Some(ref mut log_writer) = self.log_writer {
+            // Prepare 4KB sector with BAT entry data (padded)
+            let mut sector_data = vec![0u8; 4096];
+            let entry_bytes = new_entry.to_bytes();
+            sector_data[0..8].copy_from_slice(&entry_bytes);
+
+            // Write to log
+            log_writer.write_data_entry(&mut self.file, bat_entry_offset, &sector_data)?;
+
+            // Flush log to ensure it's stable
+            self.file.flush()?;
+
+            // Apply to BAT
+            self.file.seek(SeekFrom::Start(bat_entry_offset))?;
+            self.file.write_all(&entry_bytes)?;
+            self.file.flush()?;
+        }
+
+        // Update BAT in memory
+        self.bat.update_payload_entry(block_idx, new_entry)?;
 
         self.next_free_offset = aligned_offset + block_size;
 
@@ -259,10 +296,20 @@ impl<'a> FixedBlockIo<'a> {
         let bytes_to_read =
             std::cmp::min(buf.len() as u64, self.virtual_disk_size - virtual_offset) as usize;
 
-        // For fixed disk, just calculate direct offset
-        let file_offset = virtual_offset; // Fixed disk is 1:1 mapped after header
+        // For fixed disk, data is stored at BAT entry locations
+        // Calculate block index and get file offset from BAT
+        let block_idx = self.bat.block_index_from_offset(virtual_offset);
+        let offset_in_block = self.bat.offset_in_block(virtual_offset);
 
-        self.file.seek(SeekFrom::Start(file_offset))?;
+        let entry = self
+            .bat
+            .get_payload_entry(block_idx)
+            .ok_or(VhdxError::InvalidBatEntry)?;
+
+        let file_offset = entry.file_offset().ok_or(VhdxError::InvalidBatEntry)?;
+        let absolute_offset = file_offset + offset_in_block;
+
+        self.file.seek(SeekFrom::Start(absolute_offset))?;
         self.file.read_exact(&mut buf[..bytes_to_read])?;
 
         Ok(bytes_to_read)
@@ -277,10 +324,19 @@ impl<'a> FixedBlockIo<'a> {
         let bytes_to_write =
             std::cmp::min(buf.len() as u64, self.virtual_disk_size - virtual_offset) as usize;
 
-        // For fixed disk, just calculate direct offset
-        let file_offset = virtual_offset;
+        // For fixed disk, use BAT to find file offset
+        let block_idx = self.bat.block_index_from_offset(virtual_offset);
+        let offset_in_block = self.bat.offset_in_block(virtual_offset);
 
-        self.file.seek(SeekFrom::Start(file_offset))?;
+        let entry = self
+            .bat
+            .get_payload_entry(block_idx)
+            .ok_or(VhdxError::InvalidBatEntry)?;
+
+        let file_offset = entry.file_offset().ok_or(VhdxError::InvalidBatEntry)?;
+        let absolute_offset = file_offset + offset_in_block;
+
+        self.file.seek(SeekFrom::Start(absolute_offset))?;
         self.file.write_all(&buf[..bytes_to_write])?;
         self.file.flush()?;
 
