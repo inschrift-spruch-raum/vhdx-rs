@@ -336,7 +336,7 @@ Max Concurrent: 2 (Waves 1-5 alternate)
   **Commit**: YES
   - Message: `refactor: create bat/ directory module`
 
-- [ ] 5. 创建 metadata/ 目录模块 (依赖 Wave 1-2)
+- [x] 5. 创建 metadata/ 目录模块 (依赖 Wave 1-2)
 
   **What to do**:
   1. 创建 `src/metadata/` 目录
@@ -400,7 +400,7 @@ Max Concurrent: 2 (Waves 1-5 alternate)
   **Commit**: YES
   - Message: `refactor: create metadata/ directory module with split items`
 
-- [ ] 6. 创建 log/ 目录模块 (依赖 Wave 1-2)
+- [x] 6. 创建 log/ 目录模块 (依赖 Wave 1-2)
 
   **What to do**:
   1. 创建 `src/log/` 目录
