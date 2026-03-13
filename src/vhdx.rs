@@ -691,7 +691,7 @@ impl VhdxBuilder {
         file.write_all(&bat_data)?;
 
         // Step 5: Create Metadata Region
-        let metadata_table_header_size = crate::metadata::MetadataTableHeader::SIZE; // 32 bytes
+        let metadata_table_size = 64 * 1024; // 64KB metadata table
         let mut metadata_data = vec![0u8; metadata_size as usize];
 
         // Metadata Table Header (at start of metadata region)
@@ -704,27 +704,16 @@ impl VhdxBuilder {
         };
         LittleEndian::write_u16(&mut metadata_data[10..12], entry_count);
 
-        // The metadata layout:
-        // 1. First 32 bytes: header (with "metadata" signature)
-        // 2. Next (entry_count * 32) bytes: entries table at offset 32
-        // 3. Remaining bytes: actual metadata values starting at (32 + entry_count * 32)
-        //
-        // entry.offset should be the absolute offset from start of metadata region
-        // When accessing: offset = entry.offset - data_offset
-        // where data_offset = 32 + entry_count * 32
-
-        let entries_start = metadata_table_header_size; // 32 bytes
-        let data_start = entries_start + entry_count as usize * 32; // After entries
-
-        // Prepare entries
-        // entry.offset = absolute offset from start of metadata region
+        // Metadata entries are in the first 64KB, but data starts at 64KB
+        // Entry.offset = 64KB + relative_offset_within_data_area
+        let data_area_start = metadata_table_size; // 64KB
         let mut metadata_entries = Vec::new();
-        let mut current_data_offset = data_start;
+        let mut current_data_offset = data_area_start;
 
-        // File Parameters (16 bytes total: 4 + 4 + 4 + 4)
+        // File Parameters (8 bytes: 4 + 4)
         let fp_guid = crate::metadata::FILE_PARAMETERS_GUID;
         let fp_entry_offset = current_data_offset;
-        metadata_entries.push((fp_guid, fp_entry_offset, 16u32));
+        metadata_entries.push((fp_guid, fp_entry_offset, 8u32));
         LittleEndian::write_u32(
             &mut metadata_data[current_data_offset..current_data_offset + 4],
             self.block_size,
@@ -737,16 +726,7 @@ impl VhdxBuilder {
                 0
             },
         );
-        // Reserved fields
-        LittleEndian::write_u32(
-            &mut metadata_data[current_data_offset + 8..current_data_offset + 12],
-            0,
-        );
-        LittleEndian::write_u32(
-            &mut metadata_data[current_data_offset + 12..current_data_offset + 16],
-            0,
-        );
-        current_data_offset += 16;
+        current_data_offset += 8;
 
         // Virtual Disk Size (8 bytes)
         let vds_guid = crate::metadata::VIRTUAL_DISK_SIZE_GUID;
@@ -757,14 +737,6 @@ impl VhdxBuilder {
             self.virtual_disk_size,
         );
         current_data_offset += 8;
-
-        // Virtual Disk ID (16 bytes)
-        let vdi_guid = crate::metadata::VIRTUAL_DISK_ID_GUID;
-        let vdi_entry_offset = current_data_offset;
-        metadata_entries.push((vdi_guid, vdi_entry_offset, 16u32));
-        metadata_data[current_data_offset..current_data_offset + 16]
-            .copy_from_slice(&virtual_disk_id.to_bytes());
-        current_data_offset += 16;
 
         // Logical Sector Size (4 bytes)
         let lss_guid = crate::metadata::LOGICAL_SECTOR_SIZE_GUID;
@@ -786,7 +758,16 @@ impl VhdxBuilder {
         );
         current_data_offset += 4;
 
-        // Write metadata entries table (at offset 64KB)
+        // Virtual Disk ID (16 bytes)
+        let vdi_guid = crate::metadata::VIRTUAL_DISK_ID_GUID;
+        let vdi_entry_offset = current_data_offset;
+        metadata_entries.push((vdi_guid, vdi_entry_offset, 16u32));
+        metadata_data[current_data_offset..current_data_offset + 16]
+            .copy_from_slice(&virtual_disk_id.to_bytes());
+        current_data_offset += 16;
+
+        // Write metadata entries table (at offset 32, right after header)
+        let entries_start = 32; // After 32-byte header
         for (i, (guid, offset, length)) in metadata_entries.iter().enumerate() {
             let entry_offset = entries_start + i * 32;
             metadata_data[entry_offset..entry_offset + 16].copy_from_slice(&guid.to_bytes());
@@ -798,8 +779,15 @@ impl VhdxBuilder {
                 &mut metadata_data[entry_offset + 20..entry_offset + 24],
                 *length,
             );
-            // Flags (isUser=0, isVirtualDisk=1)
-            LittleEndian::write_u32(&mut metadata_data[entry_offset + 24..entry_offset + 28], 2);
+            // Flags: isUser=1 (0x01), isVirtualDisk=1 (0x02) = 0x03
+            // But MS-VHDX says system metadata has isUser=0
+            // Looking at test1.vhdx: FileParameters has flags=0x04 (isUser=1), others have 0x06 (isUser=1, isVirtualDisk=1)
+            // Let's use 0x04 for FileParameters and 0x06 for others to match Windows behavior
+            let flags = if i == 0 { 0x04 } else { 0x06 };
+            LittleEndian::write_u32(
+                &mut metadata_data[entry_offset + 24..entry_offset + 28],
+                flags,
+            );
         }
 
         // Write Metadata
