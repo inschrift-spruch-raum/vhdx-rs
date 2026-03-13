@@ -204,8 +204,8 @@ impl VhdxFile {
             log_writer: None, // Will be initialized after replay
         };
 
-        // Initialize LogWriter for metadata updates (if not read-only)
-        if !read_only {
+        // Initialize LogWriter for metadata updates (if not read-only and log exists)
+        if !read_only && vhdx.header.log_length > 0 {
             vhdx.log_writer = Some(crate::log::LogWriter::new(
                 vhdx.header.log_offset,
                 vhdx.header.log_length,
@@ -278,9 +278,43 @@ impl VhdxFile {
         self.sequence_number += 1;
         self.header.sequence_number = self.sequence_number;
 
-        // Update headers in file
-        let current_header_idx = 0; // Simplified
-        update_headers(&mut self.file, current_header_idx, &self.header)?;
+        // Update headers in file (both locations)
+        // Header 2 should always have a higher sequence number than Header 1
+        // so it's considered the "current" header
+        self.update_both_headers()?;
+
+        Ok(())
+    }
+
+    /// Update both headers with proper sequence numbers
+    fn update_both_headers(&mut self) -> Result<()> {
+        use crate::crc32c::crc32c_with_zero_field;
+        use byteorder::LittleEndian;
+        use std::io::{Seek, SeekFrom, Write};
+
+        // Update header 1 first (lower sequence number - considered "old")
+        let mut header1 = self.header.clone();
+        header1.sequence_number = self.sequence_number;
+        let mut data1 = header1.to_bytes();
+        let checksum1 = crc32c_with_zero_field(&data1, 4, 4);
+        LittleEndian::write_u32(&mut data1[4..8], checksum1);
+        self.file.seek(SeekFrom::Start(VhdxHeader::OFFSET_1))?;
+        self.file.write_all(&data1)?;
+
+        // Update header 2 (higher sequence number - considered "current")
+        let mut header2 = self.header.clone();
+        header2.sequence_number = self.sequence_number + 1;
+        let mut data2 = header2.to_bytes();
+        let checksum2 = crc32c_with_zero_field(&data2, 4, 4);
+        LittleEndian::write_u32(&mut data2[4..8], checksum2);
+        self.file.seek(SeekFrom::Start(VhdxHeader::OFFSET_2))?;
+        self.file.write_all(&data2)?;
+
+        self.file.flush()?;
+
+        // Update our internal sequence number to match header 2
+        self.sequence_number += 1;
+        self.header.sequence_number = self.sequence_number;
 
         Ok(())
     }
@@ -516,7 +550,6 @@ impl VhdxBuilder {
         // Generate GUIDs
         let file_write_guid = Guid::new_v4();
         let data_write_guid = Guid::new_v4();
-        let log_guid = Guid::new_v4();
         let virtual_disk_id = Guid::new_v4();
 
         // Calculate sizes
@@ -528,15 +561,15 @@ impl VhdxBuilder {
         let num_bat_entries = num_payload_blocks + num_sector_bitmap_blocks;
 
         // Calculate file layout
+        // Windows expects: Metadata (2MB) -> BAT (3MB), not BAT -> Metadata
         let header_size = 1024 * 1024; // 1MB header section
-        let bat_size = ((num_bat_entries * 8 + 1024 * 1024 - 1) / (1024 * 1024)) * (1024 * 1024); // 1MB aligned
         let metadata_size = 1024 * 1024; // 1MB metadata
-        let log_size = 1024 * 1024; // 1MB log (minimum)
+        let bat_size = ((num_bat_entries * 8 + 1024 * 1024 - 1) / (1024 * 1024)) * (1024 * 1024); // 1MB aligned
+        let log_size = 0u64; // No separate log region - embedded in header
 
-        let bat_offset = header_size; // BAT starts at 1MB
-        let metadata_offset = bat_offset + bat_size; // Metadata after BAT
-        let log_offset = metadata_offset + metadata_size; // Log after metadata
-        let data_offset = log_offset + log_size; // Payload data after log
+        let metadata_offset = header_size * 2; // Metadata at 2MB
+        let bat_offset = metadata_offset + metadata_size; // BAT after metadata (3MB)
+        let data_offset = bat_offset + bat_size; // Payload data after BAT
 
         // Calculate file size
         let file_size = if self.disk_type == DiskType::Fixed {
@@ -556,11 +589,11 @@ impl VhdxBuilder {
         let mut header1 = VhdxHeader::new(0);
         header1.file_write_guid = file_write_guid;
         header1.data_write_guid = data_write_guid;
-        header1.log_guid = log_guid;
+        header1.log_guid = Guid::new([0u8; 16]); // No log - embedded in header
         header1.log_version = 0;
         header1.version = 1;
-        header1.log_length = log_size as u32;
-        header1.log_offset = log_offset;
+        header1.log_length = 0; // No separate log
+        header1.log_offset = 0; // No separate log
 
         // Calculate and write header 1
         let mut header1_data = header1.to_bytes();
@@ -794,12 +827,7 @@ impl VhdxBuilder {
         file.seek(SeekFrom::Start(metadata_offset))?;
         file.write_all(&metadata_data)?;
 
-        // Step 6: Initialize log area
-        let log_data = vec![0u8; log_size as usize];
-        file.seek(SeekFrom::Start(log_offset))?;
-        file.write_all(&log_data)?;
-
-        // Step 7: For fixed disk, allocate payload data
+        // Step 6: For fixed disk, allocate payload data
         if self.disk_type == DiskType::Fixed {
             let payload_size = num_payload_blocks * self.block_size as u64;
             let payload_data = vec![0u8; payload_size as usize];

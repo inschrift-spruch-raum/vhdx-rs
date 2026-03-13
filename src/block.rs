@@ -248,6 +248,12 @@ impl<'a> BlockIo<'a> {
             self.file.seek(SeekFrom::Start(bat_entry_offset))?;
             self.file.write_all(&entry_bytes)?;
             self.file.flush()?;
+        } else {
+            // No log writer - write BAT entry directly
+            let entry_bytes = new_entry.to_bytes();
+            self.file.seek(SeekFrom::Start(bat_entry_offset))?;
+            self.file.write_all(&entry_bytes)?;
+            self.file.flush()?;
         }
 
         // Update BAT in memory
