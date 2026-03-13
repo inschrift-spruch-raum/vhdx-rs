@@ -6,7 +6,7 @@ use crate::error::{Result, VhdxError};
 use byteorder::{ByteOrder, LittleEndian};
 
 /// Parent Locator GUID: A8D35F2D-B30B-454D-ABF7-D3D84834AB0C
-pub const PARENT_LOCATOR_GUID: crate::guid::Guid = crate::guid::Guid([
+pub const PARENT_LOCATOR_GUID: crate::common::guid::Guid = crate::common::guid::Guid([
     0x2D, 0x5F, 0xD3, 0xA8, 0x0B, 0xB3, 0x4D, 0x45, 0xAB, 0xF7, 0xD3, 0xD8, 0x48, 0x34, 0xAB, 0x0C,
 ]);
 

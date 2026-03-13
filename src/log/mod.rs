@@ -30,8 +30,8 @@ pub const DATA_SECTOR_SIGNATURE: &[u8] = b"data";
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crc32c::crc32c_with_zero_field;
-    use byteorder::LittleEndian;
+    use crate::common::crc32c::crc32c_with_zero_field;
+    use byteorder::{ByteOrder, LittleEndian};
 
     #[test]
     fn test_log_entry_header() {

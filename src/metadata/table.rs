@@ -2,8 +2,8 @@
 //!
 //! Contains the metadata table header and entry definitions.
 
+use crate::common::guid::Guid;
 use crate::error::{Result, VhdxError};
-use crate::guid::Guid;
 use byteorder::{ByteOrder, LittleEndian};
 
 /// Metadata Table signature: "metadata"

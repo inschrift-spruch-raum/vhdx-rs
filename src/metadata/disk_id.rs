@@ -2,8 +2,8 @@
 //!
 //! Contains the unique GUID identifier for the virtual disk.
 
+use crate::common::guid::Guid;
 use crate::error::{Result, VhdxError};
-use crate::guid::Guid;
 
 /// Virtual Disk ID GUID: BECA12AB-B2E6-4523-93EF-C309E000C746
 pub const VIRTUAL_DISK_ID_GUID: Guid = Guid([

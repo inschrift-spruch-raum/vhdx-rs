@@ -2,7 +2,7 @@
 
 use crate::error::{Result, VhdxError};
 use crate::log::{DATA_DESCRIPTOR_SIGNATURE, ZERO_DESCRIPTOR_SIGNATURE};
-use byteorder::LittleEndian;
+use byteorder::{ByteOrder, LittleEndian};
 
 /// Zero Descriptor (32 bytes)
 #[derive(Debug, Clone)]

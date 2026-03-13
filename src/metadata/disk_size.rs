@@ -6,7 +6,7 @@ use crate::error::{Result, VhdxError};
 use byteorder::{ByteOrder, LittleEndian};
 
 /// Virtual Disk Size GUID: 2FA54224-CD1B-4876-B211-5DBED83BF4B8
-pub const VIRTUAL_DISK_SIZE_GUID: crate::guid::Guid = crate::guid::Guid([
+pub const VIRTUAL_DISK_SIZE_GUID: crate::common::guid::Guid = crate::common::guid::Guid([
     0x24, 0x42, 0xA5, 0x2F, 0x1B, 0xCD, 0x76, 0x48, 0xB2, 0x11, 0x5D, 0xBE, 0xD8, 0x3B, 0xF4, 0xB8,
 ]);
 

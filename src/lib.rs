@@ -4,19 +4,16 @@
 //! according to the Microsoft MS-VHDX specification.
 
 pub mod bat;
-pub mod block;
 pub mod block_io;
 pub mod common;
-pub mod crc32c;
 pub mod error;
-pub mod guid;
+pub mod file;
 pub mod header;
 pub mod log;
 pub mod metadata;
 pub mod payload;
 pub mod utils;
-pub mod vhdx;
 
-pub use error::{Result, VhdxError};
-pub use guid::Guid;
-pub use vhdx::{DiskType, VhdxBuilder, VhdxFile};
+// Re-exports for convenience
+pub use error::VhdxError;
+pub use file::{DiskType, VhdxBuilder, VhdxFile};

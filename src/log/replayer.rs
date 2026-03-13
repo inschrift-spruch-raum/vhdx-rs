@@ -1,7 +1,7 @@
 //! Log Replay algorithm implementation
 
+use crate::common::guid::Guid;
 use crate::error::Result;
-use crate::guid::Guid;
 use crate::log::entry::{LogEntry, LogSequence};
 
 /// Log Replay algorithm implementation

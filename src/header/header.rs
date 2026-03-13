@@ -4,9 +4,9 @@
 //! - Header 1 (offset 64KB, 4KB)
 //! - Header 2 (offset 128KB, 4KB)
 
-use crate::crc32c::crc32c_with_zero_field;
+use crate::common::crc32c::crc32c_with_zero_field;
+use crate::common::guid::Guid;
 use crate::error::{Result, VhdxError};
-use crate::guid::Guid;
 use byteorder::{ByteOrder, LittleEndian};
 
 /// Header signature: "head"

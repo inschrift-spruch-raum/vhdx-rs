@@ -2,7 +2,7 @@
 
 use crate::error::{Result, VhdxError};
 use crate::log::DATA_SECTOR_SIGNATURE;
-use byteorder::LittleEndian;
+use byteorder::{ByteOrder, LittleEndian};
 
 /// Data Sector (4KB)
 #[derive(Debug, Clone)]

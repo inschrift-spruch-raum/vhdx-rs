@@ -577,7 +577,7 @@ Max Concurrent: 2 (Waves 1-5 alternate)
   **Commit**: YES
   - Message: `refactor: create block_io/ directory module`
 
-- [ ] 9. 创建 file/ 目录模块 (依赖 Wave 1-8)
+- [x] 9. 创建 file/ 目录模块 (依赖 Wave 1-8)
 
   **What to do**:
   1. 创建 `src/file/` 目录
@@ -630,7 +630,7 @@ Max Concurrent: 2 (Waves 1-5 alternate)
   **Commit**: YES
   - Message: `refactor: create file/ directory module`
 
-- [ ] 10. 重构 lib.rs (依赖 Wave 1-9)
+- [x] 10. 重构 lib.rs (依赖 Wave 1-9)
 
   **What to do**:
   1. 重写 `src/lib.rs`:

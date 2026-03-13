@@ -1,12 +1,12 @@
 //! Log Entry structures
 
-use crate::crc32c::crc32c_with_zero_field;
+use crate::common::crc32c::crc32c_with_zero_field;
+use crate::common::guid::Guid;
 use crate::error::{Result, VhdxError};
-use crate::guid::Guid;
 use crate::log::descriptor::{DataDescriptor, ZeroDescriptor};
 use crate::log::sector::DataSector;
 use crate::log::{DATA_DESCRIPTOR_SIGNATURE, LOG_ENTRY_SIGNATURE, ZERO_DESCRIPTOR_SIGNATURE};
-use byteorder::LittleEndian;
+use byteorder::{ByteOrder, LittleEndian};
 
 /// Log Entry Header (64 bytes)
 #[derive(Debug, Clone)]

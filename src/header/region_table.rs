@@ -3,9 +3,9 @@
 //! The region table lists regions within the VHDX file.
 //! There are two copies stored at offsets 192KB and 256KB.
 
-use crate::crc32c::crc32c_with_zero_field;
+use crate::common::crc32c::crc32c_with_zero_field;
+use crate::common::guid::Guid;
 use crate::error::{Result, VhdxError};
-use crate::guid::Guid;
 use byteorder::{ByteOrder, LittleEndian};
 
 /// Region Table signature: "regi"

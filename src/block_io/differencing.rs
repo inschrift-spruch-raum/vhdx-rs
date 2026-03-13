@@ -295,7 +295,7 @@ impl<'a> DifferencingBlockIo<'a> {
     }
 
     /// Get block size from BAT
-    pub fn block_size(&self) -> u32 {
+    pub fn block_size(&self) -> u64 {
         self.bat.block_size
     }
 
