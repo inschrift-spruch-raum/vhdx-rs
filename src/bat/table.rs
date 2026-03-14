@@ -145,6 +145,11 @@ impl Bat {
         virtual_offset / self.chunk_size
     }
 
+    /// Calculate chunk index from block index
+    pub fn chunk_index_from_block(&self, block_idx: u64) -> u64 {
+        block_idx / self.chunk_ratio
+    }
+
     /// Calculate block index from virtual offset
     pub fn block_index_from_offset(&self, virtual_offset: u64) -> u64 {
         virtual_offset / self.block_size

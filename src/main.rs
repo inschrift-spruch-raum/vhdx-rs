@@ -1,6 +1,7 @@
 //! VHDX Tool - Command line utility for VHDX files
 
 use clap::{Parser, Subcommand};
+use std::io::Read;
 use std::path::PathBuf;
 use vhdx_rs::file::{DiskType, VhdxBuilder, VhdxFile};
 
@@ -122,11 +123,10 @@ fn main() {
             offset,
             input,
         } => {
-            eprintln!("Write command not yet implemented");
-            eprintln!("Parameters:");
-            eprintln!("  Path: {}", path.display());
-            eprintln!("  Offset: {}", offset);
-            eprintln!("  Input: {:?}", input);
+            if let Err(e) = write_data(path.clone(), offset, input.clone()) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
         }
         Commands::Check { path } => {
             if let Err(e) = check_file(path) {
@@ -196,6 +196,30 @@ fn read_data(
         std::io::stdout().write_all(&buffer)?;
     }
 
+    Ok(())
+}
+
+fn write_data(
+    path: PathBuf,
+    offset: u64,
+    input: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut vhdx =
+        VhdxFile::open(&path, false).map_err(|e| format!("Failed to open VHDX: {}", e))?;
+
+    let buffer = if let Some(input_path) = input {
+        std::fs::read(&input_path)?
+    } else {
+        let mut buf = Vec::new();
+        std::io::stdin().read_to_end(&mut buf)?;
+        buf
+    };
+
+    let bytes_written = vhdx
+        .write(offset, &buffer)
+        .map_err(|e| format!("Failed to write: {}", e))?;
+
+    println!("Wrote {} bytes to {}", bytes_written, path.display());
     Ok(())
 }
 
@@ -321,15 +345,21 @@ fn create_vhdx(
     }
 
     // Create the VHDX file
-    let builder = VhdxBuilder::new(virtual_disk_size)
+    let mut builder = VhdxBuilder::new(virtual_disk_size)
         .disk_type(disk_type)
         .block_size(block_size_bytes as u32)
         .sector_sizes(logical_sector_size, physical_sector_size);
 
-    // TODO: Handle parent disk for differencing disks
-    if let Some(_parent_path) = parent {
-        // Parent handling would go here - requires additional implementation
-        return Err("Parent disk support not yet fully implemented".into());
+    // Handle parent disk for differencing disks
+    if let Some(parent_path) = parent {
+        // Validate parent exists
+        if !parent_path.exists() {
+            return Err(format!("Parent disk not found: {}", parent_path.display()).into());
+        }
+
+        // Set parent path on builder
+        let parent_str = parent_path.to_string_lossy().to_string();
+        builder = builder.parent_path(parent_str);
     }
 
     builder.create(&path)?;
