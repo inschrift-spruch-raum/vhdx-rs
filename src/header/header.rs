@@ -165,7 +165,7 @@ impl VhdxHeader {
         }
         if self.log_version != 0 {
             // Only valid if log_guid is zero (no log)
-            if !self.log_guid.is_zero() {
+            if !self.log_guid.is_nil() {
                 return Err(VhdxError::UnsupportedVersion(self.log_version as u32));
             }
         }

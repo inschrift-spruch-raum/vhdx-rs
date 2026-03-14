@@ -90,7 +90,7 @@ impl VhdxFile {
         let (region_table, _) = read_region_tables(&mut file)?;
 
         // Replay log if needed
-        if !header.log_guid.is_zero() {
+        if !header.log_guid.is_nil() {
             Self::replay_log(&mut file, &mut header, read_only)?;
         }
 
@@ -213,7 +213,7 @@ impl VhdxFile {
 
     /// Replay log entries
     fn replay_log(file: &mut File, header: &mut VhdxHeader, read_only: bool) -> Result<()> {
-        if header.log_offset == 0 || header.log_length == 0 || header.log_guid.is_zero() {
+        if header.log_offset == 0 || header.log_length == 0 || header.log_guid.is_nil() {
             return Ok(());
         }
 
@@ -255,7 +255,7 @@ impl VhdxFile {
             file.flush()?;
 
             // Reset LogGuid to indicate log is empty
-            header.log_guid = Guid::new([0u8; 16]);
+            header.log_guid = Guid::from_bytes([0u8; 16]);
         }
 
         Ok(())

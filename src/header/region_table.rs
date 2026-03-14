@@ -7,19 +7,20 @@ use crate::common::crc32c::crc32c_with_zero_field;
 use crate::common::guid::Guid;
 use crate::error::{Result, VhdxError};
 use byteorder::{ByteOrder, LittleEndian};
+use uuid::Uuid;
 
 /// Region Table signature: "regi"
 pub const REGION_SIGNATURE: &[u8] = b"regi";
 
 /// BAT Region GUID: 2DC27766-F623-4200-9D64-115E9BFD4A08
-pub const BAT_GUID: Guid = Guid([
+pub const BAT_GUID: Guid = Guid(Uuid::from_bytes_le([
     0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42, 0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD, 0x4A, 0x08,
-]);
+]));
 
 /// Metadata Region GUID: 8B7CA206-4790-4B9A-B8FE-575F050F886E
-pub const METADATA_GUID: Guid = Guid([
+pub const METADATA_GUID: Guid = Guid(Uuid::from_bytes_le([
     0x06, 0xA2, 0x7C, 0x8B, 0x90, 0x47, 0x9A, 0x4B, 0xB8, 0xFE, 0x57, 0x5F, 0x05, 0x0F, 0x88, 0x6E,
-]);
+]));
 
 /// Region Table Header
 #[derive(Debug, Clone)]

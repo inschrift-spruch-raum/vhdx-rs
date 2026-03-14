@@ -4,11 +4,14 @@
 
 use crate::error::{Result, VhdxError};
 use byteorder::{ByteOrder, LittleEndian};
+use uuid::Uuid;
 
 /// File Parameters GUID: CAA16737-FA36-4D43-B3B6-33F0AA44E76B
-pub const FILE_PARAMETERS_GUID: crate::common::guid::Guid = crate::common::guid::Guid([
-    0x37, 0x67, 0xA1, 0xCA, 0x36, 0xFA, 0x43, 0x4D, 0xB3, 0xB6, 0x33, 0xF0, 0xAA, 0x44, 0xE7, 0x6B,
-]);
+pub const FILE_PARAMETERS_GUID: crate::common::guid::Guid =
+    crate::common::guid::Guid(Uuid::from_bytes_le([
+        0x37, 0x67, 0xA1, 0xCA, 0x36, 0xFA, 0x43, 0x4D, 0xB3, 0xB6, 0x33, 0xF0, 0xAA, 0x44, 0xE7,
+        0x6B,
+    ]));
 
 /// File Parameters metadata item
 #[derive(Debug, Clone)]

@@ -159,7 +159,7 @@ impl VhdxBuilder {
         let mut header1 = VhdxHeader::new(0);
         header1.file_write_guid = file_write_guid;
         header1.data_write_guid = data_write_guid;
-        header1.log_guid = Guid::new([0u8; 16]); // No log - embedded in header
+        header1.log_guid = Guid::from_bytes([0u8; 16]); // No log - embedded in header
         header1.log_version = 0;
         header1.version = 1;
         header1.log_length = 0; // No separate log

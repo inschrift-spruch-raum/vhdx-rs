@@ -1,77 +1,107 @@
 //! GUID handling for VHDX
 //!
-//! VHDX uses 128-bit GUIDs in various structures
+//! VHDX uses 128-bit GUIDs in various structures.
+//! All GUIDs are stored in little-endian format as per VHDX specification.
 
 use std::fmt;
+use uuid::Uuid;
 
-/// A 128-bit GUID as used in VHDX files
+/// A 128-bit GUID as used in VHDX files.
+///
+/// This is a newtype wrapper around `uuid::Uuid` that ensures
+/// correct little-endian byte order for VHDX file compatibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Guid(pub [u8; 16]);
+pub struct Guid(pub Uuid);
 
 impl Guid {
-    /// Create a new GUID from bytes
-    pub fn new(bytes: [u8; 16]) -> Self {
-        Guid(bytes)
-    }
-
-    /// Create a new random GUID (v4)
+    /// Create a new random GUID (version 4).
     pub fn new_v4() -> Self {
-        let mut bytes = [0u8; 16];
-        // Use a simple random number generator for now
-        // In production, use a proper crypto RNG
-        for i in 0..16 {
-            bytes[i] = rand::random();
-        }
-        // Set version and variant bits for v4 UUID
-        bytes[6] = (bytes[6] & 0x0F) | 0x40;
-        bytes[8] = (bytes[8] & 0x3F) | 0x80;
-        Guid(bytes)
+        Self(Uuid::new_v4())
     }
 
-    /// Convert to bytes (little-endian as stored in VHDX)
-    pub fn to_bytes(&self) -> [u8; 16] {
-        self.0
+    /// Create a nil (all-zero) GUID.
+    pub fn nil() -> Self {
+        Self(Uuid::nil())
     }
 
-    /// Create from bytes (little-endian as stored in VHDX)
+    /// Create a GUID from a little-endian byte array.
+    ///
+    /// This is the format used in VHDX files.
     pub fn from_bytes(bytes: [u8; 16]) -> Self {
-        Guid(bytes)
+        Self(Uuid::from_bytes_le(bytes))
     }
 
-    /// Check if this is a zero/empty GUID
-    pub fn is_zero(&self) -> bool {
-        self.0.iter().all(|&b| b == 0)
+    /// Convert the GUID to a little-endian byte array.
+    ///
+    /// This is the format used in VHDX files.
+    pub fn to_bytes(&self) -> [u8; 16] {
+        self.0.to_bytes_le()
+    }
+
+    /// Check if this is a nil (all-zero) GUID.
+    pub fn is_nil(&self) -> bool {
+        self.0.is_nil()
     }
 }
 
 impl fmt::Display for Guid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Format as standard GUID string: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-        write!(f, 
-            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-            self.0[3], self.0[2], self.0[1], self.0[0],
-            self.0[5], self.0[4],
-            self.0[7], self.0[6],
-            self.0[8], self.0[9],
-            self.0[10], self.0[11], self.0[12], self.0[13], self.0[14], self.0[15]
-        )
+        write!(f, "{}", self.0)
     }
 }
 
-// Known GUIDs for VHDX regions
-impl Guid {
-    /// BAT Region GUID: 2DC27766-F623-4200-9D64-115E9BFD4A08
-    pub const BAT: Guid = Guid([
-        0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42, 0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD, 0x4A,
-        0x08,
-    ]);
-
-    /// Metadata Region GUID: 8B7CA206-4790-4B9A-B8FE-575F050F886E
-    pub const METADATA: Guid = Guid([
-        0x06, 0xA2, 0x7C, 0x8B, 0x90, 0x47, 0x9A, 0x4B, 0xB8, 0xFE, 0x57, 0x5F, 0x05, 0x0F, 0x88,
-        0x6E,
-    ]);
+impl From<Uuid> for Guid {
+    fn from(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
 }
 
-// Need rand crate for GUID generation
-use rand;
+impl From<Guid> for Uuid {
+    fn from(guid: Guid) -> Self {
+        guid.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_guid_nil() {
+        let nil_guid = Guid::nil();
+        assert!(nil_guid.is_nil());
+        assert_eq!(nil_guid.to_bytes(), [0u8; 16]);
+    }
+
+    #[test]
+    fn test_guid_roundtrip() {
+        // Test with a known GUID byte array
+        let bytes: [u8; 16] = [
+            0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42, 0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD,
+            0x4A, 0x08,
+        ];
+        let guid = Guid::from_bytes(bytes);
+        let roundtrip = guid.to_bytes();
+        assert_eq!(bytes, roundtrip);
+    }
+
+    #[test]
+    fn test_guid_display() {
+        // Create GUID from known bytes and verify display format
+        let bytes: [u8; 16] = [
+            0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42, 0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD,
+            0x4A, 0x08,
+        ];
+        let guid = Guid::from_bytes(bytes);
+        let s = format!("{}", guid);
+        assert_eq!(s, "2dc27766-f623-4200-9d64-115e9bfd4a08");
+    }
+
+    #[test]
+    fn test_guid_from_uuid() {
+        let uuid = Uuid::new_v4();
+        let guid: Guid = uuid.into();
+        let uuid_back: Uuid = guid.into();
+        assert_eq!(uuid, uuid_back);
+    }
+}

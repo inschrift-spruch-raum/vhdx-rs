@@ -10,7 +10,6 @@ path = "src/main.rs"
 [dependencies]
 uuid = { version = "1.6", features = ["v4"] }
 thiserror = "1.0"
-rand = "0.8"
 byteorder = "1.5"
 clap = { version = "4.4", features = ["derive"] }
 

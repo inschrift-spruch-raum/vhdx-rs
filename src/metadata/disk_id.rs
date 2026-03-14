@@ -4,11 +4,12 @@
 
 use crate::common::guid::Guid;
 use crate::error::{Result, VhdxError};
+use uuid::Uuid;
 
 /// Virtual Disk ID GUID: BECA12AB-B2E6-4523-93EF-C309E000C746
-pub const VIRTUAL_DISK_ID_GUID: Guid = Guid([
+pub const VIRTUAL_DISK_ID_GUID: Guid = Guid(Uuid::from_bytes_le([
     0xAB, 0x12, 0xCA, 0xBE, 0xE6, 0xB2, 0x23, 0x45, 0x93, 0xEF, 0xC3, 0x09, 0xE0, 0x00, 0xC7, 0x46,
-]);
+]));
 
 /// Virtual Disk ID metadata item
 #[derive(Debug, Clone)]
