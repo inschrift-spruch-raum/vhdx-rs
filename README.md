@@ -61,15 +61,13 @@ use linkfs::{VhdxBuilder, DiskType};
 use std::path::Path;
 
 // 创建动态 VHDX (默认)
-VhdxBuilder::new()
-    .with_size(10 * 1024 * 1024 * 1024) // 10GB
-    .with_type(DiskType::Dynamic)
+VhdxBuilder::new(10 * 1024 * 1024 * 1024) // 10GB
+    .disk_type(DiskType::Dynamic)
     .create(Path::new("dynamic.vhdx"))?;
 
 // 创建固定 VHDX
-VhdxBuilder::new()
-    .with_size(10 * 1024 * 1024 * 1024)
-    .with_type(DiskType::Fixed)
+VhdxBuilder::new(10 * 1024 * 1024 * 1024)
+    .disk_type(DiskType::Fixed)
     .create(Path::new("fixed.vhdx"))?;
 ```
 
@@ -160,13 +158,12 @@ pub fn has_parent(&self) -> bool;
 用于创建新的 VHDX 文件。
 
 ```rust
-pub fn new() -> Self;
-pub fn with_size(self, size: u64) -> Self;
-pub fn with_type(self, disk_type: DiskType) -> Self;
-pub fn with_block_size(self, block_size: u32) -> Self;
-pub fn with_logical_sector_size(self, size: u32) -> Self;
-pub fn with_physical_sector_size(self, size: u32) -> Self;
-pub fn create(self, path: &Path) -> Result<VhdxFile>;
+pub fn new(virtual_disk_size: u64) -> Self;
+pub fn block_size(self, size: u32) -> Self;
+pub fn sector_sizes(self, logical: u32, physical: u32) -> Self;
+pub fn disk_type(self, disk_type: DiskType) -> Self;
+pub fn parent_path<P: Into<String>>(self, path: P) -> Self;
+pub fn create<P: AsRef<Path>>(self, path: P) -> Result<VhdxFile>;
 ```
 
 ### DiskType
@@ -183,18 +180,52 @@ pub enum DiskType {
 
 ```
 src/
-├── lib.rs       # 库入口，导出公共 API
-├── main.rs      # CLI 工具 (vhdx-tool)
-├── error.rs     # 错误类型定义
-├── guid.rs      # GUID 处理
-├── crc32c.rs    # CRC-32C 校验 (Castagnoli)
-├── header.rs    # VHDX Header 结构
-├── region.rs    # Region Table 解析
-├── metadata.rs  # Metadata Region 读取
-├── bat.rs       # Block Allocation Table
-├── log.rs       # Log 系统 (LogReplayer + LogWriter)
-├── block.rs     # 块级 I/O (BlockIo + FixedBlockIo)
-└── vhdx.rs      # 主 VHDX 文件操作
+├── lib.rs              # 库入口，导出公共 API
+├── main.rs             # CLI 工具 (vhdx-tool)
+├── error.rs            # 错误类型定义
+├── common/             # 通用工具
+│   ├── guid.rs         # 128-bit GUID 处理
+│   ├── crc32c.rs       # CRC-32C 校验 (Castagnoli)
+│   └── disk_type.rs    # 磁盘类型枚举
+├── header/             # Header Section
+│   ├── file_type.rs    # File Type Identifier ("vhdxfile" 签名)
+│   ├── header.rs       # VhdxHeader (双头安全机制)
+│   └── region_table.rs # Region Table (BAT/Metadata 位置)
+├── bat/                # Block Allocation Table
+│   ├── entry.rs        # BatEntry (64位: State + FileOffsetMB)
+│   ├── states.rs       # PayloadBlockState, SectorBitmapState 枚举
+│   └── table.rs        # Bat 结构，Chunk Ratio 计算
+├── log/                # Log 系统
+│   ├── entry.rs        # LogEntryHeader, LogSequence
+│   ├── descriptor.rs   # ZeroDescriptor, DataDescriptor
+│   ├── sector.rs       # DataSector
+│   ├── replayer.rs     # LogReplayer (崩溃恢复)
+│   └── writer.rs       # LogWriter
+├── metadata/           # Metadata Region
+│   ├── region.rs       # MetadataRegion 容器
+│   ├── table.rs        # MetadataTable 头结构
+│   ├── file_parameters.rs  # FileParameters (块大小、是否有父)
+│   ├── disk_size.rs    # VirtualDiskSize
+│   ├── disk_id.rs      # VirtualDiskId (GUID)
+│   ├── sector_size.rs  # LogicalSectorSize, PhysicalSectorSize
+│   └── parent_locator.rs   # ParentLocator (差异磁盘)
+├── payload/            # Payload Blocks
+│   ├── bitmap.rs       # SectorBitmap 操作
+│   └── chunk.rs        # Chunk 计算 (2^23 * SectorSize / BlockSize)
+├── block_io/           # 块级 I/O
+│   ├── traits.rs       # BlockIo trait
+│   ├── fixed.rs        # FixedBlockIo (固定磁盘)
+│   ├── dynamic.rs      # DynamicBlockIo (动态磁盘)
+│   ├── differencing.rs # DifferencingBlockIo (差异磁盘)
+│   └── cache.rs        # BlockCache
+├── file/               # VHDX 文件操作
+│   ├── vhdx_file.rs    # VhdxFile 结构 (打开、读取、写入等)
+│   └── builder.rs      # VhdxBuilder (创建 VHDX 文件)
+└── utils/              # 工具函数
+    └── mod.rs
+tests/
+└── integration/        # 集成测试
+    └── full_workflow.rs
 ```
 
 ## 技术规范
