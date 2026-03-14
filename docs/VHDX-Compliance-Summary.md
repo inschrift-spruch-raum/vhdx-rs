@@ -243,8 +243,8 @@ cdc1ca9 feat(metadata): add known required metadata whitelist validation
 
 ## 文件位置
 
-- **完整计划**: .sisyphus/plans/vhdx-standard-compliance.md
-- **学习笔记**: .sisyphus/notepads/vhdx-standard-compliance/learnings.md
+- **完整计划**: docs/development/plan.md
+- **学习笔记**: docs/development/learnings.md
 - **本总结**: docs/VHDX-Compliance-Summary.md
 
 ---

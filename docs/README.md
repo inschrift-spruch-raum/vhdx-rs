@@ -9,8 +9,8 @@
 - **[MS-VHDX.md](../misc/MS-VHDX.md)** - MS-VHDX v20240423 规范原文（Open Specifications）
 
 ### 开发文档
-- **[.sisyphus/plans/vhdx-standard-compliance.md](../.sisyphus/plans/vhdx-standard-compliance.md)** - 详细实施计划
-- **[.sisyphus/notepads/vhdx-standard-compliance/learnings.md](../.sisyphus/notepads/vhdx-standard-compliance/learnings.md)** - 开发学习笔记
+- **[docs/development/plan.md](../docs/development/plan.md)** - 详细实施计划
+- **[docs/development/learnings.md](../docs/development/learnings.md)** - 开发学习笔记
 
 ---
 
