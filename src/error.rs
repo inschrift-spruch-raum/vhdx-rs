@@ -82,6 +82,9 @@ pub enum VhdxError {
     #[error("Parent chain too deep: {depth} (max 16)")]
     ParentChainTooDeep { depth: usize },
 
+    #[error("Invalid parent path: {0}")]
+    InvalidParentPath(String),
+
     #[error("Invalid block size: {0} (must be power of 2, 1MB-256MB)")]
     InvalidBlockSize(u32),
 

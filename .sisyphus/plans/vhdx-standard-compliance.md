@@ -178,7 +178,7 @@ Task 1 → Task 2 → Task 4 → Task 5 → Task 6 → Task 7 → Task 10
 
 ## TODOs
 
-### Task 1: Add IsRequired Flag Parsing to MetadataTableEntry
+### Task 1: Add IsRequired Flag Parsing to MetadataTableEntry [x]
 
 **What to do**:
 - Add `is_required: bool` field to `MetadataTableEntry` struct in `src/metadata/table.rs`
@@ -247,7 +247,7 @@ Scenario: Reject non-zero reserved bits
 
 ---
 
-### Task 2: Add Known Required Metadata Whitelist
+### Task 2: Add Known Required Metadata Whitelist [x]
 
 **What to do**:
 - Define whitelist of recognized required metadata GUIDs
@@ -328,7 +328,7 @@ Scenario: Allow unknown non-required metadata
 
 ---
 
-### Task 3: Add Parent Sector Size Validation
+### Task 3: Add Parent Sector Size Validation [x]
 
 **What to do**:
 - In `VhdxFile::open()` when loading differencing disk parent, validate sector sizes match
@@ -391,7 +391,7 @@ Scenario: Mismatched sector sizes
 
 ---
 
-### Task 4: Add Parent DataWriteGuid Validation
+### Task 4: Add Parent DataWriteGuid Validation [x]
 
 **What to do**:
 - In `VhdxFile::open()` when loading differencing disk parent, validate DataWriteGuid
@@ -469,7 +469,7 @@ Scenario: parent_linkage2 present
 
 ---
 
-### Task 5: Add Circular Parent Chain Detection
+### Task 5: Add Circular Parent Chain Detection [x]
 
 **What to do**:
 - Track parent chain depth during parent loading
@@ -546,7 +546,7 @@ Scenario: Chain too deep (>16)
 
 ---
 
-### Task 6: Fix Block Size Validation (Power of 2)
+### Task 6: Fix Block Size Validation (Power of 2) [x]
 
 **What to do**:
 - Update `FileParameters::validate()` to check power of 2
@@ -628,7 +628,7 @@ Scenario: Block size above maximum
 
 ---
 
-### Task 7: Add Disk Size Validation (64TB Max, Alignment)
+### Task 7: Add Disk Size Validation (64TB Max, Alignment) [x]
 
 **What to do**:
 - Update `VirtualDiskSize::validate()` in `src/metadata/disk_size.rs`
@@ -711,7 +711,7 @@ Scenario: Zero disk size
 
 ---
 
-### Task 8: Add Path Traversal Protection
+### Task 8: Add Path Traversal Protection [x]
 
 **What to do**:
 - In parent locator resolution, canonicalize and validate paths
@@ -843,7 +843,7 @@ Scenario: Test coverage report
 
 ---
 
-### Task 10: Full Regression Test Suite
+### Task 10: Full Regression Test Suite [x]
 
 **What to do**:
 - Run complete test suite: `cargo test`

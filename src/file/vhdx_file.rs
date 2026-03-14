@@ -70,6 +70,53 @@ fn parse_guid_string(s: &str) -> Result<Guid> {
     Ok(Guid::from(uuid))
 }
 
+/// Validate parent path to prevent path traversal attacks
+///
+/// Security: This function prevents directory escape attacks by:
+/// 1. Rejecting absolute paths (C:\Windows\file or /etc/passwd)
+/// 2. Rejecting paths containing ".." components
+/// 3. Canonicalizing and verifying the resolved path is within base_dir
+fn validate_parent_path(
+    parent_path: &str,
+    base_dir: &std::path::Path,
+) -> Result<std::path::PathBuf> {
+    // Reject absolute paths
+    if std::path::Path::new(parent_path).is_absolute() {
+        return Err(VhdxError::InvalidParentPath(
+            "Absolute paths not allowed".to_string(),
+        ));
+    }
+
+    // Check for .. components
+    if parent_path.contains("..") {
+        return Err(VhdxError::InvalidParentPath(
+            "Path traversal not allowed".to_string(),
+        ));
+    }
+
+    // Resolve path relative to base directory
+    let resolved = base_dir.join(parent_path);
+
+    // Canonicalize paths to resolve any remaining symlinks or . components
+    // Note: canonicalize() requires the path to exist, which is fine for parent validation
+    let canonical_base = base_dir.canonicalize().map_err(|e| {
+        VhdxError::InvalidParentPath(format!("Failed to canonicalize base directory: {}", e))
+    })?;
+
+    let canonical_resolved = resolved
+        .canonicalize()
+        .map_err(|e| VhdxError::ParentNotFound(format!("Parent file not found: {}", e)))?;
+
+    // Ensure resolved path is within base directory
+    if !canonical_resolved.starts_with(&canonical_base) {
+        return Err(VhdxError::InvalidParentPath(
+            "Path escapes base directory".to_string(),
+        ));
+    }
+
+    Ok(canonical_resolved)
+}
+
 /// VHDX file handle
 #[allow(dead_code)]
 pub struct VhdxFile {
@@ -214,14 +261,12 @@ impl VhdxFile {
         let parent = if disk_type == DiskType::Differencing {
             if let Ok(locator) = metadata.parent_locator() {
                 if let Some(parent_path) = locator.parent_path() {
-                    // Resolve parent path relative to this file
-                    let parent_full_path = if std::path::Path::new(parent_path).is_absolute() {
-                        std::path::PathBuf::from(parent_path)
-                    } else {
-                        path.parent()
-                            .map(|p| p.join(parent_path))
-                            .unwrap_or_else(|| std::path::PathBuf::from(parent_path))
-                    };
+                    // Resolve parent path relative to this file with path traversal protection
+                    let base_dir = path.parent().ok_or_else(|| {
+                        VhdxError::InvalidParentPath("Cannot determine base directory".to_string())
+                    })?;
+
+                    let parent_full_path = validate_parent_path(parent_path, base_dir)?;
 
                     // Check for circular parent chain and depth limit
                     let new_chain_state = chain_state.check_and_update(virtual_disk_id)?;
@@ -894,6 +939,193 @@ mod tests {
                 assert_eq!(d, 17);
             }
             _ => panic!("Expected ParentChainTooDeep error variant"),
+        }
+    }
+
+    #[test]
+    fn test_valid_relative_path() {
+        // Test that valid relative path passes validation
+        let temp_dir = std::env::temp_dir().join("vhdx_test_valid_path");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let parent_path = temp_dir.join("parent.vhdx");
+
+        // Create a parent file
+        let _parent = crate::VhdxBuilder::new(10 * 1024 * 1024)
+            .disk_type(DiskType::Dynamic)
+            .create(&parent_path)
+            .unwrap();
+
+        // Valid relative path should pass
+        let result = validate_parent_path("parent.vhdx", &temp_dir);
+        assert!(
+            result.is_ok(),
+            "Valid relative path should pass validation: {:?}",
+            result.err()
+        );
+
+        // Verify the resolved path is correct
+        let resolved = result.unwrap();
+        assert_eq!(resolved, parent_path.canonicalize().unwrap());
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_path_traversal_rejected() {
+        // Test that paths containing .. are rejected
+        let temp_dir = std::env::temp_dir().join("vhdx_test_traversal");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Path with .. should be rejected
+        let result = validate_parent_path("../../../etc/passwd", &temp_dir);
+        assert!(result.is_err(), "Path traversal should be rejected");
+
+        match result.unwrap_err() {
+            VhdxError::InvalidParentPath(msg) => {
+                assert!(
+                    msg.contains("Path traversal"),
+                    "Error should mention path traversal: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected InvalidParentPath error, got {:?}", other),
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_absolute_path_rejected() {
+        // Test that absolute paths are rejected
+        let temp_dir = std::env::temp_dir().join("vhdx_test_absolute");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Unix absolute path (only works on Unix-like systems)
+        #[cfg(unix)]
+        {
+            let result = validate_parent_path("/etc/passwd", &temp_dir);
+            assert!(result.is_err(), "Absolute Unix path should be rejected");
+
+            match result.unwrap_err() {
+                VhdxError::InvalidParentPath(msg) => {
+                    assert!(
+                        msg.contains("Absolute"),
+                        "Error should mention absolute paths: {}",
+                        msg
+                    );
+                }
+                other => panic!("Expected InvalidParentPath error, got {:?}", other),
+            }
+        }
+
+        // Windows absolute path (only works on Windows)
+        #[cfg(windows)]
+        {
+            // Test C:\ style path - this should be rejected as absolute
+            let result = validate_parent_path("C:\\Windows\\system32", &temp_dir);
+            assert!(result.is_err(), "Absolute Windows path should be rejected");
+
+            match result.unwrap_err() {
+                VhdxError::InvalidParentPath(msg) => {
+                    assert!(
+                        msg.contains("Absolute"),
+                        "Error should mention absolute paths: {}",
+                        msg
+                    );
+                }
+                other => panic!("Expected InvalidParentPath error, got {:?}", other),
+            }
+
+            // Test UNC path - this should also be rejected as absolute
+            let result = validate_parent_path("\\\\server\\share\\file.vhdx", &temp_dir);
+            assert!(result.is_err(), "UNC path should be rejected as absolute");
+
+            match result.unwrap_err() {
+                VhdxError::InvalidParentPath(msg) => {
+                    assert!(
+                        msg.contains("Absolute"),
+                        "Error should mention absolute paths: {}",
+                        msg
+                    );
+                }
+                other => panic!("Expected InvalidParentPath error, got {:?}", other),
+            }
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_path_escapes_directory() {
+        // Test that paths escaping the base directory are rejected
+        let temp_dir = std::env::temp_dir().join("vhdx_test_escape");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Create a subdirectory with a valid parent file
+        let sub_dir = temp_dir.join("subdir");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+
+        // Create parent file in temp_dir (above sub_dir)
+        let parent_path = temp_dir.join("parent.vhdx");
+        let _parent = crate::VhdxBuilder::new(10 * 1024 * 1024)
+            .disk_type(DiskType::Dynamic)
+            .create(&parent_path)
+            .unwrap();
+
+        // Try to access parent file from subdirectory using relative path
+        // This should succeed because ../parent.vhdx is blocked by the ".." check
+        // Let's try a path that doesn't contain .. but tries to escape
+        // Actually, on most systems, any path starting with .. will be caught by the first check
+        // So let's verify the ".." check catches this
+        let result = validate_parent_path("../parent.vhdx", &sub_dir);
+        assert!(
+            result.is_err(),
+            "Path escaping directory should be rejected"
+        );
+
+        match result.unwrap_err() {
+            VhdxError::InvalidParentPath(msg) => {
+                assert!(
+                    msg.contains("Path traversal") || msg.contains("escapes"),
+                    "Error should mention traversal or escaping: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected InvalidParentPath error, got {:?}", other),
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_invalid_parent_path_error_format() {
+        // Test that the InvalidParentPath error type works correctly
+        let msg = "Path traversal not allowed";
+        let error = VhdxError::InvalidParentPath(msg.to_string());
+
+        let error_msg = error.to_string();
+        assert!(
+            error_msg.contains("Invalid parent path"),
+            "Error message should contain 'Invalid parent path', got: {}",
+            error_msg
+        );
+        assert!(
+            error_msg.contains(msg),
+            "Error message should contain the message, got: {}",
+            error_msg
+        );
+
+        // Test pattern matching
+        match error {
+            VhdxError::InvalidParentPath(m) => {
+                assert_eq!(m, msg);
+            }
+            _ => panic!("Expected InvalidParentPath error variant"),
         }
     }
 }
