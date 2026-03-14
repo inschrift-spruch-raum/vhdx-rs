@@ -783,7 +783,7 @@ Scenario: Absolute path
 
 ---
 
-### Task 9: Comprehensive Unit Tests
+### Task 9: Comprehensive Unit Tests [x]
 
 **What to do**:
 - Write unit tests for ALL new validations
