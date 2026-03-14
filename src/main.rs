@@ -1,8 +1,8 @@
 //! VHDX Tool - Command line utility for VHDX files
 
 use clap::{Parser, Subcommand};
-use linkfs::file::{DiskType, VhdxBuilder, VhdxFile};
 use std::path::PathBuf;
+use vhdx_rs::file::{DiskType, VhdxBuilder, VhdxFile};
 
 #[derive(Parser)]
 #[command(name = "vhdx-tool")]

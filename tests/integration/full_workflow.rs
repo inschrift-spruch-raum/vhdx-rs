@@ -7,7 +7,7 @@ use crate::common::{
     generate_test_data,
 };
 
-use linkfs::DiskType;
+use vhdx_rs::DiskType;
 
 /// Test complete workflow on dynamic VHDX:
 /// 1. Create dynamic VHDX

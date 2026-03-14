@@ -1,4 +1,4 @@
-# linkfs - VHDX (Virtual Hard Disk v2) Library for Rust
+# vhdx-rs - VHDX (Virtual Hard Disk v2) Library for Rust
 
 纯 Rust 实现的 VHDX 虚拟磁盘文件格式库，完整支持 Microsoft MS-VHDX 规范。
 
@@ -29,13 +29,13 @@
 
 ```toml
 [dependencies]
-linkfs = { path = "path/to/linkfs" }
+vhdx-rs = { path = "path/to/vhdx-rs" }
 ```
 
 ### 示例代码
 
 ```rust
-use linkfs::{VhdxFile, VhdxBuilder, DiskType};
+use vhdx_rs::{VhdxFile, VhdxBuilder, DiskType};
 use std::path::Path;
 
 // 打开现有 VHDX 文件
@@ -57,7 +57,7 @@ println!("磁盘类型: {:?}", vhdx.disk_type());
 ### 创建新 VHDX 文件
 
 ```rust
-use linkfs::{VhdxBuilder, DiskType};
+use vhdx_rs::{VhdxBuilder, DiskType};
 use std::path::Path;
 
 // 创建动态 VHDX (默认)

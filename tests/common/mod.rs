@@ -1,8 +1,8 @@
 //! Test utilities and helper functions for integration tests
 
-use linkfs::{DiskType, VhdxBuilder, VhdxFile};
 use std::fs;
 use std::path::{Path, PathBuf};
+use vhdx_rs::{DiskType, VhdxBuilder, VhdxFile};
 
 /// Get a unique temporary file path for tests
 pub fn temp_vhdx_path(name: &str) -> PathBuf {
