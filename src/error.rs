@@ -84,4 +84,7 @@ pub enum VhdxError {
 
     #[error("Invalid block size: {0} (must be power of 2, 1MB-256MB)")]
     InvalidBlockSize(u32),
+
+    #[error("Invalid disk size: {size} (must be {min}-{max} bytes and sector-aligned)")]
+    InvalidDiskSize { size: u64, min: u64, max: u64 },
 }

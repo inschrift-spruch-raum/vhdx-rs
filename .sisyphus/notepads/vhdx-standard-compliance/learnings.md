@@ -280,3 +280,99 @@ Valid values: 1, 2, 4, 8, 16, 32, 64, 128, 256 MB
 - All 77 unit tests pass
 - All 6 integration tests pass
 - No compiler warnings
+
+## Task 7: Disk Size Validation (64TB Max, Alignment)
+
+**Date**: 2026-03-15
+**Task**: Add disk size bounds and alignment validation per MS-VHDX Section 2.6.2.3
+
+### Implementation Summary
+
+Updated `VirtualDiskSize` validation to enforce MS-VHDX Section 2.6.2.3 requirements:
+- VirtualDiskSize MUST be a multiple of LogicalSectorSize
+- VirtualDiskSize MUST NOT exceed 64 TB
+- VirtualDiskSize MUST be at least one sector (logical sector size)
+
+### Changes Made
+
+1. **src/error.rs**: Added new error variant
+   ```rust
+   #[error("Invalid disk size: {size} (must be {min}-{max} bytes and sector-aligned)")]
+   InvalidDiskSize {
+       size: u64,
+       min: u64,
+       max: u64,
+   },
+   ```
+
+2. **src/metadata/disk_size.rs**: 
+   - Added `MAX_DISK_SIZE` constant: `64 * 1024 * 1024 * 1024 * 1024` (64TB)
+   - Added `validate(&self, logical_sector_size: u32) -> Result<()>` method with three checks:
+     a. Minimum: `size >= sector_size`
+     b. Maximum: `size <= MAX_DISK_SIZE`
+     c. Alignment: `size.is_multiple_of(sector_size)`
+   - Added 11 comprehensive unit tests
+
+3. **src/metadata/region.rs**: Updated `virtual_disk_size()` to call validation
+   - After parsing `VirtualDiskSize`, calls `validate()` with logical sector size
+   - Validation happens during metadata region parsing
+
+### Validation Rules
+
+```rust
+pub fn validate(&self, logical_sector_size: u32) -> Result<()> {
+    let sector_size = logical_sector_size as u64;
+
+    // 1. Must be at least one sector
+    if self.size < sector_size { /* error */ }
+
+    // 2. Must not exceed 64TB
+    if self.size > MAX_DISK_SIZE { /* error */ }
+
+    // 3. Must be sector-aligned
+    if !self.size.is_multiple_of(sector_size) { /* error */ }
+
+    Ok(())
+}
+```
+
+### Unit Tests (11 tests)
+
+- `test_valid_disk_size_64tb`: 64TB passes
+- `test_invalid_disk_size_above_max`: 64TB+1 rejected
+- `test_valid_disk_size_minimum_512`: 512 bytes passes with 512-byte sectors
+- `test_valid_disk_size_minimum_4096`: 4096 bytes passes with 4096-byte sectors
+- `test_invalid_disk_size_below_min`: < sector size rejected
+- `test_invalid_disk_size_unaligned_512`: Not 512-aligned rejected
+- `test_invalid_disk_size_unaligned_4096`: Not 4096-aligned rejected
+- `test_valid_disk_size_aligned`: 1MB aligned passes
+- `test_invalid_disk_size_zero_validation`: 0 rejected
+- `test_valid_disk_size_1gb`: 1GB passes
+- Plus existing `test_virtual_disk_size` and `test_virtual_disk_size_zero_fails`
+
+### Key Learnings
+
+1. **Sector size required for validation**: Disk size validation requires knowledge of logical sector size, which is stored in a separate metadata entry. Validation must happen after both are parsed.
+
+2. **Validation at integration point**: Instead of modifying `from_bytes()` signature, added separate `validate()` method called from `MetadataRegion::virtual_disk_size()` after sector size is available.
+
+3. **Use `is_multiple_of()` for clippy compliance**: Rust 1.94+ prefers `.is_multiple_of()` over `%` operator for readability. Clippy warning: `manual_is_multiple_of`.
+
+4. **64TB constant**: `64 * 1024 * 1024 * 1024 * 1024` = 68,719,476,736,000 bytes = 64 TiB (tebibytes, binary)
+
+### MS-VHDX Spec Reference
+
+Section 2.6.2.3: "VirtualDiskSize (8 bytes): The size of the virtual disk in bytes. This value MUST be a multiple of LogicalSectorSize and MUST NOT exceed 64 TB."
+
+### Files Modified
+
+- `src/error.rs`: Added `InvalidDiskSize` error variant
+- `src/metadata/disk_size.rs`: Added `MAX_DISK_SIZE` constant, `validate()` method, 11 unit tests
+- `src/metadata/region.rs`: Updated `virtual_disk_size()` to call validation
+
+### Verification
+
+- All 87 unit tests pass
+- All 6 integration tests pass
+- No compiler warnings (clippy clean on modified code)
+- LSP diagnostics clean on all modified files

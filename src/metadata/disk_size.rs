@@ -13,6 +13,9 @@ pub const VIRTUAL_DISK_SIZE_GUID: crate::common::guid::Guid =
         0xB8,
     ]));
 
+/// Maximum disk size per MS-VHDX specification Section 2.6.2.3: 64 TB
+const MAX_DISK_SIZE: u64 = 64 * 1024 * 1024 * 1024 * 1024; // 64TB
+
 /// Virtual Disk Size metadata item
 #[derive(Debug, Clone)]
 pub struct VirtualDiskSize {
@@ -38,6 +41,45 @@ impl VirtualDiskSize {
 
         Ok(VirtualDiskSize { size })
     }
+
+    /// Validate disk size per MS-VHDX specification Section 2.6.2.3
+    ///
+    /// Requirements:
+    /// 1. Size must be >= logical sector size (minimum valid size)
+    /// 2. Size must be <= 64TB (maximum per spec)
+    /// 3. Size must be a multiple of logical sector size (sector-aligned)
+    pub fn validate(&self, logical_sector_size: u32) -> Result<()> {
+        let sector_size = logical_sector_size as u64;
+
+        // Check minimum: must be at least one sector
+        if self.size < sector_size {
+            return Err(VhdxError::InvalidDiskSize {
+                size: self.size,
+                min: sector_size,
+                max: MAX_DISK_SIZE,
+            });
+        }
+
+        // Check maximum: must not exceed 64TB
+        if self.size > MAX_DISK_SIZE {
+            return Err(VhdxError::InvalidDiskSize {
+                size: self.size,
+                min: sector_size,
+                max: MAX_DISK_SIZE,
+            });
+        }
+
+        // Check alignment: must be multiple of logical sector size
+        if !self.size.is_multiple_of(sector_size) {
+            return Err(VhdxError::InvalidDiskSize {
+                size: self.size,
+                min: sector_size,
+                max: MAX_DISK_SIZE,
+            });
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -58,5 +100,124 @@ mod tests {
         let data = vec![0u8; 8];
 
         assert!(VirtualDiskSize::from_bytes(&data).is_err());
+    }
+
+    #[test]
+    fn test_valid_disk_size_64tb() {
+        // 64TB should pass validation
+        let disk_size = VirtualDiskSize {
+            size: MAX_DISK_SIZE,
+        };
+        let result = disk_size.validate(512);
+        assert!(
+            result.is_ok(),
+            "64TB should pass validation with 512-byte sectors"
+        );
+    }
+
+    #[test]
+    fn test_invalid_disk_size_above_max() {
+        // 64TB + 1 byte should be rejected
+        let disk_size = VirtualDiskSize {
+            size: MAX_DISK_SIZE + 1,
+        };
+        let result = disk_size.validate(512);
+        assert!(result.is_err(), "64TB+1 should be rejected");
+        match result.unwrap_err() {
+            VhdxError::InvalidDiskSize { size, min, max } => {
+                assert_eq!(size, MAX_DISK_SIZE + 1);
+                assert_eq!(min, 512);
+                assert_eq!(max, MAX_DISK_SIZE);
+            }
+            e => panic!("Expected InvalidDiskSize error, got {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_valid_disk_size_minimum_512() {
+        // Minimum size (one 512-byte sector) should pass
+        let disk_size = VirtualDiskSize { size: 512 };
+        let result = disk_size.validate(512);
+        assert!(
+            result.is_ok(),
+            "512 bytes should pass validation with 512-byte sectors"
+        );
+    }
+
+    #[test]
+    fn test_valid_disk_size_minimum_4096() {
+        // Minimum size (one 4096-byte sector) should pass with 4096-byte sectors
+        let disk_size = VirtualDiskSize { size: 4096 };
+        let result = disk_size.validate(4096);
+        assert!(
+            result.is_ok(),
+            "4096 bytes should pass validation with 4096-byte sectors"
+        );
+    }
+
+    #[test]
+    fn test_invalid_disk_size_below_min() {
+        // Size smaller than sector size should be rejected
+        let disk_size = VirtualDiskSize { size: 256 };
+        let result = disk_size.validate(512);
+        assert!(
+            result.is_err(),
+            "256 bytes should be rejected with 512-byte sectors"
+        );
+        match result.unwrap_err() {
+            VhdxError::InvalidDiskSize { size, min, .. } => {
+                assert_eq!(size, 256);
+                assert_eq!(min, 512);
+            }
+            e => panic!("Expected InvalidDiskSize error, got {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_invalid_disk_size_unaligned_512() {
+        // Unaligned size (not multiple of 512) should be rejected
+        let disk_size = VirtualDiskSize { size: 1000 }; // 1000 is not divisible by 512
+        let result = disk_size.validate(512);
+        assert!(
+            result.is_err(),
+            "1000 bytes should be rejected (not 512-aligned)"
+        );
+    }
+
+    #[test]
+    fn test_invalid_disk_size_unaligned_4096() {
+        // Unaligned size (not multiple of 4096) should be rejected
+        let disk_size = VirtualDiskSize { size: 5000 }; // 5000 is not divisible by 4096
+        let result = disk_size.validate(4096);
+        assert!(
+            result.is_err(),
+            "5000 bytes should be rejected (not 4096-aligned)"
+        );
+    }
+
+    #[test]
+    fn test_valid_disk_size_aligned() {
+        // Aligned size should pass
+        let disk_size = VirtualDiskSize { size: 1024 * 1024 }; // 1MB, aligned to 512
+        let result = disk_size.validate(512);
+        assert!(result.is_ok(), "1MB should pass validation (512-aligned)");
+    }
+
+    #[test]
+    fn test_invalid_disk_size_zero_validation() {
+        // Zero size should fail validation
+        let disk_size = VirtualDiskSize { size: 0 };
+        let result = disk_size.validate(512);
+        assert!(result.is_err(), "0 bytes should be rejected");
+    }
+
+    #[test]
+    fn test_valid_disk_size_1gb() {
+        // 1GB should pass validation
+        let disk_size = VirtualDiskSize {
+            size: 1024 * 1024 * 1024,
+        };
+        let result = disk_size.validate(512);
+        assert!(result.is_ok(), "1GB should pass validation");
     }
 }

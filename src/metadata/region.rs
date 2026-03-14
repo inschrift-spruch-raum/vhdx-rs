@@ -99,7 +99,13 @@ impl MetadataRegion {
 
         let offset = entry.offset as usize - self.data_offset;
         let data = &self.data[offset..offset + entry.length as usize];
-        VirtualDiskSize::from_bytes(data)
+        let disk_size = VirtualDiskSize::from_bytes(data)?;
+
+        // Validate disk size with logical sector size
+        let sector_size = self.logical_sector_size()?;
+        disk_size.validate(sector_size.size)?;
+
+        Ok(disk_size)
     }
 
     /// Get Logical Sector Size
