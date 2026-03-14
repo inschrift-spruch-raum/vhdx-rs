@@ -52,8 +52,11 @@ pub enum VhdxError {
     #[error("Parent disk not found: {0}")]
     ParentNotFound(String),
 
-    #[error("Parent GUID mismatch")]
-    ParentGuidMismatch,
+    #[error("Parent GUID mismatch: expected {expected}, found {found}")]
+    ParentGuidMismatch { expected: String, found: String },
+
+    #[error("Invalid parent locator: {0}")]
+    InvalidParentLocator(String),
 
     #[error("Parent/child sector size mismatch: parent={parent}, child={child}")]
     SectorSizeMismatch { parent: u32, child: u32 },

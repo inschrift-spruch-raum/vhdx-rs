@@ -114,6 +114,11 @@ impl ParentLocator {
     pub fn parent_linkage(&self) -> Option<&String> {
         self.get("parent_linkage")
     }
+
+    /// Check if parent_linkage2 exists (MUST NOT exist per MS-VHDX spec Section 2.2.4)
+    pub fn parent_linkage2(&self) -> Option<&String> {
+        self.get("parent_linkage2")
+    }
 }
 
 /// Read UTF-16 LE string from bytes

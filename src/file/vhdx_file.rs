@@ -18,6 +18,14 @@ use crate::metadata::MetadataRegion;
 
 use super::DiskType;
 
+/// Parse a GUID string in the format "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+fn parse_guid_string(s: &str) -> Result<Guid> {
+    // Parse the UUID from string (handles both with and without braces)
+    let uuid = uuid::Uuid::parse_str(s)
+        .map_err(|e| VhdxError::InvalidMetadata(format!("Invalid GUID format '{}': {}", s, e)))?;
+    Ok(Guid::from(uuid))
+}
+
 /// VHDX file handle
 #[allow(dead_code)]
 pub struct VhdxFile {
@@ -171,6 +179,32 @@ impl VhdxFile {
                             parent: parent_sector_size,
                             child: logical_sector_size,
                         });
+                    }
+
+                    // Validate parent_linkage2 MUST NOT exist per MS-VHDX spec Section 2.2.4
+                    if locator.parent_linkage2().is_some() {
+                        return Err(VhdxError::InvalidParentLocator(
+                            "parent_linkage2 MUST NOT exist per MS-VHDX spec Section 2.2.4"
+                                .to_string(),
+                        ));
+                    }
+
+                    // Validate DataWriteGuid matches per MS-VHDX spec Section 2.2.4
+                    if let Some(expected_guid_str) = locator.parent_linkage() {
+                        let parent_data_write_guid = parent_vhdx.header.data_write_guid;
+                        let expected_guid = parse_guid_string(expected_guid_str)?;
+
+                        if parent_data_write_guid != expected_guid {
+                            return Err(VhdxError::ParentGuidMismatch {
+                                expected: expected_guid_str.clone(),
+                                found: parent_data_write_guid.to_string(),
+                            });
+                        }
+                    } else {
+                        // parent_linkage is required for differencing disks
+                        return Err(VhdxError::InvalidParentLocator(
+                            "parent_linkage is required for differencing disks".to_string(),
+                        ));
                     }
 
                     Some(Box::new(parent_vhdx))
@@ -519,5 +553,88 @@ mod tests {
             }
             _ => panic!("Expected SectorSizeMismatch error variant"),
         }
+    }
+
+    #[test]
+    fn test_parent_guid_mismatch_error_format() {
+        // Test that the ParentGuidMismatch error type works correctly
+        let expected = "12345678-1234-1234-1234-123456789abc";
+        let found = "abcdef12-3456-7890-abcd-ef1234567890";
+
+        let error = VhdxError::ParentGuidMismatch {
+            expected: expected.to_string(),
+            found: found.to_string(),
+        };
+
+        let error_msg = error.to_string();
+        assert!(
+            error_msg.contains(expected),
+            "Error message should contain expected GUID, got: {}",
+            error_msg
+        );
+        assert!(
+            error_msg.contains(found),
+            "Error message should contain found GUID, got: {}",
+            error_msg
+        );
+
+        // Test pattern matching
+        match error {
+            VhdxError::ParentGuidMismatch {
+                expected: e,
+                found: f,
+            } => {
+                assert_eq!(e, expected);
+                assert_eq!(f, found);
+            }
+            _ => panic!("Expected ParentGuidMismatch error variant"),
+        }
+    }
+
+    #[test]
+    fn test_invalid_parent_locator_error_format() {
+        // Test that the InvalidParentLocator error type works correctly
+        let msg = "parent_linkage2 MUST NOT exist";
+        let error = VhdxError::InvalidParentLocator(msg.to_string());
+
+        let error_msg = error.to_string();
+        assert!(
+            error_msg.contains(msg),
+            "Error message should contain the message, got: {}",
+            error_msg
+        );
+
+        // Test pattern matching
+        match error {
+            VhdxError::InvalidParentLocator(m) => {
+                assert_eq!(m, msg);
+            }
+            _ => panic!("Expected InvalidParentLocator error variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_guid_string_valid() {
+        // Test parsing valid GUID strings
+        let valid_guid_str = "550e8400-e29b-41d4-a716-446655440000";
+        let result = parse_guid_string(valid_guid_str);
+        assert!(result.is_ok(), "Parsing valid GUID should succeed");
+
+        // Test with braces (should also work)
+        let with_braces = "{550e8400-e29b-41d4-a716-446655440000}";
+        let result2 = parse_guid_string(with_braces);
+        assert!(result2.is_ok(), "Parsing GUID with braces should succeed");
+    }
+
+    #[test]
+    fn test_parse_guid_string_invalid() {
+        // Test parsing invalid GUID strings
+        let invalid_guid_str = "not-a-valid-guid";
+        let result = parse_guid_string(invalid_guid_str);
+        assert!(result.is_err(), "Parsing invalid GUID should fail");
+
+        let empty_str = "";
+        let result2 = parse_guid_string(empty_str);
+        assert!(result2.is_err(), "Parsing empty string should fail");
     }
 }
