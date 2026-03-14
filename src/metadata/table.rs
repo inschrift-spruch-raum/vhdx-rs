@@ -53,6 +53,7 @@ pub struct MetadataTableEntry {
     pub length: u32,
     pub is_user: bool,
     pub is_virtual_disk: bool,
+    pub is_required: bool,
 }
 
 impl MetadataTableEntry {
@@ -75,6 +76,14 @@ impl MetadataTableEntry {
 
         let is_user = flags & 0x1 != 0;
         let is_virtual_disk = flags & 0x2 != 0;
+        let is_required = flags & 0x4 != 0;
+
+        // Validate reserved bits (bits 3-31 must be 0)
+        if flags & 0xFFFFFFF8 != 0 {
+            return Err(VhdxError::InvalidMetadata(
+                "Reserved bits in metadata table entry flags must be 0".to_string(),
+            ));
+        }
 
         Ok(MetadataTableEntry {
             item_id,
@@ -82,11 +91,105 @@ impl MetadataTableEntry {
             length,
             is_user,
             is_virtual_disk,
+            is_required,
         })
     }
 
     /// Check if this is a system metadata item
     pub fn is_system(&self) -> bool {
         !self.is_user
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_entry_data(flags: u32) -> [u8; 32] {
+        let mut data = [0u8; 32];
+        // Set dummy item_id (bytes 0-15)
+        data[0..16].copy_from_slice(&[0x01; 16]);
+        // Set offset (bytes 16-19)
+        LittleEndian::write_u32(&mut data[16..20], 0x1000);
+        // Set length (bytes 20-23)
+        LittleEndian::write_u32(&mut data[20..24], 0x100);
+        // Set flags (bytes 24-27)
+        LittleEndian::write_u32(&mut data[24..28], flags);
+        data
+    }
+
+    #[test]
+    fn test_is_required_true() {
+        // flags = 0x00000004 (only IsRequired set)
+        let data = create_entry_data(0x00000004);
+        let entry = MetadataTableEntry::from_bytes(&data).unwrap();
+        assert!(entry.is_required);
+        assert!(!entry.is_user);
+        assert!(!entry.is_virtual_disk);
+    }
+
+    #[test]
+    fn test_is_required_false() {
+        // flags = 0x00000000 (all flags false)
+        let data = create_entry_data(0x00000000);
+        let entry = MetadataTableEntry::from_bytes(&data).unwrap();
+        assert!(!entry.is_required);
+        assert!(!entry.is_user);
+        assert!(!entry.is_virtual_disk);
+    }
+
+    #[test]
+    fn test_reserved_bits_error() {
+        // flags = 0xFFFFFFF8 (bits 3-31 set) - should return error
+        let data = create_entry_data(0xFFFFFFF8);
+        let result = MetadataTableEntry::from_bytes(&data);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            VhdxError::InvalidMetadata(msg) => {
+                assert!(msg.contains("Reserved bits"));
+            }
+            _ => panic!("Expected InvalidMetadata error"),
+        }
+    }
+
+    #[test]
+    fn test_all_flags_combinations() {
+        // Test various flag combinations
+        let test_cases = [
+            (0x0, false, false, false),
+            (0x1, false, false, true), // is_user
+            (0x2, false, true, false), // is_virtual_disk
+            (0x3, false, true, true),  // is_user + is_virtual_disk
+            (0x4, true, false, false), // is_required
+            (0x5, true, false, true),  // is_required + is_user
+            (0x6, true, true, false),  // is_required + is_virtual_disk
+            (0x7, true, true, true),   // all flags set
+        ];
+
+        for (flags, expected_required, expected_virtual, expected_user) in test_cases {
+            let data = create_entry_data(flags);
+            let entry = MetadataTableEntry::from_bytes(&data).unwrap();
+            assert_eq!(entry.is_required, expected_required, "flags={:#x}", flags);
+            assert_eq!(
+                entry.is_virtual_disk, expected_virtual,
+                "flags={:#x}",
+                flags
+            );
+            assert_eq!(entry.is_user, expected_user, "flags={:#x}", flags);
+        }
+    }
+
+    #[test]
+    fn test_high_reserved_bits_error() {
+        // Test that high reserved bits (16-31) cause error
+        let data = create_entry_data(0xFFFF0000);
+        let result = MetadataTableEntry::from_bytes(&data);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            VhdxError::InvalidMetadata(msg) => {
+                assert!(msg.contains("Reserved bits"));
+            }
+            _ => panic!("Expected InvalidMetadata error"),
+        }
     }
 }
