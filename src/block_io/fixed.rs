@@ -3,7 +3,7 @@
 //! Optimized block I/O implementation for fixed-size VHDX disks
 //! where all blocks are pre-allocated.
 
-use crate::bat::{Bat, BatEntry, PayloadBlockState};
+use crate::bat::Bat;
 use crate::error::{Result, VhdxError};
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -103,9 +103,6 @@ impl<'a> FixedBlockIo<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::io::Cursor;
-
     #[test]
     fn test_fixed_block_io_new() {
         // Basic test that FixedBlockIo can be created

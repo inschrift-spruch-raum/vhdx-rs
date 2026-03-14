@@ -320,8 +320,6 @@ impl<'a> DifferencingBlockIo<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_differencing_block_io_new() {
         // Basic test that DifferencingBlockIo can be created

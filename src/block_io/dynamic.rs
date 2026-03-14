@@ -272,8 +272,6 @@ impl<'a> DynamicBlockIo<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_dynamic_block_io_new() {
         // Basic test that DynamicBlockIo can be created

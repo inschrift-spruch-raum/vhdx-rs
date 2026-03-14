@@ -6,8 +6,6 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use byteorder::LittleEndian;
-
 use crate::bat::Bat;
 use crate::block_io::{DynamicBlockIo, FixedBlockIo};
 use crate::common::Guid;
@@ -21,6 +19,7 @@ use crate::metadata::MetadataRegion;
 use super::DiskType;
 
 /// VHDX file handle
+#[allow(dead_code)]
 pub struct VhdxFile {
     /// Underlying file
     pub(crate) file: File,

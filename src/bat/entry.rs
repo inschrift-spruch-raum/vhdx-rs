@@ -1,6 +1,6 @@
 //! BAT Entry structure and bit operations
 
-use crate::error::{Result, VhdxError};
+use crate::error::Result;
 use byteorder::{ByteOrder, LittleEndian};
 
 use super::states::PayloadBlockState;

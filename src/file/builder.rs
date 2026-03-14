@@ -135,14 +135,14 @@ impl VhdxBuilder {
         let header_size = 1024 * 1024; // 1MB header section
         let metadata_size = 1024 * 1024; // 1MB metadata
         let bat_size = ((num_bat_entries * 8 + 1024 * 1024 - 1) / (1024 * 1024)) * (1024 * 1024); // 1MB aligned
-        let log_size = 0u64; // No separate log region - embedded in header
+        let _log_size = 0u64; // No separate log region - embedded in header
 
         let metadata_offset = header_size * 2; // Metadata at 2MB
         let bat_offset = metadata_offset + metadata_size; // BAT after metadata (3MB)
         let data_offset = bat_offset + bat_size; // Payload data after BAT
 
         // Calculate file size
-        let file_size = if self.disk_type == DiskType::Fixed {
+        let _file_size = if self.disk_type == DiskType::Fixed {
             // Fixed disk: allocate all payload blocks upfront
             data_offset + num_payload_blocks * self.block_size as u64
         } else {
@@ -187,7 +187,7 @@ impl VhdxBuilder {
         // Region Table Header
         let region_entry_size = 32;
         let region_header_size = 16;
-        let region_data_size = region_header_size + 2 * region_entry_size; // 2 entries: BAT and Metadata
+        let _region_data_size = region_header_size + 2 * region_entry_size; // 2 entries: BAT and Metadata
 
         let mut region_data = vec![0u8; 64 * 1024]; // 64KB region table
 
@@ -367,7 +367,7 @@ impl VhdxBuilder {
         metadata_entries.push((vdi_guid, vdi_entry_offset, 16u32));
         metadata_data[current_data_offset..current_data_offset + 16]
             .copy_from_slice(&virtual_disk_id.to_bytes());
-        current_data_offset += 16;
+        let _ = current_data_offset + 16; // Suppress unused assignment warning
 
         // Write metadata entries table (at offset 32, right after header)
         let entries_start = 32; // After 32-byte header
