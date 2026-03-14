@@ -66,4 +66,7 @@ pub enum VhdxError {
 
     #[error("Alignment error: {0} is not aligned to {1}")]
     Alignment(u64, u64),
+
+    #[error("Unknown required metadata item: {guid}")]
+    UnknownRequiredMetadata { guid: String },
 }

@@ -1,41 +1,32 @@
-## IsRequired Flag Implementation (Task 1)
+## Metadata Whitelist Implementation (Task 2)
 
 **Date**: 2026-03-15
-**Task**: Add IsRequired flag parsing to MetadataTableEntry
+**Task**: Add known required metadata whitelist validation
 
 ### Implementation Details
 
-1. **Added field to struct**: `is_required: bool` to MetadataTableEntry in src/metadata/table.rs
+1. **Whitelist defined**: `KNOWN_REQUIRED_METADATA_GUIDS` const array with all 6 known required metadata GUIDs
+   - File Parameters, Virtual Disk Size, Virtual Disk ID
+   - Logical Sector Size, Physical Sector Size, Parent Locator
 
-2. **Flag parsing**: Extracted bit 2 from flags field using: `let is_required = flags \& 0x4 != 0;`
+2. **Validation added**: In `MetadataRegion::from_bytes()`, checks each entry:
+   - If `entry.is_required && !KNOWN_REQUIRED_METADATA_GUIDS.contains(&entry.item_id)` → return `UnknownRequiredMetadata` error
+   - Unknown non-required metadata is allowed (ignored per spec)
 
-3. **Reserved bits validation**: Added validation for bits 3-31:
-   - Check: `flags \& 0xFFFFFFF8 != 0`
-   - Returns: `VhdxError::InvalidMetadata` if non-zero
-   - Ensures forward compatibility per MS-VHDX spec
+3. **Error variant**: Added `UnknownRequiredMetadata { guid: String }` to `VhdxError`
 
-4. **Test coverage**: Added 5 unit tests:
-   - test_is_required_true: flags=0x00000004
-   - test_is_required_false: flags=0x00000000
-   - test_reserved_bits_error: flags=0xFFFFFFF8
-   - test_all_flags_combinations: tests all 8 valid combinations (0x0-0x7)
-   - test_high_reserved_bits_error: flags=0xFFFF0000
+4. **Test coverage**: 5 unit tests:
+   - Known required metadata passes
+   - Unknown required metadata rejected
+   - Unknown non-required metadata allowed
+   - Mixed metadata entries
+   - All 6 known GUIDs pass
 
-### Pattern Learned
+### Key Learning
 
-Follow existing flag parsing pattern in codebase:
-- Use bitwise AND with mask for each flag bit
-- Validate reserved bits immediately after parsing
-- Return InvalidMetadata error for reserved bit violations
-- Test boundary cases: all flags false, individual flags, all valid flags, reserved bits set
+**GUID byte order matters**: When creating test data with GUID bytes, must match the actual `Uuid::from_bytes_le()` byte order in the constants. The test initially failed because the byte arrays didn't match the actual constant values.
 
 ### MS-VHDX Spec Reference
 
-Section 2.2 (Metadata Table Entry):
-- Bit 0: IsUser
-- Bit 1: IsVirtualDisk
-- Bit 2: IsRequired (NEW)
-- Bits 3-31: Reserved (must be 0)
-
-IsRequired flag significance: "If this field is set to True and the implementation does not recognize this metadata item, the implementation MUST fail to load the file."
+Section 2.2: "If IsRequired is set to True and the implementation does not recognize this metadata item, the implementation MUST fail to load the file."
 
