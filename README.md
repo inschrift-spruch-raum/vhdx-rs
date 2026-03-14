@@ -1,6 +1,8 @@
 # vhdx-rs - VHDX (Virtual Hard Disk v2) Library for Rust
 
 纯 Rust 实现的 VHDX 虚拟磁盘文件格式库，完整支持 Microsoft MS-VHDX 规范。
+> 📋 **[MS-VHDX v20240423 标准合规实现总结](./docs/VHDX-Compliance-Summary.md)** - 查看详细的合规性实现报告
+
 
 ## 功能特性
 
