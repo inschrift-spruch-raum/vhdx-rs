@@ -218,3 +218,65 @@ let parent_vhdx = Self::open_internal(parent_full_path, true, &new_chain_state)?
 
 All 79 tests pass (73 unit + 6 integration), no compiler warnings.
 
+
+## Task 6: Block Size Power-of-2 Validation
+
+**Date**: 2026-03-15
+**Task**: Fix block size validation to enforce power-of-2 requirement per MS-VHDX Section 2.2.2
+
+### Implementation Summary
+
+Updated block size validation to enforce MS-VHDX Section 2.2.2 requirements:
+- Block size MUST be power of 2
+- Block size MUST be between 1MB and 256MB inclusive
+
+### Changes Made
+
+1. **src/error.rs**: Added new error variant
+   ```rust
+   #[error("Invalid block size: {0} (must be power of 2, 1MB-256MB)")]
+   InvalidBlockSize(u32),
+   ```
+
+2. **src/metadata/file_parameters.rs**: Updated `from_bytes()` validation
+   - Replaced 1MB-aligned check with power-of-2 check
+   - Uses bit manipulation: `block_size & (block_size - 1) != 0`
+   - Enforces range: 1MB to 256MB inclusive
+
+3. **src/file/builder.rs**: Updated `create()` validation
+   - Same power-of-2 and range checks
+   - Returns `InvalidBlockSize` error instead of `InvalidMetadata`
+
+4. **Unit Tests Added** (4 new tests):
+   - `test_valid_block_sizes`: All powers of 2 from 1MB to 256MB
+   - `test_invalid_block_size_non_power_of_2`: Rejects 3MB, 5MB, 6MB, etc.
+   - `test_invalid_block_size_below_min`: Rejects <1MB
+   - `test_invalid_block_size_above_max`: Rejects >256MB
+
+### Key Learning
+
+Power-of-2 check using bitwise AND is more efficient than modulo:
+```rust
+// Power of 2: only one bit set
+if block_size & (block_size - 1) != 0 {
+    // Not power of 2
+}
+```
+
+### MS-VHDX Spec Reference
+
+Section 2.2.2: "BlockSize (4 bytes): The size of each payload block in bytes. The value MUST be at least 1 MB and not greater than 256 MB, and MUST be a power of 2."
+
+Valid values: 1, 2, 4, 8, 16, 32, 64, 128, 256 MB
+
+### Files Modified
+
+- `src/error.rs`
+- `src/metadata/file_parameters.rs`
+- `src/file/builder.rs`
+
+### Verification
+
+- All 77 unit tests pass
+- All 6 integration tests pass
+- No compiler warnings
