@@ -35,19 +35,18 @@ impl FileParameters {
         let leave_block_allocated = flags & 0x1 != 0;
         let has_parent = flags & 0x2 != 0;
 
-        // Validate block size (1MB to 256MB, must be 1MB multiple)
-        if block_size < 1024 * 1024 || block_size > 256 * 1024 * 1024 {
-            return Err(VhdxError::InvalidMetadata(format!(
-                "Invalid block size: {}",
-                block_size
-            )));
+        // Validate block size per MS-VHDX Section 2.2.2:
+        // Must be power of 2, between 1MB and 256MB inclusive
+        const MIN_BLOCK_SIZE: u32 = 1024 * 1024; // 1MB
+        const MAX_BLOCK_SIZE: u32 = 256 * 1024 * 1024; // 256MB
+
+        if block_size < MIN_BLOCK_SIZE || block_size > MAX_BLOCK_SIZE {
+            return Err(VhdxError::InvalidBlockSize(block_size));
         }
 
-        if block_size % (1024 * 1024) != 0 {
-            return Err(VhdxError::InvalidMetadata(format!(
-                "Block size {} not 1MB aligned",
-                block_size
-            )));
+        // Check power of 2: only one bit set
+        if block_size & (block_size - 1) != 0 {
+            return Err(VhdxError::InvalidBlockSize(block_size));
         }
 
         Ok(FileParameters {
@@ -83,5 +82,126 @@ mod tests {
         let params = FileParameters::from_bytes(&data).unwrap();
         assert_eq!(params.block_size, 32 * 1024 * 1024);
         assert!(params.has_parent);
+    }
+
+    #[test]
+    fn test_valid_block_sizes() {
+        // Test all valid powers of 2 from 1MB to 256MB
+        let valid_sizes = vec![
+            1024 * 1024,       // 1MB
+            2 * 1024 * 1024,   // 2MB
+            4 * 1024 * 1024,   // 4MB
+            8 * 1024 * 1024,   // 8MB
+            16 * 1024 * 1024,  // 16MB
+            32 * 1024 * 1024,  // 32MB
+            64 * 1024 * 1024,  // 64MB
+            128 * 1024 * 1024, // 128MB
+            256 * 1024 * 1024, // 256MB
+        ];
+
+        for block_size in valid_sizes {
+            let mut data = vec![0u8; 16];
+            LittleEndian::write_u32(&mut data[0..4], block_size);
+            LittleEndian::write_u32(&mut data[4..8], 0);
+
+            let result = FileParameters::from_bytes(&data);
+            assert!(
+                result.is_ok(),
+                "Block size {} (power of 2) should be valid",
+                block_size
+            );
+        }
+    }
+
+    #[test]
+    fn test_invalid_block_size_non_power_of_2() {
+        // Test non-power-of-2 values that should be rejected
+        let invalid_sizes = vec![
+            3 * 1024 * 1024,   // 3MB
+            5 * 1024 * 1024,   // 5MB
+            6 * 1024 * 1024,   // 6MB
+            7 * 1024 * 1024,   // 7MB
+            9 * 1024 * 1024,   // 9MB
+            100 * 1024 * 1024, // 100MB
+        ];
+
+        for block_size in invalid_sizes {
+            let mut data = vec![0u8; 16];
+            LittleEndian::write_u32(&mut data[0..4], block_size);
+            LittleEndian::write_u32(&mut data[4..8], 0);
+
+            let result = FileParameters::from_bytes(&data);
+            assert!(
+                result.is_err(),
+                "Block size {} (not power of 2) should be rejected",
+                block_size
+            );
+            match result {
+                Err(VhdxError::InvalidBlockSize(size)) => {
+                    assert_eq!(size, block_size);
+                }
+                _ => panic!("Expected InvalidBlockSize error"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalid_block_size_below_min() {
+        // Test values below 1MB minimum
+        let invalid_sizes = vec![
+            512 * 1024, // 512KB
+            100 * 1024, // 100KB
+            1,          // 1 byte
+            1024,       // 1KB
+        ];
+
+        for block_size in invalid_sizes {
+            let mut data = vec![0u8; 16];
+            LittleEndian::write_u32(&mut data[0..4], block_size);
+            LittleEndian::write_u32(&mut data[4..8], 0);
+
+            let result = FileParameters::from_bytes(&data);
+            assert!(
+                result.is_err(),
+                "Block size {} (below 1MB) should be rejected",
+                block_size
+            );
+            match result {
+                Err(VhdxError::InvalidBlockSize(size)) => {
+                    assert_eq!(size, block_size);
+                }
+                _ => panic!("Expected InvalidBlockSize error"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalid_block_size_above_max() {
+        // Test values above 256MB maximum
+        let invalid_sizes = vec![
+            512 * 1024 * 1024,  // 512MB
+            1024 * 1024 * 1024, // 1GB
+            257 * 1024 * 1024,  // 257MB
+            u32::MAX,
+        ];
+
+        for block_size in invalid_sizes {
+            let mut data = vec![0u8; 16];
+            LittleEndian::write_u32(&mut data[0..4], block_size);
+            LittleEndian::write_u32(&mut data[4..8], 0);
+
+            let result = FileParameters::from_bytes(&data);
+            assert!(
+                result.is_err(),
+                "Block size {} (above 256MB) should be rejected",
+                block_size
+            );
+            match result {
+                Err(VhdxError::InvalidBlockSize(size)) => {
+                    assert_eq!(size, block_size);
+                }
+                _ => panic!("Expected InvalidBlockSize error"),
+            }
+        }
     }
 }

@@ -89,17 +89,17 @@ impl VhdxBuilder {
             ));
         }
 
-        // Block size must be 1MB to 256MB and 1MB aligned
-        if self.block_size < 1024 * 1024 || self.block_size > 256 * 1024 * 1024 {
-            return Err(VhdxError::InvalidMetadata(format!(
-                "Block size {} out of range (1MB-256MB)",
-                self.block_size
-            )));
+        // Block size must be power of 2, 1MB to 256MB per MS-VHDX Section 2.2.2
+        const MIN_BLOCK_SIZE: u32 = 1024 * 1024; // 1MB
+        const MAX_BLOCK_SIZE: u32 = 256 * 1024 * 1024; // 256MB
+
+        if self.block_size < MIN_BLOCK_SIZE || self.block_size > MAX_BLOCK_SIZE {
+            return Err(VhdxError::InvalidBlockSize(self.block_size));
         }
-        if self.block_size % (1024 * 1024) != 0 {
-            return Err(VhdxError::InvalidMetadata(
-                "Block size must be 1MB aligned".to_string(),
-            ));
+
+        // Check power of 2: only one bit set
+        if self.block_size & (self.block_size - 1) != 0 {
+            return Err(VhdxError::InvalidBlockSize(self.block_size));
         }
 
         // Sector sizes must be 512 or 4096
