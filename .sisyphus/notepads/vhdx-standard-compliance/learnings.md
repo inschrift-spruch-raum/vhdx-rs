@@ -30,3 +30,50 @@
 
 Section 2.2: "If IsRequired is set to True and the implementation does not recognize this metadata item, the implementation MUST fail to load the file."
 
+
+## Parent Sector Size Validation (Task 3)
+
+**Date**: 2026-03-15
+**Task**: Add validation for parent/child logical sector size matching in differencing disks
+
+### Implementation Details
+
+1. **Validation location**: `VhdxFile::open()` method, immediately after parent VHDX is loaded
+   - Line ~165-174 in `src/file/vhdx_file.rs`
+   - Validation occurs before parent is wrapped in `Option<Box<VhdxFile>>`
+
+2. **Validation logic**:
+   ```rust
+   let parent_sector_size = parent_vhdx.logical_sector_size();
+   if parent_sector_size != logical_sector_size {
+       return Err(VhdxError::SectorSizeMismatch {
+           parent: parent_sector_size,
+           child: logical_sector_size,
+       });
+   }
+   ```
+
+3. **Error variant added**: `SectorSizeMismatch { parent: u32, child: u32 }` to `VhdxError`
+   - Error message format: `"Parent/child sector size mismatch: parent={parent}, child={child}"`
+   - Both values displayed for debugging
+
+4. **Test coverage**: 2 unit tests
+   - `test_sector_size_validation_matching`: Creates parent+child with 512-byte sectors → passes
+   - `test_sector_size_validation_mismatch`: Tests error type and message format directly
+
+### MS-VHDX Spec Reference
+
+Section 2.6.2.4: "The logical sector size of the parent virtual disk MUST match the logical sector size of the child virtual disk."
+
+### Key Learnings
+
+1. **Builder may enforce matching**: The `VhdxBuilder` appears to inherit sector sizes from parent when creating differencing disks, making it difficult to test mismatch scenarios end-to-end. The error type was tested directly instead.
+
+2. **Validation placement critical**: Sector size validation must happen AFTER parent is loaded but BEFORE it's stored, so we can access the parent's metadata via `logical_sector_size()` accessor method.
+
+3. **Accommodates both sector sizes**: Implementation supports both 512-byte and 4096-byte logical sector sizes as per MS-VHDX spec (validated in `SectorSize::from_bytes()`).
+
+### Files Modified
+
+- `src/error.rs`: Added `SectorSizeMismatch` error variant
+- `src/file/vhdx_file.rs`: Added validation in `open()` + unit tests

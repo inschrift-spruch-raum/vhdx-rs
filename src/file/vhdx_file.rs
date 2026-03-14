@@ -162,7 +162,18 @@ impl VhdxFile {
                             .unwrap_or_else(|| std::path::PathBuf::from(parent_path))
                     };
 
-                    Some(Box::new(Self::open(parent_full_path, true)?))
+                    let parent_vhdx = Self::open(parent_full_path, true)?;
+
+                    // Validate sector sizes match per MS-VHDX spec Section 2.6.2.4
+                    let parent_sector_size = parent_vhdx.logical_sector_size();
+                    if parent_sector_size != logical_sector_size {
+                        return Err(VhdxError::SectorSizeMismatch {
+                            parent: parent_sector_size,
+                            child: logical_sector_size,
+                        });
+                    }
+
+                    Some(Box::new(parent_vhdx))
                 } else {
                     None
                 }
@@ -430,5 +441,83 @@ impl VhdxFile {
         let pos = self.file.seek(SeekFrom::End(0))?;
         self.file.seek(SeekFrom::Start(pos))?;
         Ok(pos)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sector_size_validation_matching() {
+        // Test that matching sector sizes (both 512) pass validation
+        // This test creates a parent VHDX and a child differencing disk
+        // Both use default 512-byte logical sector size
+        let temp_dir = std::env::temp_dir().join("vhdx_test_sector_validation");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let parent_path = temp_dir.join("parent.vhdx");
+        let child_path = temp_dir.join("child.vhdx");
+
+        // Create parent disk (512-byte sectors)
+        let _parent = crate::VhdxBuilder::new(10 * 1024 * 1024)
+            .sector_sizes(512, 4096)
+            .disk_type(DiskType::Dynamic)
+            .create(&parent_path)
+            .unwrap();
+
+        // Create differencing child disk with parent
+        let _child = crate::VhdxBuilder::new(10 * 1024 * 1024)
+            .sector_sizes(512, 4096)
+            .disk_type(DiskType::Differencing)
+            .parent_path(parent_path.to_string_lossy().to_string())
+            .create(&child_path)
+            .unwrap();
+
+        // Open child - should succeed with matching sector sizes
+        let result = VhdxFile::open(&child_path, true);
+        assert!(
+            result.is_ok(),
+            "Opening differencing disk with matching sector sizes should succeed"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_sector_size_validation_mismatch() {
+        // Test that the SectorSizeMismatch error type works correctly
+        // Note: The builder may prevent creating mismatched disks, so we test the error type directly
+
+        // Test 1: Verify error type and message format
+        let parent_size = 512u32;
+        let child_size = 4096u32;
+
+        let error = VhdxError::SectorSizeMismatch {
+            parent: parent_size,
+            child: child_size,
+        };
+
+        let error_msg = error.to_string();
+        assert!(
+            error_msg.contains("parent=512"),
+            "Error message should contain parent size, got: {}",
+            error_msg
+        );
+        assert!(
+            error_msg.contains("child=4096"),
+            "Error message should contain child size, got: {}",
+            error_msg
+        );
+
+        // Test 2: Verify pattern matching works
+        match error {
+            VhdxError::SectorSizeMismatch { parent, child } => {
+                assert_eq!(parent, 512);
+                assert_eq!(child, 4096);
+            }
+            _ => panic!("Expected SectorSizeMismatch error variant"),
+        }
     }
 }

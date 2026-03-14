@@ -55,6 +55,9 @@ pub enum VhdxError {
     #[error("Parent GUID mismatch")]
     ParentGuidMismatch,
 
+    #[error("Parent/child sector size mismatch: parent={parent}, child={child}")]
+    SectorSizeMismatch { parent: u32, child: u32 },
+
     #[error("Invalid sector bitmap")]
     InvalidSectorBitmap,
 
