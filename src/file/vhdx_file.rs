@@ -2,6 +2,7 @@
 //!
 //! Provides file-level operations like open, read, write, and metadata queries.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -17,6 +18,49 @@ use crate::log::LogReplayer;
 use crate::metadata::MetadataRegion;
 
 use super::DiskType;
+
+/// Maximum allowed parent chain depth to prevent DoS attacks
+const MAX_PARENT_CHAIN_DEPTH: usize = 16;
+
+/// State tracked during parent chain traversal to detect cycles and limit depth
+#[derive(Debug, Clone)]
+struct ParentChainState {
+    /// Set of disk GUIDs already visited in this chain
+    visited_guids: HashSet<Guid>,
+    /// Current depth in the parent chain (0 = root)
+    depth: usize,
+}
+
+impl ParentChainState {
+    /// Create initial state for root disk
+    fn new() -> Self {
+        Self {
+            visited_guids: HashSet::new(),
+            depth: 0,
+        }
+    }
+
+    /// Check if we can proceed to load a parent with the given disk GUID
+    /// Returns error if cycle detected or max depth exceeded
+    fn check_and_update(&self, disk_guid: Guid) -> Result<Self> {
+        // Check for circular reference
+        if self.visited_guids.contains(&disk_guid) {
+            return Err(VhdxError::CircularParentChain);
+        }
+
+        // Check depth limit
+        if self.depth >= MAX_PARENT_CHAIN_DEPTH {
+            return Err(VhdxError::ParentChainTooDeep { depth: self.depth });
+        }
+
+        // Create new state for parent level
+        let mut new_state = self.clone();
+        new_state.visited_guids.insert(disk_guid);
+        new_state.depth += 1;
+
+        Ok(new_state)
+    }
+}
 
 /// Parse a GUID string in the format "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 fn parse_guid_string(s: &str) -> Result<Guid> {
@@ -70,6 +114,15 @@ impl VhdxFile {
     ///
     /// This will replay the log if necessary.
     pub fn open<P: AsRef<Path>>(path: P, read_only: bool) -> Result<Self> {
+        Self::open_internal(path, read_only, &ParentChainState::new())
+    }
+
+    /// Internal open method with parent chain tracking
+    fn open_internal<P: AsRef<Path>>(
+        path: P,
+        read_only: bool,
+        chain_state: &ParentChainState,
+    ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let mut file = if read_only {
             File::open(&path)?
@@ -170,7 +223,11 @@ impl VhdxFile {
                             .unwrap_or_else(|| std::path::PathBuf::from(parent_path))
                     };
 
-                    let parent_vhdx = Self::open(parent_full_path, true)?;
+                    // Check for circular parent chain and depth limit
+                    let new_chain_state = chain_state.check_and_update(virtual_disk_id)?;
+
+                    let parent_vhdx =
+                        Self::open_internal(parent_full_path, true, &new_chain_state)?;
 
                     // Validate sector sizes match per MS-VHDX spec Section 2.6.2.4
                     let parent_sector_size = parent_vhdx.logical_sector_size();
@@ -636,5 +693,207 @@ mod tests {
         let empty_str = "";
         let result2 = parse_guid_string(empty_str);
         assert!(result2.is_err(), "Parsing empty string should fail");
+    }
+
+    #[test]
+    fn test_valid_parent_chain_depth_3() {
+        // Test that a valid parent chain of depth 3 (Grandchild -> Child -> Parent) passes
+        let temp_dir = std::env::temp_dir().join("vhdx_test_chain_depth_3");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let parent_path = temp_dir.join("parent.vhdx");
+        let child_path = temp_dir.join("child.vhdx");
+        let grandchild_path = temp_dir.join("grandchild.vhdx");
+
+        // Create parent disk
+        let _parent = crate::VhdxBuilder::new(10 * 1024 * 1024)
+            .disk_type(DiskType::Dynamic)
+            .create(&parent_path)
+            .unwrap();
+
+        // Create child disk pointing to parent
+        let _child = crate::VhdxBuilder::new(10 * 1024 * 1024)
+            .disk_type(DiskType::Differencing)
+            .parent_path(parent_path.to_string_lossy().to_string())
+            .create(&child_path)
+            .unwrap();
+
+        // Create grandchild disk pointing to child
+        let _grandchild = crate::VhdxBuilder::new(10 * 1024 * 1024)
+            .disk_type(DiskType::Differencing)
+            .parent_path(child_path.to_string_lossy().to_string())
+            .create(&grandchild_path)
+            .unwrap();
+
+        // Open grandchild - should succeed with chain depth 3
+        let result = VhdxFile::open(&grandchild_path, true);
+        assert!(
+            result.is_ok(),
+            "Opening grandchild disk with valid parent chain (depth 3) should succeed, got: {:?}",
+            result.err()
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_circular_parent_chain() {
+        // Test that circular parent chain (A -> B -> C -> A) is detected and rejected
+        let temp_dir = std::env::temp_dir().join("vhdx_test_circular_chain");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let disk_a_path = temp_dir.join("disk_a.vhdx");
+        let disk_b_path = temp_dir.join("disk_b.vhdx");
+
+        // Create disk A (root)
+        let disk_a = crate::VhdxBuilder::new(10 * 1024 * 1024)
+            .disk_type(DiskType::Dynamic)
+            .create(&disk_a_path)
+            .unwrap();
+
+        let disk_a_guid = disk_a.virtual_disk_id().to_string();
+
+        // Create disk B pointing to A
+        let _disk_b = crate::VhdxBuilder::new(10 * 1024 * 1024)
+            .disk_type(DiskType::Differencing)
+            .parent_path(disk_a_path.to_string_lossy().to_string())
+            .create(&disk_b_path)
+            .unwrap();
+
+        // Now we need to modify disk A to point back to B to create a cycle
+        // This requires manually editing the parent locator in disk A
+        // We'll do this by creating a corrupted VHDX file structure
+
+        // For this test, we'll use a different approach:
+        // Create a mock scenario by directly testing the ParentChainState
+        let mut chain_state = ParentChainState::new();
+
+        // Simulate visiting disk A
+        let guid_a = crate::common::Guid::from(uuid::Uuid::parse_str(&disk_a_guid).unwrap());
+        let result = chain_state.check_and_update(guid_a);
+        assert!(result.is_ok(), "First update should succeed");
+        chain_state = result.unwrap();
+
+        // Simulate visiting disk B (different GUID)
+        let guid_b = crate::common::Guid::from(uuid::Uuid::new_v4());
+        let result = chain_state.check_and_update(guid_b);
+        assert!(result.is_ok(), "Second update should succeed");
+        chain_state = result.unwrap();
+
+        // Simulate visiting disk C (different GUID)
+        let guid_c = crate::common::Guid::from(uuid::Uuid::new_v4());
+        let result = chain_state.check_and_update(guid_c);
+        assert!(result.is_ok(), "Third update should succeed");
+        chain_state = result.unwrap();
+
+        // Now try to visit disk A again - should fail with CircularParentChain
+        let result = chain_state.check_and_update(guid_a);
+        assert!(
+            result.is_err(),
+            "Re-visiting disk A should fail with circular chain error"
+        );
+        match result.unwrap_err() {
+            VhdxError::CircularParentChain => {
+                // Expected
+            }
+            other => panic!("Expected CircularParentChain error, got {:?}", other),
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_parent_chain_too_deep() {
+        // Test that parent chain exceeding max depth (16) is rejected
+        let mut chain_state = ParentChainState::new();
+
+        // Simulate going through 16 disks (should succeed)
+        for i in 0..MAX_PARENT_CHAIN_DEPTH {
+            let guid = crate::common::Guid::from(uuid::Uuid::new_v4());
+            let result = chain_state.check_and_update(guid);
+            assert!(
+                result.is_ok(),
+                "Chain depth {} should succeed (max {})",
+                i + 1,
+                MAX_PARENT_CHAIN_DEPTH
+            );
+            chain_state = result.unwrap();
+        }
+
+        // The 17th disk should fail
+        let guid_17 = crate::common::Guid::from(uuid::Uuid::new_v4());
+        let result = chain_state.check_and_update(guid_17);
+        assert!(
+            result.is_err(),
+            "Chain depth {} should fail (exceeds max {})",
+            MAX_PARENT_CHAIN_DEPTH + 1,
+            MAX_PARENT_CHAIN_DEPTH
+        );
+        match result.unwrap_err() {
+            VhdxError::ParentChainTooDeep { depth } => {
+                assert_eq!(
+                    depth, MAX_PARENT_CHAIN_DEPTH,
+                    "Error should report current depth as {}",
+                    MAX_PARENT_CHAIN_DEPTH
+                );
+            }
+            other => panic!("Expected ParentChainTooDeep error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parent_chain_state_new() {
+        // Test that new ParentChainState has empty visited_guids and depth 0
+        let state = ParentChainState::new();
+        assert_eq!(state.depth, 0);
+        assert!(state.visited_guids.is_empty());
+    }
+
+    #[test]
+    fn test_circular_parent_chain_error_format() {
+        // Test that the CircularParentChain error type works correctly
+        let error = VhdxError::CircularParentChain;
+        let error_msg = error.to_string();
+        assert!(
+            error_msg.contains("Circular"),
+            "Error message should mention 'Circular', got: {}",
+            error_msg
+        );
+
+        // Test pattern matching
+        match error {
+            VhdxError::CircularParentChain => {
+                // Expected
+            }
+            _ => panic!("Expected CircularParentChain error variant"),
+        }
+    }
+
+    #[test]
+    fn test_parent_chain_too_deep_error_format() {
+        // Test that the ParentChainTooDeep error type works correctly
+        let depth = 17;
+        let error = VhdxError::ParentChainTooDeep { depth };
+        let error_msg = error.to_string();
+        assert!(
+            error_msg.contains(&format!("{}", depth)),
+            "Error message should contain depth, got: {}",
+            error_msg
+        );
+        assert!(
+            error_msg.contains("max 16"),
+            "Error message should mention 'max 16', got: {}",
+            error_msg
+        );
+
+        // Test pattern matching
+        match error {
+            VhdxError::ParentChainTooDeep { depth: d } => {
+                assert_eq!(d, 17);
+            }
+            _ => panic!("Expected ParentChainTooDeep error variant"),
+        }
     }
 }

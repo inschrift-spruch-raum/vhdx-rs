@@ -75,4 +75,10 @@ pub enum VhdxError {
 
     #[error("Unknown required metadata item: {guid}")]
     UnknownRequiredMetadata { guid: String },
+
+    #[error("Circular parent chain detected")]
+    CircularParentChain,
+
+    #[error("Parent chain too deep: {depth} (max 16)")]
+    ParentChainTooDeep { depth: usize },
 }

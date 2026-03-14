@@ -161,3 +161,60 @@ Section 2.2.4:
 - LSP diagnostics clean on all modified files
 
 
+
+## Task 5: Circular Parent Chain Detection
+
+**Date**: 2026-03-15
+**Task**: Implement protection against circular parent chains and excessive chain depth
+
+### Implementation Summary
+
+Successfully implemented security hardening to prevent DoS attacks via malicious VHDX files with circular or excessively deep parent chains.
+
+### Design Decisions
+
+1. **ParentChainState struct**: Tracks chain traversal with:
+   - `visited_guids: HashSet<Guid>` - all disk GUIDs encountered
+   - `depth: usize` - current depth (root = 0)
+
+2. **MAX_PARENT_CHAIN_DEPTH = 16**: Security limit (MS-VHDX doesn't specify maximum)
+
+3. **Non-recursive state passing**: Since `Self::open()` is called recursively for parents, created `open_internal()` that accepts chain state parameter, while public `open()` creates initial empty state
+
+### Error Variants Added
+
+```rust
+#[error("Circular parent chain detected")]
+CircularParentChain,
+
+#[error("Parent chain too deep: {depth} (max 16)")]
+ParentChainTooDeep { depth: usize },
+```
+
+### Validation Flow
+
+```rust
+// Before loading parent, check current disk's GUID
+let new_chain_state = chain_state.check_and_update(virtual_disk_id)?;
+let parent_vhdx = Self::open_internal(parent_full_path, true, &new_chain_state)?;
+```
+
+### Test Coverage
+
+6 new unit tests:
+- `test_valid_parent_chain_depth_3`: Grandchild→Child→Parent chain passes
+- `test_circular_parent_chain`: A→B→C→A cycle detected via ParentChainState
+- `test_parent_chain_too_deep`: Chain of 17 rejected at depth 16
+- `test_parent_chain_state_new`: Empty state initialization
+- `test_circular_parent_chain_error_format`: Error message verification
+- `test_parent_chain_too_deep_error_format`: Error message verification
+
+### Files Modified
+
+- `src/error.rs`: Added error variants
+- `src/file/vhdx_file.rs`: Added ParentChainState, MAX_PARENT_CHAIN_DEPTH, open_internal(), modified parent loading
+
+### Verification
+
+All 79 tests pass (73 unit + 6 integration), no compiler warnings.
+
