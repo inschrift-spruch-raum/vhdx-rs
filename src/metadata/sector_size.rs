@@ -2,7 +2,7 @@
 //!
 //! Contains logical and physical sector size information.
 
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use byteorder::{ByteOrder, LittleEndian};
 use uuid::Uuid;
 
@@ -36,16 +36,14 @@ impl SectorSize {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 4 {
-            return Err(VhdxError::InvalidMetadata(
-                "SectorSize too small".to_string(),
-            ));
+            return Err(Error::InvalidMetadata("SectorSize too small".to_string(),));
         }
 
         let size = LittleEndian::read_u32(&data[0..4]);
 
         // Only 512 or 4096 are valid
         if size != 512 && size != 4096 {
-            return Err(VhdxError::InvalidMetadata(format!(
+            return Err(Error::InvalidMetadata(format!(
                 "Invalid sector size: {}. Must be 512 or 4096",
                 size
             )));

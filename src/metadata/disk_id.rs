@@ -3,7 +3,7 @@
 //! Contains the unique GUID identifier for the virtual disk.
 
 use crate::common::guid::Guid;
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use uuid::Uuid;
 
 /// Virtual Disk ID GUID: BECA12AB-B2E6-4523-93EF-C309E000C746
@@ -21,9 +21,7 @@ impl VirtualDiskId {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 16 {
-            return Err(VhdxError::InvalidMetadata(
-                "VirtualDiskId too small".to_string(),
-            ));
+            return Err(Error::InvalidMetadata("VirtualDiskId too small".to_string(),));
         }
 
         let mut guid = [0u8; 16];

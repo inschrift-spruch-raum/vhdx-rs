@@ -1,6 +1,6 @@
 //! Block Allocation Table (BAT) structure
 
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use byteorder::{ByteOrder, LittleEndian};
 
 use super::entry::BatEntry;
@@ -71,7 +71,7 @@ impl Bat {
         for i in 0..expected_entries {
             let offset = i as usize * 8;
             if offset + 8 > data.len() {
-                return Err(VhdxError::InvalidBatEntry);
+                return Err(Error::InvalidBatEntry);
             }
             let raw = LittleEndian::read_u64(&data[offset..offset + 8]);
             let entry = BatEntry::from_raw(raw)?;
@@ -165,7 +165,7 @@ impl Bat {
     /// Returns None if block is not present (should read zeros)
     pub fn translate(&self, virtual_offset: u64) -> Result<Option<u64>> {
         if virtual_offset >= self.virtual_disk_size {
-            return Err(VhdxError::InvalidOffset(virtual_offset));
+            return Err(Error::InvalidOffset(virtual_offset));
         }
 
         let block_idx = self.block_index_from_offset(virtual_offset);
@@ -173,7 +173,7 @@ impl Bat {
 
         let entry = self
             .get_payload_entry(block_idx)
-            .ok_or(VhdxError::InvalidBatEntry)?;
+            .ok_or(Error::InvalidBatEntry)?;
 
         match entry.state {
             PayloadBlockState::FullyPresent => {
@@ -188,7 +188,7 @@ impl Bat {
             PayloadBlockState::Zero
             | PayloadBlockState::NotPresent
             | PayloadBlockState::Unmapped => Ok(None),
-            PayloadBlockState::Undefined => Err(VhdxError::InvalidBatEntry),
+            PayloadBlockState::Undefined => Err(Error::InvalidBatEntry),
         }
     }
 
@@ -210,7 +210,7 @@ impl Bat {
     /// Update an entry
     pub fn update_entry(&mut self, index: usize, entry: BatEntry) -> Result<()> {
         if index >= self.entries.len() {
-            return Err(VhdxError::InvalidBatEntry);
+            return Err(Error::InvalidBatEntry);
         }
         self.entries[index] = entry;
         Ok(())
@@ -220,7 +220,7 @@ impl Bat {
     pub fn update_payload_entry(&mut self, block_idx: u64, entry: BatEntry) -> Result<()> {
         let index = self
             .payload_bat_index(block_idx)
-            .ok_or(VhdxError::InvalidBatEntry)?;
+            .ok_or(Error::InvalidBatEntry)?;
         self.update_entry(index, entry)
     }
 }

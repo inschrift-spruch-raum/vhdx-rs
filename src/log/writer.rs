@@ -4,7 +4,7 @@ use std::io::{Seek, SeekFrom, Write};
 
 use crate::common::crc32c::crc32c_with_zero_field;
 use crate::common::guid::Guid;
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use crate::log::{
     DATA_DESCRIPTOR_SIGNATURE, DATA_SECTOR_SIGNATURE, LOG_ENTRY_SIGNATURE,
     ZERO_DESCRIPTOR_SIGNATURE,
@@ -82,14 +82,14 @@ impl LogWriter {
         data: &[u8],
     ) -> Result<u64> {
         if data.len() != 4096 {
-            return Err(VhdxError::InvalidLogEntry);
+            return Err(Error::InvalidLogEntry);
         }
 
         let entry_size = self.calculate_entry_size(1);
 
         // Check if we have room (simplified - doesn't handle wraparound)
         if self.write_offset + entry_size > self.log_size {
-            return Err(VhdxError::LogReplayFailed("Log full".to_string()));
+            return Err(Error::LogReplayFailed("Log full".to_string()));
         }
 
         let seq = self.next_sequence();
@@ -159,13 +159,13 @@ impl LogWriter {
         length: u64,
     ) -> Result<u64> {
         if !length.is_multiple_of(4096) {
-            return Err(VhdxError::InvalidLogEntry);
+            return Err(Error::InvalidLogEntry);
         }
 
         let entry_size = 4096u32; // Header + 1 zero descriptor, rounded to 4KB
 
         if self.write_offset + entry_size > self.log_size {
-            return Err(VhdxError::LogReplayFailed("Log full".to_string()));
+            return Err(Error::LogReplayFailed("Log full".to_string()));
         }
 
         let seq = self.next_sequence();

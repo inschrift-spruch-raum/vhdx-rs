@@ -2,7 +2,7 @@
 //!
 //! Contains information for locating parent disk (used by differencing disks).
 
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use byteorder::{ByteOrder, LittleEndian};
 use uuid::Uuid;
 
@@ -29,7 +29,7 @@ impl ParentLocatorEntry {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::FileTooSmall("file size is insufficient".to_string()));
+            return Err(Error::FileTooSmall("file size is insufficient".to_string()));
         }
 
         let key_offset = LittleEndian::read_u32(&data[0..4]);
@@ -58,9 +58,7 @@ impl ParentLocator {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 16 {
-            return Err(VhdxError::InvalidMetadata(
-                "ParentLocator too small".to_string(),
-            ));
+            return Err(Error::InvalidMetadata("ParentLocator too small".to_string(),));
         }
 
         let key_count = LittleEndian::read_u32(&data[4..8]);
@@ -72,9 +70,7 @@ impl ParentLocator {
         for i in 0..key_count as usize {
             let entry_offset = entries_start + i * ParentLocatorEntry::SIZE;
             if entry_offset + ParentLocatorEntry::SIZE > data.len() {
-                return Err(VhdxError::InvalidMetadata(
-                    "ParentLocator entry extends beyond data".to_string(),
-                ));
+                return Err(Error::InvalidMetadata("ParentLocator entry extends beyond data".to_string(),));
             }
             let entry = ParentLocatorEntry::from_bytes(&data[entry_offset..])?;
             entries.push(entry);
@@ -127,9 +123,7 @@ fn read_utf16_string(data: &[u8], offset: u32, length: u16) -> Result<String> {
     let len = length as usize * 2; // UTF-16 is 2 bytes per char
 
     if start + len > data.len() {
-        return Err(VhdxError::InvalidMetadata(
-            "String extends beyond data".to_string(),
-        ));
+        return Err(Error::InvalidMetadata("String extends beyond data".to_string(),));
     }
 
     let mut chars = Vec::with_capacity(length as usize);
@@ -144,5 +138,5 @@ fn read_utf16_string(data: &[u8], offset: u32, length: u16) -> Result<String> {
     }
 
     String::from_utf16(&chars)
-        .map_err(|_| VhdxError::InvalidMetadata("Invalid UTF-16 string".to_string()))
+        .map_err(|_| Error::InvalidMetadata("Invalid UTF-16 string".to_string()))
 }

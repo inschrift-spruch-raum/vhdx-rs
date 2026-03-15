@@ -2,7 +2,7 @@
 
 use crate::common::crc32c::crc32c_with_zero_field;
 use crate::common::guid::Guid;
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use crate::log::descriptor::{DataDescriptor, ZeroDescriptor};
 use crate::log::sector::DataSector;
 use crate::log::{DATA_DESCRIPTOR_SIGNATURE, LOG_ENTRY_SIGNATURE, ZERO_DESCRIPTOR_SIGNATURE};
@@ -29,14 +29,14 @@ impl LogEntryHeader {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::InvalidLogEntry);
+            return Err(Error::InvalidLogEntry);
         }
 
         let mut signature = [0u8; 4];
         signature.copy_from_slice(&data[0..4]);
 
         if signature != LOG_ENTRY_SIGNATURE {
-            return Err(VhdxError::InvalidSignature {
+            return Err(Error::InvalidSignature {
                 expected: String::from_utf8_lossy(LOG_ENTRY_SIGNATURE).to_string(),
                 got: String::from_utf8_lossy(&signature).to_string(),
             });
@@ -57,17 +57,17 @@ impl LogEntryHeader {
 
         // Validate entry length (must be multiple of 4KB)
         if entry_length == 0 || entry_length % 4096 != 0 {
-            return Err(VhdxError::InvalidLogEntry);
+            return Err(Error::InvalidLogEntry);
         }
 
         // Validate tail (must be multiple of 4KB)
         if tail % 4096 != 0 {
-            return Err(VhdxError::InvalidLogEntry);
+            return Err(Error::InvalidLogEntry);
         }
 
         // Validate sequence number (must be > 0)
         if sequence_number == 0 {
-            return Err(VhdxError::InvalidLogEntry);
+            return Err(Error::InvalidLogEntry);
         }
 
         Ok(LogEntryHeader {
@@ -118,7 +118,7 @@ impl LogEntry {
 
         // Verify checksum
         if !header.verify_checksum(data) {
-            return Err(VhdxError::InvalidChecksum);
+            return Err(Error::InvalidChecksum);
         }
 
         let mut zero_descriptors = Vec::new();
@@ -131,7 +131,7 @@ impl LogEntry {
         for _ in 0..header.descriptor_count {
             // Determine descriptor type by signature
             if descriptor_offset + 4 > data.len() {
-                return Err(VhdxError::InvalidLogEntry);
+                return Err(Error::InvalidLogEntry);
             }
 
             let sig = &data[descriptor_offset..descriptor_offset + 4];
@@ -139,13 +139,13 @@ impl LogEntry {
             if sig == ZERO_DESCRIPTOR_SIGNATURE {
                 let desc = ZeroDescriptor::from_bytes(&data[descriptor_offset..])?;
                 if !desc.verify_sequence(header.sequence_number) {
-                    return Err(VhdxError::InvalidLogEntry);
+                    return Err(Error::InvalidLogEntry);
                 }
                 zero_descriptors.push(desc);
             } else if sig == DATA_DESCRIPTOR_SIGNATURE {
                 let desc = DataDescriptor::from_bytes(&data[descriptor_offset..])?;
                 if !desc.verify_sequence(header.sequence_number) {
-                    return Err(VhdxError::InvalidLogEntry);
+                    return Err(Error::InvalidLogEntry);
                 }
                 data_descriptors.push(desc);
 
@@ -154,16 +154,16 @@ impl LogEntry {
                     header.entry_length as usize - (data_descriptors.len() * DataSector::SIZE);
 
                 if sector_offset + DataSector::SIZE > data.len() {
-                    return Err(VhdxError::InvalidLogEntry);
+                    return Err(Error::InvalidLogEntry);
                 }
 
                 let sector = DataSector::from_bytes(&data[sector_offset..])?;
                 if !sector.verify_sequence(header.sequence_number) {
-                    return Err(VhdxError::InvalidLogEntry);
+                    return Err(Error::InvalidLogEntry);
                 }
                 data_sectors.push(sector);
             } else {
-                return Err(VhdxError::InvalidSignature {
+                return Err(Error::InvalidSignature {
                     expected: "zero or desc".to_string(),
                     got: String::from_utf8_lossy(sig).to_string(),
                 });

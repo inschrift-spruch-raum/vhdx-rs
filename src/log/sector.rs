@@ -1,6 +1,6 @@
 //! Data Sector structure
 
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use crate::log::DATA_SECTOR_SIGNATURE;
 use byteorder::{ByteOrder, LittleEndian};
 
@@ -20,14 +20,14 @@ impl DataSector {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::InvalidLogEntry);
+            return Err(Error::InvalidLogEntry);
         }
 
         let mut signature = [0u8; 4];
         signature.copy_from_slice(&data[0..4]);
 
         if signature != DATA_SECTOR_SIGNATURE {
-            return Err(VhdxError::InvalidSignature {
+            return Err(Error::InvalidSignature {
                 expected: String::from_utf8_lossy(DATA_SECTOR_SIGNATURE).to_string(),
                 got: String::from_utf8_lossy(&signature).to_string(),
             });

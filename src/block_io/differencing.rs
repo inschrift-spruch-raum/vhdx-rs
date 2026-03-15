@@ -4,7 +4,7 @@
 //! only changed blocks relative to a parent disk.
 
 use crate::bat::{Bat, BatEntry, PayloadBlockState};
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use crate::log::LogWriter;
 use crate::payload::bitmap::SectorBitmap;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -68,19 +68,19 @@ impl<'a> DifferencingBlockIo<'a> {
         let bitmap_entry = self
             .bat
             .get_sector_bitmap_entry(chunk_idx)
-            .ok_or(VhdxError::InvalidBatEntry)?;
+            .ok_or(Error::InvalidBatEntry)?;
 
         // Check if bitmap block is present
         // For sector bitmap blocks, state value 6 means Present
         let state_bits = bitmap_entry.raw & 0x7;
         if state_bits != SectorBitmapState::Present as u64 {
-            return Err(VhdxError::InvalidSectorBitmap);
+            return Err(Error::InvalidSectorBitmap);
         }
 
         // Get file offset of bitmap block
         let file_offset = bitmap_entry
             .file_offset()
-            .ok_or(VhdxError::InvalidSectorBitmap)?;
+            .ok_or(Error::InvalidSectorBitmap)?;
 
         // Calculate bitmap size needed
         let bitmap_size =
@@ -102,7 +102,7 @@ impl<'a> DifferencingBlockIo<'a> {
     /// - Other states read from parent or return zeros
     pub fn read(&mut self, virtual_offset: u64, buf: &mut [u8]) -> Result<usize> {
         if virtual_offset >= self.virtual_disk_size {
-            return Err(VhdxError::InvalidOffset(virtual_offset));
+            return Err(Error::InvalidOffset(virtual_offset));
         }
 
         let bytes_to_read =
@@ -134,7 +134,7 @@ impl<'a> DifferencingBlockIo<'a> {
                                     &mut buf[bytes_read..bytes_read + bytes_from_block],
                                 )?;
                             } else {
-                                return Err(VhdxError::InvalidBatEntry);
+                                return Err(Error::InvalidBatEntry);
                             }
                         }
                         PayloadBlockState::PartiallyPresent => {
@@ -168,10 +168,10 @@ impl<'a> DifferencingBlockIo<'a> {
                                     let payload_entry = self
                                         .bat
                                         .get_payload_entry(block_idx)
-                                        .ok_or(VhdxError::InvalidBatEntry)?;
+                                        .ok_or(Error::InvalidBatEntry)?;
                                     let file_offset = payload_entry
                                         .file_offset()
-                                        .ok_or(VhdxError::InvalidBatEntry)?;
+                                        .ok_or(Error::InvalidBatEntry)?;
                                     let absolute_file_offset =
                                         file_offset + offset_in_block + sector_offset;
                                     self.file.seek(SeekFrom::Start(absolute_file_offset))?;
@@ -218,7 +218,7 @@ impl<'a> DifferencingBlockIo<'a> {
                             }
                         }
                         PayloadBlockState::Undefined => {
-                            return Err(VhdxError::InvalidBatEntry);
+                            return Err(Error::InvalidBatEntry);
                         }
                     }
                 }
@@ -251,7 +251,7 @@ impl<'a> DifferencingBlockIo<'a> {
     /// - Update partially present blocks
     pub fn write(&mut self, virtual_offset: u64, buf: &[u8]) -> Result<usize> {
         if virtual_offset >= self.virtual_disk_size {
-            return Err(VhdxError::InvalidOffset(virtual_offset));
+            return Err(Error::InvalidOffset(virtual_offset));
         }
 
         let bytes_to_write =
@@ -274,11 +274,11 @@ impl<'a> DifferencingBlockIo<'a> {
             let entry = self
                 .bat
                 .get_payload_entry(block_idx)
-                .ok_or(VhdxError::InvalidBatEntry)?;
+                .ok_or(Error::InvalidBatEntry)?;
 
             let file_offset = match entry.state {
                 PayloadBlockState::FullyPresent => {
-                    entry.file_offset().ok_or(VhdxError::InvalidBatEntry)?
+                    entry.file_offset().ok_or(Error::InvalidBatEntry)?
                 }
                 PayloadBlockState::NotPresent
                 | PayloadBlockState::Zero
@@ -289,12 +289,12 @@ impl<'a> DifferencingBlockIo<'a> {
                     self.bat
                         .get_payload_entry(block_idx)
                         .and_then(|e| e.file_offset())
-                        .ok_or(VhdxError::InvalidBatEntry)?
+                        .ok_or(Error::InvalidBatEntry)?
                 }
                 PayloadBlockState::PartiallyPresent => {
                     // Differencing disk - update sector bitmap for written sectors
                     // Get payload offset before any mutable borrows
-                    let payload_offset = entry.file_offset().ok_or(VhdxError::InvalidBatEntry)?;
+                    let payload_offset = entry.file_offset().ok_or(Error::InvalidBatEntry)?;
 
                     let chunk_idx = self.bat.chunk_index_from_block(block_idx);
 
@@ -311,10 +311,10 @@ impl<'a> DifferencingBlockIo<'a> {
                     let bitmap_entry = self
                         .bat
                         .get_sector_bitmap_entry(chunk_idx)
-                        .ok_or(VhdxError::InvalidBatEntry)?;
+                        .ok_or(Error::InvalidBatEntry)?;
                     let bitmap_file_offset = bitmap_entry
                         .file_offset()
-                        .ok_or(VhdxError::InvalidSectorBitmap)?;
+                        .ok_or(Error::InvalidSectorBitmap)?;
 
                     // Write data to payload block
                     let absolute_offset = payload_offset + offset_in_block;
@@ -354,7 +354,7 @@ impl<'a> DifferencingBlockIo<'a> {
                         let bat_index = self
                             .bat
                             .payload_bat_index(block_idx)
-                            .ok_or(VhdxError::InvalidBatEntry)?;
+                            .ok_or(Error::InvalidBatEntry)?;
                         let bat_entry_offset = self.bat.get_bat_entry_file_offset(bat_index);
                         let entry_bytes = new_entry.to_bytes();
                         self.file.seek(SeekFrom::Start(bat_entry_offset))?;
@@ -365,7 +365,7 @@ impl<'a> DifferencingBlockIo<'a> {
                     payload_offset
                 }
                 PayloadBlockState::Undefined => {
-                    return Err(VhdxError::InvalidBatEntry);
+                    return Err(Error::InvalidBatEntry);
                 }
             };
 
@@ -405,7 +405,7 @@ impl<'a> DifferencingBlockIo<'a> {
         let bat_index = self
             .bat
             .payload_bat_index(block_idx)
-            .ok_or(VhdxError::InvalidBatEntry)?;
+            .ok_or(Error::InvalidBatEntry)?;
         let bat_entry_offset = self.bat.get_bat_entry_file_offset(bat_index);
 
         // Create new BAT entry

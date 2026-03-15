@@ -2,7 +2,7 @@
 //!
 //! Contains block size and parent disk information.
 
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use byteorder::{ByteOrder, LittleEndian};
 use uuid::Uuid;
 
@@ -25,9 +25,7 @@ impl FileParameters {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 8 {
-            return Err(VhdxError::InvalidMetadata(
-                "FileParameters too small".to_string(),
-            ));
+            return Err(Error::InvalidMetadata("FileParameters too small".to_string(),));
         }
 
         let block_size = LittleEndian::read_u32(&data[0..4]);
@@ -41,12 +39,12 @@ impl FileParameters {
         const MAX_BLOCK_SIZE: u32 = 256 * 1024 * 1024; // 256MB
 
         if !(MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE).contains(&block_size) {
-            return Err(VhdxError::InvalidBlockSize(block_size));
+            return Err(Error::InvalidBlockSize(block_size));
         }
 
         // Check power of 2: only one bit set
         if block_size & (block_size - 1) != 0 {
-            return Err(VhdxError::InvalidBlockSize(block_size));
+            return Err(Error::InvalidBlockSize(block_size));
         }
 
         Ok(FileParameters {
@@ -137,7 +135,7 @@ mod tests {
                 block_size
             );
             match result {
-                Err(VhdxError::InvalidBlockSize(size)) => {
+                Err(Error::InvalidBlockSize(size)) => {
                     assert_eq!(size, block_size);
                 }
                 _ => panic!("Expected InvalidBlockSize error"),
@@ -167,7 +165,7 @@ mod tests {
                 block_size
             );
             match result {
-                Err(VhdxError::InvalidBlockSize(size)) => {
+                Err(Error::InvalidBlockSize(size)) => {
                     assert_eq!(size, block_size);
                 }
                 _ => panic!("Expected InvalidBlockSize error"),
@@ -197,7 +195,7 @@ mod tests {
                 block_size
             );
             match result {
-                Err(VhdxError::InvalidBlockSize(size)) => {
+                Err(Error::InvalidBlockSize(size)) => {
                     assert_eq!(size, block_size);
                 }
                 _ => panic!("Expected InvalidBlockSize error"),

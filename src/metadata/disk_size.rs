@@ -2,7 +2,7 @@
 //!
 //! Contains the virtual size of the disk.
 
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use byteorder::{ByteOrder, LittleEndian};
 use uuid::Uuid;
 
@@ -26,17 +26,13 @@ impl VirtualDiskSize {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 8 {
-            return Err(VhdxError::InvalidMetadata(
-                "VirtualDiskSize too small".to_string(),
-            ));
+            return Err(Error::InvalidMetadata("VirtualDiskSize too small".to_string(),));
         }
 
         let size = LittleEndian::read_u64(&data[0..8]);
 
         if size == 0 {
-            return Err(VhdxError::InvalidMetadata(
-                "Virtual disk size cannot be zero".to_string(),
-            ));
+            return Err(Error::InvalidMetadata("Virtual disk size cannot be zero".to_string(),));
         }
 
         Ok(VirtualDiskSize { size })
@@ -53,7 +49,7 @@ impl VirtualDiskSize {
 
         // Check minimum: must be at least one sector
         if self.size < sector_size {
-            return Err(VhdxError::InvalidDiskSize {
+            return Err(Error::InvalidDiskSize {
                 size: self.size,
                 min: sector_size,
                 max: MAX_DISK_SIZE,
@@ -62,7 +58,7 @@ impl VirtualDiskSize {
 
         // Check maximum: must not exceed 64TB
         if self.size > MAX_DISK_SIZE {
-            return Err(VhdxError::InvalidDiskSize {
+            return Err(Error::InvalidDiskSize {
                 size: self.size,
                 min: sector_size,
                 max: MAX_DISK_SIZE,
@@ -71,7 +67,7 @@ impl VirtualDiskSize {
 
         // Check alignment: must be multiple of logical sector size
         if !self.size.is_multiple_of(sector_size) {
-            return Err(VhdxError::InvalidDiskSize {
+            return Err(Error::InvalidDiskSize {
                 size: self.size,
                 min: sector_size,
                 max: MAX_DISK_SIZE,
@@ -124,7 +120,7 @@ mod tests {
         let result = disk_size.validate(512);
         assert!(result.is_err(), "64TB+1 should be rejected");
         match result.unwrap_err() {
-            VhdxError::InvalidDiskSize { size, min, max } => {
+            Error::InvalidDiskSize { size, min, max } => {
                 assert_eq!(size, MAX_DISK_SIZE + 1);
                 assert_eq!(min, 512);
                 assert_eq!(max, MAX_DISK_SIZE);
@@ -165,7 +161,7 @@ mod tests {
             "256 bytes should be rejected with 512-byte sectors"
         );
         match result.unwrap_err() {
-            VhdxError::InvalidDiskSize { size, min, .. } => {
+            Error::InvalidDiskSize { size, min, .. } => {
                 assert_eq!(size, 256);
                 assert_eq!(min, 512);
             }

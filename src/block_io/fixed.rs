@@ -4,7 +4,7 @@
 //! where all blocks are pre-allocated.
 
 use crate::bat::Bat;
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use std::io::{Read, Seek, SeekFrom, Write};
 
 /// Fixed VHDX data offset from the start of file
@@ -85,9 +85,9 @@ impl<'a> FixedBlockIo<'a> {
             let entry = self
                 .bat
                 .get_payload_entry(block_idx)
-                .ok_or(VhdxError::InvalidBatEntry)?;
+                .ok_or(Error::InvalidBatEntry)?;
 
-            let file_offset = entry.file_offset().ok_or(VhdxError::InvalidBatEntry)?;
+            let file_offset = entry.file_offset().ok_or(Error::InvalidBatEntry)?;
             Ok(file_offset + offset_in_block)
         } else {
             // Modern mode: use fixed offset formula
@@ -102,7 +102,7 @@ impl<'a> FixedBlockIo<'a> {
     /// - Legacy with BAT: file_offset = BAT[block_idx].offset + offset_in_block
     pub fn read(&mut self, virtual_offset: u64, buf: &mut [u8]) -> Result<usize> {
         if virtual_offset >= self.virtual_disk_size {
-            return Err(VhdxError::InvalidOffset(virtual_offset));
+            return Err(Error::InvalidOffset(virtual_offset));
         }
 
         let bytes_to_read =
@@ -121,7 +121,7 @@ impl<'a> FixedBlockIo<'a> {
     /// For fixed disks, data is written to pre-allocated locations.
     pub fn write(&mut self, virtual_offset: u64, buf: &[u8]) -> Result<usize> {
         if virtual_offset >= self.virtual_disk_size {
-            return Err(VhdxError::InvalidOffset(virtual_offset));
+            return Err(Error::InvalidOffset(virtual_offset));
         }
 
         let bytes_to_write =

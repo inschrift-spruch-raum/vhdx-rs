@@ -1,6 +1,6 @@
 //! Log Descriptors (Zero and Data)
 
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use crate::log::{DATA_DESCRIPTOR_SIGNATURE, ZERO_DESCRIPTOR_SIGNATURE};
 use byteorder::{ByteOrder, LittleEndian};
 
@@ -20,14 +20,14 @@ impl ZeroDescriptor {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::InvalidLogEntry);
+            return Err(Error::InvalidLogEntry);
         }
 
         let mut signature = [0u8; 4];
         signature.copy_from_slice(&data[0..4]);
 
         if signature != ZERO_DESCRIPTOR_SIGNATURE {
-            return Err(VhdxError::InvalidSignature {
+            return Err(Error::InvalidSignature {
                 expected: String::from_utf8_lossy(ZERO_DESCRIPTOR_SIGNATURE).to_string(),
                 got: String::from_utf8_lossy(&signature).to_string(),
             });
@@ -39,12 +39,12 @@ impl ZeroDescriptor {
 
         // Validate zero_length (must be multiple of 4KB)
         if zero_length == 0 || zero_length % 4096 != 0 {
-            return Err(VhdxError::InvalidLogEntry);
+            return Err(Error::InvalidLogEntry);
         }
 
         // Validate file_offset (must be multiple of 4KB)
         if file_offset % 4096 != 0 {
-            return Err(VhdxError::InvalidLogEntry);
+            return Err(Error::InvalidLogEntry);
         }
 
         Ok(ZeroDescriptor {
@@ -78,14 +78,14 @@ impl DataDescriptor {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::InvalidLogEntry);
+            return Err(Error::InvalidLogEntry);
         }
 
         let mut signature = [0u8; 4];
         signature.copy_from_slice(&data[0..4]);
 
         if signature != DATA_DESCRIPTOR_SIGNATURE {
-            return Err(VhdxError::InvalidSignature {
+            return Err(Error::InvalidSignature {
                 expected: String::from_utf8_lossy(DATA_DESCRIPTOR_SIGNATURE).to_string(),
                 got: String::from_utf8_lossy(&signature).to_string(),
             });
@@ -102,7 +102,7 @@ impl DataDescriptor {
 
         // Validate file_offset (must be multiple of 4KB)
         if file_offset % 4096 != 0 {
-            return Err(VhdxError::InvalidLogEntry);
+            return Err(Error::InvalidLogEntry);
         }
 
         Ok(DataDescriptor {

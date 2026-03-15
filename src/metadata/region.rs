@@ -2,7 +2,7 @@
 //!
 //! The complete metadata region containing the table and all metadata items.
 
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 
 use super::disk_id::{VirtualDiskId, VIRTUAL_DISK_ID_GUID};
 use super::disk_size::{VirtualDiskSize, VIRTUAL_DISK_SIZE_GUID};
@@ -35,7 +35,7 @@ impl MetadataRegion {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < MetadataTableHeader::SIZE {
-            return Err(VhdxError::FileTooSmall("file size is insufficient".to_string()));
+            return Err(Error::FileTooSmall("file size is insufficient".to_string()));
         }
 
         let header = MetadataTableHeader::from_bytes(data)?;
@@ -47,9 +47,7 @@ impl MetadataRegion {
         for i in 0..header.entry_count as usize {
             let entry_offset = entries_start + i * MetadataTableEntry::SIZE;
             if entry_offset + MetadataTableEntry::SIZE > data.len() {
-                return Err(VhdxError::InvalidMetadata(
-                    "Metadata entry extends beyond data".to_string(),
-                ));
+                return Err(Error::InvalidMetadata("Metadata entry extends beyond data".to_string(),));
             }
             let entry = MetadataTableEntry::from_bytes(&data[entry_offset..])?;
             entries.push(entry);
@@ -62,7 +60,7 @@ impl MetadataRegion {
         // Validate that all required metadata items are recognized (MS-VHDX spec Section 2.2)
         for entry in &entries {
             if entry.is_required && !KNOWN_REQUIRED_METADATA_GUIDS.contains(&entry.item_id) {
-                return Err(VhdxError::UnknownRequiredMetadata {
+                return Err(Error::UnknownRequiredMetadata {
                     guid: entry.item_id.to_string(),
                 });
             }
@@ -82,7 +80,7 @@ impl MetadataRegion {
             .entries
             .iter()
             .find(|e| e.item_id == FILE_PARAMETERS_GUID)
-            .ok_or_else(|| VhdxError::InvalidMetadata("FileParameters not found".to_string()))?;
+            .ok_or_else(|| Error::InvalidMetadata("FileParameters not found".to_string()))?;
 
         let offset = entry.offset as usize - self.data_offset;
         let data = &self.data[offset..offset + entry.length as usize];
@@ -95,7 +93,7 @@ impl MetadataRegion {
             .entries
             .iter()
             .find(|e| e.item_id == VIRTUAL_DISK_SIZE_GUID)
-            .ok_or_else(|| VhdxError::InvalidMetadata("VirtualDiskSize not found".to_string()))?;
+            .ok_or_else(|| Error::InvalidMetadata("VirtualDiskSize not found".to_string()))?;
 
         let offset = entry.offset as usize - self.data_offset;
         let data = &self.data[offset..offset + entry.length as usize];
@@ -114,7 +112,7 @@ impl MetadataRegion {
             .entries
             .iter()
             .find(|e| e.item_id == LOGICAL_SECTOR_SIZE_GUID)
-            .ok_or_else(|| VhdxError::InvalidMetadata("LogicalSectorSize not found".to_string()))?;
+            .ok_or_else(|| Error::InvalidMetadata("LogicalSectorSize not found".to_string()))?;
 
         let offset = entry.offset as usize - self.data_offset;
         let data = &self.data[offset..offset + entry.length as usize];
@@ -128,7 +126,7 @@ impl MetadataRegion {
             .iter()
             .find(|e| e.item_id == PHYSICAL_SECTOR_SIZE_GUID)
             .ok_or_else(|| {
-                VhdxError::InvalidMetadata("PhysicalSectorSize not found".to_string())
+                Error::InvalidMetadata("PhysicalSectorSize not found".to_string())
             })?;
 
         let offset = entry.offset as usize - self.data_offset;
@@ -142,7 +140,7 @@ impl MetadataRegion {
             .entries
             .iter()
             .find(|e| e.item_id == VIRTUAL_DISK_ID_GUID)
-            .ok_or_else(|| VhdxError::InvalidMetadata("VirtualDiskId not found".to_string()))?;
+            .ok_or_else(|| Error::InvalidMetadata("VirtualDiskId not found".to_string()))?;
 
         let offset = entry.offset as usize - self.data_offset;
         let data = &self.data[offset..offset + entry.length as usize];
@@ -155,7 +153,7 @@ impl MetadataRegion {
             .entries
             .iter()
             .find(|e| e.item_id == PARENT_LOCATOR_GUID)
-            .ok_or_else(|| VhdxError::InvalidMetadata("ParentLocator not found".to_string()))?;
+            .ok_or_else(|| Error::InvalidMetadata("ParentLocator not found".to_string()))?;
 
         let offset = entry.offset as usize - self.data_offset;
         let data = &self.data[offset..offset + entry.length as usize];
@@ -233,7 +231,7 @@ mod tests {
             "Unknown required metadata should be rejected"
         );
         match result.unwrap_err() {
-            VhdxError::UnknownRequiredMetadata { guid } => {
+            Error::UnknownRequiredMetadata { guid } => {
                 assert!(!guid.is_empty(), "Error should contain the GUID");
             }
             e => panic!("Expected UnknownRequiredMetadata error, got {:?}", e),

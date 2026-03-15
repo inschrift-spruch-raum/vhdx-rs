@@ -3,7 +3,7 @@
 //! Contains the metadata table header and entry definitions.
 
 use crate::common::guid::Guid;
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use byteorder::{ByteOrder, LittleEndian};
 
 /// Metadata Table signature: "metadata"
@@ -23,7 +23,7 @@ impl MetadataTableHeader {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 8 {
-            return Err(VhdxError::FileTooSmall(
+            return Err(Error::FileTooSmall(
                 "file size is insufficient".to_string(),
             ));
         }
@@ -32,7 +32,7 @@ impl MetadataTableHeader {
         signature.copy_from_slice(&data[0..8]);
 
         if signature != METADATA_SIGNATURE {
-            return Err(VhdxError::InvalidSignature {
+            return Err(Error::InvalidSignature {
                 expected: String::from_utf8_lossy(METADATA_SIGNATURE).to_string(),
                 got: String::from_utf8_lossy(&signature).to_string(),
             });
@@ -65,7 +65,7 @@ impl MetadataTableEntry {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::FileTooSmall(
+            return Err(Error::FileTooSmall(
                 "file size is insufficient".to_string(),
             ));
         }
@@ -84,7 +84,7 @@ impl MetadataTableEntry {
 
         // Validate reserved bits (bits 3-31 must be 0)
         if flags & 0xFFFFFFF8 != 0 {
-            return Err(VhdxError::InvalidMetadata(
+            return Err(Error::InvalidMetadata(
                 "Reserved bits in metadata table entry flags must be 0".to_string(),
             ));
         }
@@ -149,7 +149,7 @@ mod tests {
         let result = MetadataTableEntry::from_bytes(&data);
         assert!(result.is_err());
         match result.unwrap_err() {
-            VhdxError::InvalidMetadata(msg) => {
+            Error::InvalidMetadata(msg) => {
                 assert!(msg.contains("Reserved bits"));
             }
             _ => panic!("Expected InvalidMetadata error"),
@@ -190,7 +190,7 @@ mod tests {
         let result = MetadataTableEntry::from_bytes(&data);
         assert!(result.is_err());
         match result.unwrap_err() {
-            VhdxError::InvalidMetadata(msg) => {
+            Error::InvalidMetadata(msg) => {
                 assert!(msg.contains("Reserved bits"));
             }
             _ => panic!("Expected InvalidMetadata error"),

@@ -1,6 +1,6 @@
 //! BAT Entry states for payload blocks and sector bitmap blocks
 
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 
 /// BAT Entry state for payload blocks
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +29,7 @@ impl PayloadBlockState {
             3 => Ok(PayloadBlockState::Unmapped),
             6 => Ok(PayloadBlockState::FullyPresent),
             7 => Ok(PayloadBlockState::PartiallyPresent),
-            _ => Err(VhdxError::InvalidBatEntry),
+            _ => Err(Error::InvalidBatEntry),
         }
     }
 
@@ -70,7 +70,7 @@ impl SectorBitmapState {
         match bits {
             0 => Ok(SectorBitmapState::NotPresent),
             6 => Ok(SectorBitmapState::Present),
-            _ => Err(VhdxError::InvalidBatEntry),
+            _ => Err(Error::InvalidBatEntry),
         }
     }
 

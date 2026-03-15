@@ -4,7 +4,7 @@
 //! are allocated on-demand as data is written.
 
 use crate::bat::{Bat, BatEntry, PayloadBlockState};
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use crate::log::LogWriter;
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -53,7 +53,7 @@ impl<'a> DynamicBlockIo<'a> {
     /// Returns the number of bytes read (may be less than requested for sparse regions)
     pub fn read(&mut self, virtual_offset: u64, buf: &mut [u8]) -> Result<usize> {
         if virtual_offset >= self.virtual_disk_size {
-            return Err(VhdxError::InvalidOffset(virtual_offset));
+            return Err(Error::InvalidOffset(virtual_offset));
         }
 
         let bytes_to_read =
@@ -84,7 +84,7 @@ impl<'a> DynamicBlockIo<'a> {
                                     &mut buf[bytes_read..bytes_read + bytes_from_block],
                                 )?;
                             } else {
-                                return Err(VhdxError::InvalidBatEntry);
+                                return Err(Error::InvalidBatEntry);
                             }
                         }
                         PayloadBlockState::Zero
@@ -113,7 +113,7 @@ impl<'a> DynamicBlockIo<'a> {
                             buf[bytes_read..bytes_read + bytes_from_block].fill(0);
                         }
                         PayloadBlockState::Undefined => {
-                            return Err(VhdxError::InvalidBatEntry);
+                            return Err(Error::InvalidBatEntry);
                         }
                     }
                 }
@@ -135,7 +135,7 @@ impl<'a> DynamicBlockIo<'a> {
     /// For dynamic disks, this will allocate new blocks as needed.
     pub fn write(&mut self, virtual_offset: u64, buf: &[u8]) -> Result<usize> {
         if virtual_offset >= self.virtual_disk_size {
-            return Err(VhdxError::InvalidOffset(virtual_offset));
+            return Err(Error::InvalidOffset(virtual_offset));
         }
 
         let bytes_to_write =
@@ -158,11 +158,11 @@ impl<'a> DynamicBlockIo<'a> {
             let entry = self
                 .bat
                 .get_payload_entry(block_idx)
-                .ok_or(VhdxError::InvalidBatEntry)?;
+                .ok_or(Error::InvalidBatEntry)?;
 
             let file_offset = match entry.state {
                 PayloadBlockState::FullyPresent => {
-                    entry.file_offset().ok_or(VhdxError::InvalidBatEntry)?
+                    entry.file_offset().ok_or(Error::InvalidBatEntry)?
                 }
                 PayloadBlockState::NotPresent
                 | PayloadBlockState::Zero
@@ -173,7 +173,7 @@ impl<'a> DynamicBlockIo<'a> {
                     self.bat
                         .get_payload_entry(block_idx)
                         .and_then(|e| e.file_offset())
-                        .ok_or(VhdxError::InvalidBatEntry)?
+                        .ok_or(Error::InvalidBatEntry)?
                 }
                 PayloadBlockState::PartiallyPresent => {
                     // Treat as allocate for dynamic disks
@@ -181,10 +181,10 @@ impl<'a> DynamicBlockIo<'a> {
                     self.bat
                         .get_payload_entry(block_idx)
                         .and_then(|e| e.file_offset())
-                        .ok_or(VhdxError::InvalidBatEntry)?
+                        .ok_or(Error::InvalidBatEntry)?
                 }
                 PayloadBlockState::Undefined => {
-                    return Err(VhdxError::InvalidBatEntry);
+                    return Err(Error::InvalidBatEntry);
                 }
             };
 
@@ -224,7 +224,7 @@ impl<'a> DynamicBlockIo<'a> {
         let bat_index = self
             .bat
             .payload_bat_index(block_idx)
-            .ok_or(VhdxError::InvalidBatEntry)?;
+            .ok_or(Error::InvalidBatEntry)?;
         let bat_entry_offset = self.bat.get_bat_entry_file_offset(bat_index);
 
         // Create new BAT entry
