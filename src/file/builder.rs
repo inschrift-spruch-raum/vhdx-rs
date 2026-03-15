@@ -411,6 +411,6 @@ impl Builder {
         drop(file);
 
         // Now open the newly created file
-        VhdxFile::open(path, false)
+        VhdxFile::open(path, true)
     }
 }

@@ -292,7 +292,7 @@ Max Concurrent: 7 (Wave 1)
 
 ### Wave 1: Type Renames (7 parallel tasks)
 
-- [ ] 1. Rename VhdxError to Error
+- [x] 1. Rename VhdxError to Error
 
   **What to do**:
   - In `src/error.rs`, rename `pub enum VhdxError` to `pub enum Error`
@@ -334,7 +334,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES
   - Message: `refactor(error): rename VhdxError to Error`
 
-- [ ] 2. Rename VhdxFile to File
+- [x] 2. Rename VhdxFile to File
 
   **What to do**:
   - In `src/file/vhdx_file.rs`, rename `pub struct VhdxFile` to `pub struct File`
@@ -361,7 +361,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES
   - Message: `refactor(file): rename VhdxFile to File`
 
-- [ ] 3. Rename VhdxBuilder to Builder
+- [x] 3. Rename VhdxBuilder to Builder
 
   **What to do**:
   - In `src/file/builder.rs`, rename `pub struct VhdxBuilder` to `pub struct Builder`
@@ -386,7 +386,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES
   - Message: `refactor(file): rename VhdxBuilder to Builder`
 
-- [ ] 4. Unify DiskType definition
+- [x] 4. Unify DiskType definition
 
   **What to do**:
   - DiskType is defined in both `src/common/disk_type.rs` and `src/file/mod.rs`
@@ -412,7 +412,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES
   - Message: `refactor(types): unify DiskType definition`
 
-- [ ] 5. Rename types in header/
+- [x] 5. Rename types in header/
 
   **What to do**:
   - In `src/header/`, rename types with Vhdx prefix:
@@ -438,7 +438,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES
   - Message: `refactor(header): rename Vhdx-prefixed types`
 
-- [ ] 6. Rename types in bat/
+- [x] 6. Rename types in bat/
 
   **What to do**:
   - In `src/bat/`, rename types with Vhdx prefix
@@ -458,7 +458,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES
   - Message: `refactor(bat): rename Vhdx-prefixed types`
 
-- [ ] 7. Rename types in metadata/
+- [x] 7. Rename types in metadata/
 
   **What to do**:
   - In `src/metadata/`, rename types with Vhdx prefix
@@ -480,7 +480,7 @@ Max Concurrent: 7 (Wave 1)
 
 ### Wave 2: lib.rs and Module Visibility (3 tasks)
 
-- [ ] 8. Rewrite lib.rs with minimal exports
+- [x] 8. Rewrite lib.rs with minimal exports
 
   **What to do**:
   - Change all `pub mod X` to `mod X` (make internal modules private)
@@ -526,7 +526,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES (breaking)
   - Message: `refactor(lib)!: minimize public API exports, remove prelude`
 
-- [ ] 9. Update all internal imports
+- [x] 9. Update all internal imports
 
   **What to do**:
   - Update imports in all internal modules to use `crate::` paths
@@ -552,7 +552,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES
   - Message: `fix(imports): update internal imports for new visibility`
 
-- [ ] 10. Add File::check() method
+- [x] 10. Add File::check() method
 
   **What to do**:
   - Add `pub fn check(&self) -> Result<CheckReport>` method to File

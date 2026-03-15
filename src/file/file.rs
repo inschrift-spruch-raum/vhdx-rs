@@ -222,20 +222,20 @@ impl VhdxFile {
     /// Open an existing VHDX file
     ///
     /// This will replay the log if necessary.
-    pub fn open<P: AsRef<Path>>(path: P, read_only: bool) -> Result<Self> {
-        Self::open_internal(path, read_only, &ParentChainState::new())
+    pub fn open<P: AsRef<Path>>(path: P, write: bool) -> Result<Self> {
+        Self::open_internal(path, write, &ParentChainState::new())
     }
 
     /// Internal open method with parent chain tracking
     fn open_internal<P: AsRef<Path>>(
         path: P,
-        read_only: bool,
+        write: bool,
         chain_state: &ParentChainState,
     ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let mut file = std::fs::OpenOptions::new()
             .read(true)
-            .write(!read_only)
+            .write(write)
             .open(&path)?;
 
         // Get current file size for disk type detection
@@ -269,7 +269,7 @@ impl VhdxFile {
 
         // Replay log if needed
         if !header.log_guid.is_nil() {
-            Self::replay_log(&mut file, &mut header, read_only)?;
+            Self::replay_log(&mut file, &mut header, write)?;
         }
 
         // Read metadata region
@@ -390,13 +390,13 @@ impl VhdxFile {
             physical_sector_size,
             virtual_disk_id,
             sequence_number,
-            read_only,
+            read_only: !write,
             parent,
             log_writer: None, // Will be initialized after replay
         };
 
         // Initialize LogWriter for metadata updates (if not read-only and log exists)
-        if !read_only && vhdx.header.log_length > 0 {
+        if write && vhdx.header.log_length > 0 {
             vhdx.log_writer = Some(crate::log::LogWriter::new(
                 vhdx.header.log_offset,
                 vhdx.header.log_length,
@@ -406,7 +406,7 @@ impl VhdxFile {
         }
 
         // Update header GUIDs on first write-capable open
-        if !read_only {
+        if write {
             vhdx.update_header_guids()?;
         }
 
@@ -414,7 +414,7 @@ impl VhdxFile {
     }
 
     /// Replay log entries
-    fn replay_log(file: &mut StdFile, header: &mut Header, read_only: bool) -> Result<()> {
+    fn replay_log(file: &mut StdFile, header: &mut Header, write: bool) -> Result<()> {
         if header.log_offset == 0 || header.log_length == 0 || header.log_guid.is_nil() {
             return Ok(());
         }
@@ -434,7 +434,7 @@ impl VhdxFile {
         if let Some(sequence) =
             LogReplayer::find_active_sequence(&log_data, header.log_length, &header.log_guid)?
         {
-            if read_only {
+            if !write {
                 // In read-only mode, skip replay but return Ok
                 // The file is still valid for reading
                 return Ok(());
@@ -710,7 +710,7 @@ mod tests {
             .unwrap();
 
         // Open child - should succeed with matching sector sizes
-        let result = File::open(&child_path, true);
+        let result = File::open(&child_path, false);
         assert!(
             result.is_ok(),
             "Opening differencing disk with matching sector sizes should succeed"
@@ -870,7 +870,7 @@ mod tests {
             .unwrap();
 
         // Open grandchild - should succeed with chain depth 3
-        let result = File::open(&grandchild_path, true);
+        let result = File::open(&grandchild_path, false);
         assert!(
             result.is_ok(),
             "Opening grandchild disk with valid parent chain (depth 3) should succeed, got: {:?}",
@@ -1243,7 +1243,7 @@ mod tests {
         }
 
         // Try to open - should fail with FileTooSmall
-        let result = File::open(&file_path, true);
+        let result = File::open(&file_path, false);
         assert!(
             result.is_err(),
             "File smaller than 1 MiB should be rejected"
@@ -1293,7 +1293,7 @@ mod tests {
                 }
             }
 
-            let result = File::open(&file_path, true);
+            let result = File::open(&file_path, false);
             assert!(
                 result.is_err(),
                 "File of size {} bytes should be rejected (below 1 MiB)",
