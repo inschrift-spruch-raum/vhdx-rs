@@ -5,7 +5,7 @@
 pub mod builder;
 pub mod vhdx_file;
 
-pub use builder::VhdxBuilder;
+pub use builder::Builder;
 pub use vhdx_file::VhdxFile;
 
 /// VHDX disk type
@@ -17,4 +17,14 @@ pub enum DiskType {
     Dynamic,
     /// Differencing disk (has parent)
     Differencing,
+}
+
+impl std::fmt::Display for DiskType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DiskType::Fixed => write!(f, "Fixed"),
+            DiskType::Dynamic => write!(f, "Dynamic"),
+            DiskType::Differencing => write!(f, "Differencing"),
+        }
+    }
 }

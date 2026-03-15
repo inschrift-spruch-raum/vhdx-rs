@@ -10,9 +10,9 @@ use std::path::Path;
 use crate::bat::Bat;
 use crate::block_io::{DynamicBlockIo, FixedBlockIo};
 use crate::common::Guid;
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use crate::header::{
-    read_headers, read_region_tables, update_headers, FileTypeIdentifier, RegionTable, VhdxHeader,
+    read_headers, read_region_tables, update_headers, FileTypeIdentifier, RegionTable, Header,
 };
 use crate::log::LogReplayer;
 use crate::metadata::MetadataRegion;
@@ -48,12 +48,12 @@ impl ParentChainState {
     fn check_and_update(&self, disk_guid: Guid) -> Result<Self> {
         // Check for circular reference
         if self.visited_guids.contains(&disk_guid) {
-            return Err(VhdxError::CircularParentChain);
+            return Err(Error::CircularParentChain);
         }
 
         // Check depth limit
         if self.depth >= MAX_PARENT_CHAIN_DEPTH {
-            return Err(VhdxError::ParentChainTooDeep { depth: self.depth });
+            return Err(Error::ParentChainTooDeep { depth: self.depth });
         }
 
         // Create new state for parent level
@@ -69,7 +69,7 @@ impl ParentChainState {
 fn parse_guid_string(s: &str) -> Result<Guid> {
     // Parse the UUID from string (handles both with and without braces)
     let uuid = uuid::Uuid::parse_str(s)
-        .map_err(|e| VhdxError::InvalidMetadata(format!("Invalid GUID format '{}': {}", s, e)))?;
+        .map_err(|e| Error::InvalidMetadata(format!("Invalid GUID format '{}': {}", s, e)))?;
     Ok(Guid::from(uuid))
 }
 
@@ -85,16 +85,12 @@ fn validate_parent_path(
 ) -> Result<std::path::PathBuf> {
     // Reject absolute paths
     if std::path::Path::new(parent_path).is_absolute() {
-        return Err(VhdxError::InvalidParentPath(
-            "Absolute paths not allowed".to_string(),
-        ));
+        return Err(Error::InvalidParentPath("Absolute paths not allowed".to_string(),));
     }
 
     // Check for .. components
     if parent_path.contains("..") {
-        return Err(VhdxError::InvalidParentPath(
-            "Path traversal not allowed".to_string(),
-        ));
+        return Err(Error::InvalidParentPath("Path traversal not allowed".to_string(),));
     }
 
     // Resolve path relative to base directory
@@ -103,18 +99,16 @@ fn validate_parent_path(
     // Canonicalize paths to resolve any remaining symlinks or . components
     // Note: canonicalize() requires the path to exist, which is fine for parent validation
     let canonical_base = base_dir.canonicalize().map_err(|e| {
-        VhdxError::InvalidParentPath(format!("Failed to canonicalize base directory: {}", e))
+        Error::InvalidParentPath(format!("Failed to canonicalize base directory: {}", e))
     })?;
 
     let canonical_resolved = resolved
         .canonicalize()
-        .map_err(|e| VhdxError::ParentNotFound(format!("Parent file not found: {}", e)))?;
+        .map_err(|e| Error::ParentNotFound(format!("Parent file not found: {}", e)))?;
 
     // Ensure resolved path is within base directory
     if !canonical_resolved.starts_with(&canonical_base) {
-        return Err(VhdxError::InvalidParentPath(
-            "Path escapes base directory".to_string(),
-        ));
+        return Err(Error::InvalidParentPath("Path escapes base directory".to_string(),));
     }
 
     Ok(canonical_resolved)
@@ -176,7 +170,7 @@ pub struct VhdxFile {
     /// File type identifier
     pub(crate) file_type: FileTypeIdentifier,
     /// Current header (index 0 or 1)
-    pub(crate) header: VhdxHeader,
+    pub(crate) header: Header,
     /// Region table
     pub(crate) region_table: RegionTable,
     /// Metadata region
@@ -231,7 +225,7 @@ impl VhdxFile {
         // Minimum VHDX file size: 1 MiB (Windows standard)
         const MIN_VHDX_SIZE: u64 = 1024 * 1024;
         if current_file_size < MIN_VHDX_SIZE {
-            return Err(VhdxError::FileTooSmall(format!(
+            return Err(Error::FileTooSmall(format!(
                 "File too small ({} bytes), minimum 1MiB required",
                 current_file_size
             )));
@@ -262,7 +256,7 @@ impl VhdxFile {
         // Read metadata region
         let metadata_entry = region_table
             .find_metadata()
-            .ok_or_else(|| VhdxError::RequiredRegionNotFound("Metadata".to_string()))?;
+            .ok_or_else(|| Error::RequiredRegionNotFound("Metadata".to_string()))?;
 
         let mut metadata_data = vec![0u8; metadata_entry.length as usize];
         file.seek(SeekFrom::Start(metadata_entry.file_offset))?;
@@ -272,7 +266,7 @@ impl VhdxFile {
         // Read BAT
         let bat_entry = region_table
             .find_bat()
-            .ok_or_else(|| VhdxError::RequiredRegionNotFound("BAT".to_string()))?;
+            .ok_or_else(|| Error::RequiredRegionNotFound("BAT".to_string()))?;
 
         let mut bat_data = vec![0u8; bat_entry.length as usize];
         file.seek(SeekFrom::Start(bat_entry.file_offset))?;
@@ -305,7 +299,7 @@ impl VhdxFile {
                 if let Some(parent_path) = locator.parent_path() {
                     // Resolve parent path relative to this file with path traversal protection
                     let base_dir = path.parent().ok_or_else(|| {
-                        VhdxError::InvalidParentPath("Cannot determine base directory".to_string())
+                        Error::InvalidParentPath("Cannot determine base directory".to_string())
                     })?;
 
                     let parent_full_path = validate_parent_path(parent_path, base_dir)?;
@@ -319,7 +313,7 @@ impl VhdxFile {
                     // Validate sector sizes match per MS-VHDX spec Section 2.6.2.4
                     let parent_sector_size = parent_vhdx.logical_sector_size();
                     if parent_sector_size != logical_sector_size {
-                        return Err(VhdxError::SectorSizeMismatch {
+                        return Err(Error::SectorSizeMismatch {
                             parent: parent_sector_size,
                             child: logical_sector_size,
                         });
@@ -327,10 +321,8 @@ impl VhdxFile {
 
                     // Validate parent_linkage2 MUST NOT exist per MS-VHDX spec Section 2.2.4
                     if locator.parent_linkage2().is_some() {
-                        return Err(VhdxError::InvalidParentLocator(
-                            "parent_linkage2 MUST NOT exist per MS-VHDX spec Section 2.2.4"
-                                .to_string(),
-                        ));
+                        return Err(Error::InvalidParentLocator("parent_linkage2 MUST NOT exist per MS-VHDX spec Section 2.2.4"
+                            .to_string(),));
                     }
 
                     // Validate DataWriteGuid matches per MS-VHDX spec Section 2.2.4
@@ -339,16 +331,14 @@ impl VhdxFile {
                         let expected_guid = parse_guid_string(expected_guid_str)?;
 
                         if parent_data_write_guid != expected_guid {
-                            return Err(VhdxError::ParentGuidMismatch {
+                            return Err(Error::ParentGuidMismatch {
                                 expected: expected_guid_str.clone(),
                                 found: parent_data_write_guid.to_string(),
                             });
                         }
                     } else {
                         // parent_linkage is required for differencing disks
-                        return Err(VhdxError::InvalidParentLocator(
-                            "parent_linkage is required for differencing disks".to_string(),
-                        ));
+                        return Err(Error::InvalidParentLocator("parent_linkage is required for differencing disks".to_string(),));
                     }
 
                     Some(Box::new(parent_vhdx))
@@ -401,7 +391,7 @@ impl VhdxFile {
     }
 
     /// Replay log entries
-    fn replay_log(file: &mut File, header: &mut VhdxHeader, read_only: bool) -> Result<()> {
+    fn replay_log(file: &mut File, header: &mut Header, read_only: bool) -> Result<()> {
         if header.log_offset == 0 || header.log_length == 0 || header.log_guid.is_nil() {
             return Ok(());
         }
@@ -476,7 +466,7 @@ impl VhdxFile {
         let mut data1 = header1.to_bytes();
         let checksum1 = crc32c_with_zero_field(&data1, 4, 4);
         LittleEndian::write_u32(&mut data1[4..8], checksum1);
-        self.file.seek(SeekFrom::Start(VhdxHeader::OFFSET_1))?;
+        self.file.seek(SeekFrom::Start(Header::OFFSET_1))?;
         self.file.write_all(&data1)?;
 
         // Update header 2 (higher sequence number - considered "current")
@@ -485,7 +475,7 @@ impl VhdxFile {
         let mut data2 = header2.to_bytes();
         let checksum2 = crc32c_with_zero_field(&data2, 4, 4);
         LittleEndian::write_u32(&mut data2[4..8], checksum2);
-        self.file.seek(SeekFrom::Start(VhdxHeader::OFFSET_2))?;
+        self.file.seek(SeekFrom::Start(Header::OFFSET_2))?;
         self.file.write_all(&data2)?;
 
         self.file.flush()?;
@@ -500,7 +490,7 @@ impl VhdxFile {
     /// Read data from virtual offset
     pub fn read(&mut self, virtual_offset: u64, buf: &mut [u8]) -> Result<usize> {
         if virtual_offset >= self.virtual_disk_size {
-            return Err(VhdxError::InvalidOffset(virtual_offset));
+            return Err(Error::InvalidOffset(virtual_offset));
         }
 
         match self.disk_type {
@@ -522,14 +512,14 @@ impl VhdxFile {
     /// Write data to virtual offset
     pub fn write(&mut self, virtual_offset: u64, buf: &[u8]) -> Result<usize> {
         if self.read_only {
-            return Err(VhdxError::Io(std::io::Error::new(
+            return Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "File is read-only",
             )));
         }
 
         if virtual_offset >= self.virtual_disk_size {
-            return Err(VhdxError::InvalidOffset(virtual_offset));
+            return Err(Error::InvalidOffset(virtual_offset));
         }
 
         let result = match self.disk_type {
@@ -638,14 +628,14 @@ mod tests {
         let child_path = temp_dir.join("child.vhdx");
 
         // Create parent disk (512-byte sectors)
-        let _parent = crate::VhdxBuilder::new(10 * 1024 * 1024)
+        let _parent = crate::Builder::new(10 * 1024 * 1024)
             .sector_sizes(512, 4096)
             .disk_type(DiskType::Dynamic)
             .create(&parent_path)
             .unwrap();
 
         // Create differencing child disk with parent
-        let _child = crate::VhdxBuilder::new(10 * 1024 * 1024)
+        let _child = crate::Builder::new(10 * 1024 * 1024)
             .sector_sizes(512, 4096)
             .disk_type(DiskType::Differencing)
             .parent_path(parent_path.to_string_lossy().to_string())
@@ -672,7 +662,7 @@ mod tests {
         let parent_size = 512u32;
         let child_size = 4096u32;
 
-        let error = VhdxError::SectorSizeMismatch {
+        let error = Error::SectorSizeMismatch {
             parent: parent_size,
             child: child_size,
         };
@@ -691,7 +681,7 @@ mod tests {
 
         // Test 2: Verify pattern matching works
         match error {
-            VhdxError::SectorSizeMismatch { parent, child } => {
+            Error::SectorSizeMismatch { parent, child } => {
                 assert_eq!(parent, 512);
                 assert_eq!(child, 4096);
             }
@@ -705,7 +695,7 @@ mod tests {
         let expected = "12345678-1234-1234-1234-123456789abc";
         let found = "abcdef12-3456-7890-abcd-ef1234567890";
 
-        let error = VhdxError::ParentGuidMismatch {
+        let error = Error::ParentGuidMismatch {
             expected: expected.to_string(),
             found: found.to_string(),
         };
@@ -724,7 +714,7 @@ mod tests {
 
         // Test pattern matching
         match error {
-            VhdxError::ParentGuidMismatch {
+            Error::ParentGuidMismatch {
                 expected: e,
                 found: f,
             } => {
@@ -739,7 +729,7 @@ mod tests {
     fn test_invalid_parent_locator_error_format() {
         // Test that the InvalidParentLocator error type works correctly
         let msg = "parent_linkage2 MUST NOT exist";
-        let error = VhdxError::InvalidParentLocator(msg.to_string());
+        let error = Error::InvalidParentLocator(msg.to_string());
 
         let error_msg = error.to_string();
         assert!(
@@ -750,7 +740,7 @@ mod tests {
 
         // Test pattern matching
         match error {
-            VhdxError::InvalidParentLocator(m) => {
+            Error::InvalidParentLocator(m) => {
                 assert_eq!(m, msg);
             }
             _ => panic!("Expected InvalidParentLocator error variant"),
@@ -793,20 +783,20 @@ mod tests {
         let grandchild_path = temp_dir.join("grandchild.vhdx");
 
         // Create parent disk
-        let _parent = crate::VhdxBuilder::new(10 * 1024 * 1024)
+        let _parent = crate::Builder::new(10 * 1024 * 1024)
             .disk_type(DiskType::Dynamic)
             .create(&parent_path)
             .unwrap();
 
         // Create child disk pointing to parent
-        let _child = crate::VhdxBuilder::new(10 * 1024 * 1024)
+        let _child = crate::Builder::new(10 * 1024 * 1024)
             .disk_type(DiskType::Differencing)
             .parent_path(parent_path.to_string_lossy().to_string())
             .create(&child_path)
             .unwrap();
 
         // Create grandchild disk pointing to child
-        let _grandchild = crate::VhdxBuilder::new(10 * 1024 * 1024)
+        let _grandchild = crate::Builder::new(10 * 1024 * 1024)
             .disk_type(DiskType::Differencing)
             .parent_path(child_path.to_string_lossy().to_string())
             .create(&grandchild_path)
@@ -834,7 +824,7 @@ mod tests {
         let disk_b_path = temp_dir.join("disk_b.vhdx");
 
         // Create disk A (root)
-        let disk_a = crate::VhdxBuilder::new(10 * 1024 * 1024)
+        let disk_a = crate::Builder::new(10 * 1024 * 1024)
             .disk_type(DiskType::Dynamic)
             .create(&disk_a_path)
             .unwrap();
@@ -842,7 +832,7 @@ mod tests {
         let disk_a_guid = disk_a.virtual_disk_id().to_string();
 
         // Create disk B pointing to A
-        let _disk_b = crate::VhdxBuilder::new(10 * 1024 * 1024)
+        let _disk_b = crate::Builder::new(10 * 1024 * 1024)
             .disk_type(DiskType::Differencing)
             .parent_path(disk_a_path.to_string_lossy().to_string())
             .create(&disk_b_path)
@@ -881,7 +871,7 @@ mod tests {
             "Re-visiting disk A should fail with circular chain error"
         );
         match result.unwrap_err() {
-            VhdxError::CircularParentChain => {
+            Error::CircularParentChain => {
                 // Expected
             }
             other => panic!("Expected CircularParentChain error, got {:?}", other),
@@ -919,7 +909,7 @@ mod tests {
             MAX_PARENT_CHAIN_DEPTH
         );
         match result.unwrap_err() {
-            VhdxError::ParentChainTooDeep { depth } => {
+            Error::ParentChainTooDeep { depth } => {
                 assert_eq!(
                     depth, MAX_PARENT_CHAIN_DEPTH,
                     "Error should report current depth as {}",
@@ -941,7 +931,7 @@ mod tests {
     #[test]
     fn test_circular_parent_chain_error_format() {
         // Test that the CircularParentChain error type works correctly
-        let error = VhdxError::CircularParentChain;
+        let error = Error::CircularParentChain;
         let error_msg = error.to_string();
         assert!(
             error_msg.contains("Circular"),
@@ -951,7 +941,7 @@ mod tests {
 
         // Test pattern matching
         match error {
-            VhdxError::CircularParentChain => {
+            Error::CircularParentChain => {
                 // Expected
             }
             _ => panic!("Expected CircularParentChain error variant"),
@@ -962,7 +952,7 @@ mod tests {
     fn test_parent_chain_too_deep_error_format() {
         // Test that the ParentChainTooDeep error type works correctly
         let depth = 17;
-        let error = VhdxError::ParentChainTooDeep { depth };
+        let error = Error::ParentChainTooDeep { depth };
         let error_msg = error.to_string();
         assert!(
             error_msg.contains(&format!("{}", depth)),
@@ -977,7 +967,7 @@ mod tests {
 
         // Test pattern matching
         match error {
-            VhdxError::ParentChainTooDeep { depth: d } => {
+            Error::ParentChainTooDeep { depth: d } => {
                 assert_eq!(d, 17);
             }
             _ => panic!("Expected ParentChainTooDeep error variant"),
@@ -993,7 +983,7 @@ mod tests {
         let parent_path = temp_dir.join("parent.vhdx");
 
         // Create a parent file
-        let _parent = crate::VhdxBuilder::new(10 * 1024 * 1024)
+        let _parent = crate::Builder::new(10 * 1024 * 1024)
             .disk_type(DiskType::Dynamic)
             .create(&parent_path)
             .unwrap();
@@ -1025,7 +1015,7 @@ mod tests {
         assert!(result.is_err(), "Path traversal should be rejected");
 
         match result.unwrap_err() {
-            VhdxError::InvalidParentPath(msg) => {
+            Error::InvalidParentPath(msg) => {
                 assert!(
                     msg.contains("Path traversal"),
                     "Error should mention path traversal: {}",
@@ -1052,7 +1042,7 @@ mod tests {
             assert!(result.is_err(), "Absolute Unix path should be rejected");
 
             match result.unwrap_err() {
-                VhdxError::InvalidParentPath(msg) => {
+                Error::InvalidParentPath(msg) => {
                     assert!(
                         msg.contains("Absolute"),
                         "Error should mention absolute paths: {}",
@@ -1071,7 +1061,7 @@ mod tests {
             assert!(result.is_err(), "Absolute Windows path should be rejected");
 
             match result.unwrap_err() {
-                VhdxError::InvalidParentPath(msg) => {
+                Error::InvalidParentPath(msg) => {
                     assert!(
                         msg.contains("Absolute"),
                         "Error should mention absolute paths: {}",
@@ -1086,7 +1076,7 @@ mod tests {
             assert!(result.is_err(), "UNC path should be rejected as absolute");
 
             match result.unwrap_err() {
-                VhdxError::InvalidParentPath(msg) => {
+                Error::InvalidParentPath(msg) => {
                     assert!(
                         msg.contains("Absolute"),
                         "Error should mention absolute paths: {}",
@@ -1113,7 +1103,7 @@ mod tests {
 
         // Create parent file in temp_dir (above sub_dir)
         let parent_path = temp_dir.join("parent.vhdx");
-        let _parent = crate::VhdxBuilder::new(10 * 1024 * 1024)
+        let _parent = crate::Builder::new(10 * 1024 * 1024)
             .disk_type(DiskType::Dynamic)
             .create(&parent_path)
             .unwrap();
@@ -1130,7 +1120,7 @@ mod tests {
         );
 
         match result.unwrap_err() {
-            VhdxError::InvalidParentPath(msg) => {
+            Error::InvalidParentPath(msg) => {
                 assert!(
                     msg.contains("Path traversal") || msg.contains("escapes"),
                     "Error should mention traversal or escaping: {}",
@@ -1148,7 +1138,7 @@ mod tests {
     fn test_invalid_parent_path_error_format() {
         // Test that the InvalidParentPath error type works correctly
         let msg = "Path traversal not allowed";
-        let error = VhdxError::InvalidParentPath(msg.to_string());
+        let error = Error::InvalidParentPath(msg.to_string());
 
         let error_msg = error.to_string();
         assert!(
@@ -1164,7 +1154,7 @@ mod tests {
 
         // Test pattern matching
         match error {
-            VhdxError::InvalidParentPath(m) => {
+            Error::InvalidParentPath(m) => {
                 assert_eq!(m, msg);
             }
             _ => panic!("Expected InvalidParentPath error variant"),
@@ -1193,7 +1183,7 @@ mod tests {
         );
 
         match result.err().expect("Expected an error") {
-            VhdxError::FileTooSmall(msg) => {
+            Error::FileTooSmall(msg) => {
                 assert!(
                     msg.contains("minimum 1MiB") || msg.contains("minimum 1 MiB"),
                     "Error message should mention minimum 1MiB requirement, got: {}",
@@ -1244,7 +1234,7 @@ mod tests {
             );
 
             match result.err().expect("Expected an error") {
-                VhdxError::FileTooSmall(_) => {
+                Error::FileTooSmall(_) => {
                     // Expected
                 }
                 other => panic!("Expected FileTooSmall for size {}, got {:?}", size, other),

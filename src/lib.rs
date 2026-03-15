@@ -20,5 +20,5 @@ pub mod metadata;
 pub mod payload;
 
 // Re-exports for convenience
-pub use error::VhdxError;
-pub use file::{DiskType, VhdxBuilder, VhdxFile};
+pub use error::Error;
+pub use file::{DiskType, Builder, VhdxFile};

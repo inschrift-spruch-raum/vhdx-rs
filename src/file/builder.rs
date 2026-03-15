@@ -9,13 +9,13 @@ use std::path::Path;
 use byteorder::{ByteOrder, LittleEndian};
 
 use crate::common::Guid;
-use crate::error::{Result, VhdxError};
-use crate::header::{FileTypeIdentifier, VhdxHeader, REGION_SIGNATURE};
+use crate::error::{Error, Result};
+use crate::header::{FileTypeIdentifier, Header, REGION_SIGNATURE};
 
 use super::{DiskType, VhdxFile};
 
 /// VHDX Builder for creating new files
-pub struct VhdxBuilder {
+pub struct Builder {
     /// Virtual disk size
     pub(crate) virtual_disk_size: u64,
     /// Block size
@@ -32,10 +32,10 @@ pub struct VhdxBuilder {
     pub(crate) creator: Option<String>,
 }
 
-impl VhdxBuilder {
+impl Builder {
     /// Create new builder with required parameters
     pub fn new(virtual_disk_size: u64) -> Self {
-        VhdxBuilder {
+        Builder {
             virtual_disk_size,
             block_size: 1024 * 1024 * 32, // 32MB default
             logical_sector_size: 512,
@@ -84,7 +84,7 @@ impl VhdxBuilder {
 
         // Validate parameters
         if self.virtual_disk_size == 0 {
-            return Err(VhdxError::InvalidMetadata(
+            return Err(Error::InvalidMetadata(
                 "Virtual disk size cannot be zero".to_string(),
             ));
         }
@@ -94,22 +94,22 @@ impl VhdxBuilder {
         const MAX_BLOCK_SIZE: u32 = 256 * 1024 * 1024; // 256MB
 
         if self.block_size < MIN_BLOCK_SIZE || self.block_size > MAX_BLOCK_SIZE {
-            return Err(VhdxError::InvalidBlockSize(self.block_size));
+            return Err(Error::InvalidBlockSize(self.block_size));
         }
 
         // Check power of 2: only one bit set
         if self.block_size & (self.block_size - 1) != 0 {
-            return Err(VhdxError::InvalidBlockSize(self.block_size));
+            return Err(Error::InvalidBlockSize(self.block_size));
         }
 
         // Sector sizes must be 512 or 4096
         if self.logical_sector_size != 512 && self.logical_sector_size != 4096 {
-            return Err(VhdxError::InvalidMetadata(
+            return Err(Error::InvalidMetadata(
                 "Logical sector size must be 512 or 4096".to_string(),
             ));
         }
         if self.physical_sector_size != 512 && self.physical_sector_size != 4096 {
-            return Err(VhdxError::InvalidMetadata(
+            return Err(Error::InvalidMetadata(
                 "Physical sector size must be 512 or 4096".to_string(),
             ));
         }
@@ -155,7 +155,7 @@ impl VhdxBuilder {
 
         // Step 2: Create and write headers
         // Header 1 at 64KB
-        let mut header1 = VhdxHeader::new(0);
+        let mut header1 = Header::new(0);
         header1.file_write_guid = file_write_guid;
         header1.data_write_guid = data_write_guid;
         header1.log_guid = Guid::from_bytes([0u8; 16]); // No log - embedded in header

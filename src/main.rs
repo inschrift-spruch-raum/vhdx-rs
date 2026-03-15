@@ -6,7 +6,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use vhdx_rs::header::{read_headers, read_region_tables, FileTypeIdentifier};
 use vhdx_rs::metadata::MetadataRegion;
-use vhdx_rs::{DiskType, VhdxBuilder, VhdxFile};
+use vhdx_rs::{DiskType, Builder, VhdxFile};
 
 #[derive(Parser)]
 #[command(name = "vhdx-tool")]
@@ -424,7 +424,7 @@ fn create_vhdx(
     }
 
     // Create the VHDX file
-    let mut builder = VhdxBuilder::new(virtual_disk_size)
+    let mut builder = Builder::new(virtual_disk_size)
         .disk_type(disk_type)
         .block_size(block_size_bytes as u32)
         .sector_sizes(logical_sector_size, physical_sector_size);
