@@ -12,7 +12,7 @@ use crate::common::Guid;
 use crate::error::{Error, Result};
 use crate::header::{FileTypeIdentifier, Header, REGION_SIGNATURE};
 
-use super::DiskType;
+use super::{DiskType, VhdxFile};
 
 /// VHDX Builder for creating new files
 pub struct Builder {
@@ -79,7 +79,7 @@ impl Builder {
     }
 
     /// Build and create the VHDX file
-    pub fn create<P: AsRef<Path>>(self, path: P) -> Result<crate::file::file::File> {
+    pub fn create<P: AsRef<Path>>(self, path: P) -> Result<VhdxFile> {
         let path = path.as_ref();
 
         // Validate parameters
@@ -411,6 +411,6 @@ impl Builder {
         drop(file);
 
         // Now open the newly created file
-        crate::file::file::File::open(path, false)
+        VhdxFile::open(path, false)
     }
 }

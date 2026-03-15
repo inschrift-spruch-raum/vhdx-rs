@@ -58,7 +58,9 @@ impl ParentLocator {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 16 {
-            return Err(Error::InvalidMetadata("ParentLocator too small".to_string(),));
+            return Err(Error::InvalidMetadata(
+                "ParentLocator too small".to_string(),
+            ));
         }
 
         let key_count = LittleEndian::read_u32(&data[4..8]);
@@ -70,7 +72,9 @@ impl ParentLocator {
         for i in 0..key_count as usize {
             let entry_offset = entries_start + i * ParentLocatorEntry::SIZE;
             if entry_offset + ParentLocatorEntry::SIZE > data.len() {
-                return Err(Error::InvalidMetadata("ParentLocator entry extends beyond data".to_string(),));
+                return Err(Error::InvalidMetadata(
+                    "ParentLocator entry extends beyond data".to_string(),
+                ));
             }
             let entry = ParentLocatorEntry::from_bytes(&data[entry_offset..])?;
             entries.push(entry);
@@ -123,7 +127,9 @@ fn read_utf16_string(data: &[u8], offset: u32, length: u16) -> Result<String> {
     let len = length as usize * 2; // UTF-16 is 2 bytes per char
 
     if start + len > data.len() {
-        return Err(Error::InvalidMetadata("String extends beyond data".to_string(),));
+        return Err(Error::InvalidMetadata(
+            "String extends beyond data".to_string(),
+        ));
     }
 
     let mut chars = Vec::with_capacity(length as usize);

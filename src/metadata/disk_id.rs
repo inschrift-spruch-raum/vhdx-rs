@@ -21,7 +21,9 @@ impl VirtualDiskId {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 16 {
-            return Err(Error::InvalidMetadata("VirtualDiskId too small".to_string(),));
+            return Err(Error::InvalidMetadata(
+                "VirtualDiskId too small".to_string(),
+            ));
         }
 
         let mut guid = [0u8; 16];

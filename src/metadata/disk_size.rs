@@ -26,13 +26,17 @@ impl VirtualDiskSize {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 8 {
-            return Err(Error::InvalidMetadata("VirtualDiskSize too small".to_string(),));
+            return Err(Error::InvalidMetadata(
+                "VirtualDiskSize too small".to_string(),
+            ));
         }
 
         let size = LittleEndian::read_u64(&data[0..8]);
 
         if size == 0 {
-            return Err(Error::InvalidMetadata("Virtual disk size cannot be zero".to_string(),));
+            return Err(Error::InvalidMetadata(
+                "Virtual disk size cannot be zero".to_string(),
+            ));
         }
 
         Ok(VirtualDiskSize { size })

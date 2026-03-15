@@ -36,7 +36,7 @@ impl SectorSize {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 4 {
-            return Err(Error::InvalidMetadata("SectorSize too small".to_string(),));
+            return Err(Error::InvalidMetadata("SectorSize too small".to_string()));
         }
 
         let size = LittleEndian::read_u32(&data[0..4]);

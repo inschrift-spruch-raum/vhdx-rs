@@ -200,12 +200,12 @@ pub struct VhdxFile {
     /// Is file open in read-only mode
     pub(crate) read_only: bool,
     /// Parent file (for differencing disks)
-    pub(crate) parent: Option<Box<File>>,
+    pub(crate) parent: Option<Box<VhdxFile>>,
     /// Log writer for metadata updates
     pub(crate) log_writer: Option<crate::log::LogWriter>,
 }
 
-impl File {
+impl VhdxFile {
     /// Open an existing VHDX file
     ///
     /// This will replay the log if necessary.
@@ -362,7 +362,7 @@ impl File {
             None
         };
 
-        let mut vhdx = File {
+        let mut vhdx = VhdxFile {
             file,
             path,
             file_type,

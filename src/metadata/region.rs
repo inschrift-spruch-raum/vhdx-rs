@@ -47,7 +47,9 @@ impl MetadataRegion {
         for i in 0..header.entry_count as usize {
             let entry_offset = entries_start + i * MetadataTableEntry::SIZE;
             if entry_offset + MetadataTableEntry::SIZE > data.len() {
-                return Err(Error::InvalidMetadata("Metadata entry extends beyond data".to_string(),));
+                return Err(Error::InvalidMetadata(
+                    "Metadata entry extends beyond data".to_string(),
+                ));
             }
             let entry = MetadataTableEntry::from_bytes(&data[entry_offset..])?;
             entries.push(entry);
@@ -125,9 +127,7 @@ impl MetadataRegion {
             .entries
             .iter()
             .find(|e| e.item_id == PHYSICAL_SECTOR_SIZE_GUID)
-            .ok_or_else(|| {
-                Error::InvalidMetadata("PhysicalSectorSize not found".to_string())
-            })?;
+            .ok_or_else(|| Error::InvalidMetadata("PhysicalSectorSize not found".to_string()))?;
 
         let offset = entry.offset as usize - self.data_offset;
         let data = &self.data[offset..offset + entry.length as usize];

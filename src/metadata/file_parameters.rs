@@ -25,7 +25,9 @@ impl FileParameters {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 8 {
-            return Err(Error::InvalidMetadata("FileParameters too small".to_string(),));
+            return Err(Error::InvalidMetadata(
+                "FileParameters too small".to_string(),
+            ));
         }
 
         let block_size = LittleEndian::read_u32(&data[0..4]);
