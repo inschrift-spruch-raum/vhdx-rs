@@ -6,7 +6,7 @@ pub mod builder;
 pub mod file;
 
 pub use builder::Builder;
-pub use file::VhdxFile;
+pub use file::{CheckReport, VhdxFile as File};
 
 /// VHDX disk type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

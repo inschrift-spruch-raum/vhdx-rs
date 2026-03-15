@@ -9,16 +9,16 @@
 //! - Crash recovery via log replay
 //! - CLI tool `vhdx-tool` included
 
-pub mod bat;
-pub mod block_io;
-pub mod common;
-pub mod error;
-pub mod file;
-pub mod header;
-pub mod log;
-pub mod metadata;
-pub mod payload;
+mod bat;
+mod block_io;
+mod common;
+mod error;
+mod file;
+mod header;
+mod log;
+mod metadata;
+mod payload;
 
 // Re-exports for convenience
 pub use error::Error;
-pub use file::{Builder, DiskType, VhdxFile};
+pub use file::{Builder, DiskType, File};

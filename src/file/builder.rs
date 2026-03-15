@@ -12,7 +12,7 @@ use crate::common::Guid;
 use crate::error::{Error, Result};
 use crate::header::{FileTypeIdentifier, Header, REGION_SIGNATURE};
 
-use super::{DiskType, VhdxFile};
+use super::{file::VhdxFile, DiskType};
 
 /// VHDX Builder for creating new files
 pub struct Builder {
