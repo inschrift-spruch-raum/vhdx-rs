@@ -13,7 +13,7 @@
    - If `entry.is_required && !KNOWN_REQUIRED_METADATA_GUIDS.contains(&entry.item_id)` → return `UnknownRequiredMetadata` error
    - Unknown non-required metadata is allowed (ignored per spec)
 
-3. **Error variant**: Added `UnknownRequiredMetadata { guid: String }` to `VhdxError`
+3. **Error variant**: Added `UnknownRequiredMetadata { guid: String }` to `Error`
 
 4. **Test coverage**: 5 unit tests:
    - Known required metadata passes
@@ -38,22 +38,22 @@ Section 2.2: "If IsRequired is set to True and the implementation does not recog
 
 ### Implementation Details
 
-1. **Validation location**: `VhdxFile::open()` method, immediately after parent VHDX is loaded
-   - Line ~165-174 in `src/file/vhdx_file.rs`
-   - Validation occurs before parent is wrapped in `Option<Box<VhdxFile>>`
+1. **Validation location**: `File::open()` method, immediately after parent VHDX is loaded
+   - Line ~165-174 in `src/file/file.rs`
+   - Validation occurs before parent is wrapped in `Option<Box<File>>`
 
 2. **Validation logic**:
    ```rust
-   let parent_sector_size = parent_vhdx.logical_sector_size();
-   if parent_sector_size != logical_sector_size {
-       return Err(VhdxError::SectorSizeMismatch {
-           parent: parent_sector_size,
-           child: logical_sector_size,
-       });
-   }
-   ```
+    let parent_sector_size = parent_vhdx.logical_sector_size();
+    if parent_sector_size != logical_sector_size {
+        return Err(Error::SectorSizeMismatch {
+            parent: parent_sector_size,
+            child: logical_sector_size,
+        });
+    }
+    ```
 
-3. **Error variant added**: `SectorSizeMismatch { parent: u32, child: u32 }` to `VhdxError`
+3. **Error variant added**: `SectorSizeMismatch { parent: u32, child: u32 }` to `Error`
    - Error message format: `"Parent/child sector size mismatch: parent={parent}, child={child}"`
    - Both values displayed for debugging
 
@@ -67,7 +67,7 @@ Section 2.6.2.4: "The logical sector size of the parent virtual disk MUST match 
 
 ### Key Learnings
 
-1. **Builder may enforce matching**: The `VhdxBuilder` appears to inherit sector sizes from parent when creating differencing disks, making it difficult to test mismatch scenarios end-to-end. The error type was tested directly instead.
+1. **Builder may enforce matching**: The `Builder` appears to inherit sector sizes from parent when creating differencing disks, making it difficult to test mismatch scenarios end-to-end. The error type was tested directly instead.
 
 2. **Validation placement critical**: Sector size validation must happen AFTER parent is loaded but BEFORE it's stored, so we can access the parent's metadata via `logical_sector_size()` accessor method.
 
@@ -76,7 +76,7 @@ Section 2.6.2.4: "The logical sector size of the parent virtual disk MUST match 
 ## Parent DataWriteGuid Validation (Task 4)
 
 **Date**: 2026-03-15
-**Task**: Add validation in `VhdxFile::open()` to verify parent disk's DataWriteGuid matches the expected value stored in the differencing disk's parent locator
+**Task**: Add validation in `File::open()` to verify parent disk's DataWriteGuid matches the expected value stored in the differencing disk's parent locator
 
 ### Implementation Details
 
@@ -88,7 +88,7 @@ Section 2.6.2.4: "The logical sector size of the parent virtual disk MUST match 
    - Added `parent_linkage2()` method to check if parent_linkage2 key exists
    - Per MS-VHDX Section 2.2.4, parent_linkage2 MUST NOT exist
 
-3. **VhdxFile::open() validation** (src/file/vhdx_file.rs):
+3. **File::open() validation** (src/file/file.rs):
    - Added `parse_guid_string()` helper function using `uuid::Uuid::parse_str()`
    - Added three validation checks (in order):
      a. Check `parent_linkage2` doesn't exist → `InvalidParentLocator` error
@@ -99,26 +99,26 @@ Section 2.6.2.4: "The logical sector size of the parent virtual disk MUST match 
    ```rust
    // After sector size validation...
    
-   // 1. Verify parent_linkage2 MUST NOT exist
-   if locator.parent_linkage2().is_some() {
-       return Err(VhdxError::InvalidParentLocator(...));
-   }
-   
-   // 2. Verify parent_linkage exists and matches parent's DataWriteGuid
-   if let Some(expected_guid_str) = locator.parent_linkage() {
-       let parent_data_write_guid = parent_vhdx.header.data_write_guid;
-       let expected_guid = parse_guid_string(expected_guid_str)?;
-       
-       if parent_data_write_guid != expected_guid {
-           return Err(VhdxError::ParentGuidMismatch {
-               expected: expected_guid_str.clone(),
-               found: parent_data_write_guid.to_string(),
-           });
-       }
-   } else {
-       return Err(VhdxError::InvalidParentLocator(...));
-   }
-   ```
+    // 1. Verify parent_linkage2 MUST NOT exist
+    if locator.parent_linkage2().is_some() {
+        return Err(Error::InvalidParentLocator(...));
+    }
+    
+    // 2. Verify parent_linkage exists and matches parent's DataWriteGuid
+    if let Some(expected_guid_str) = locator.parent_linkage() {
+        let parent_data_write_guid = parent_vhdx.header.data_write_guid;
+        let expected_guid = parse_guid_string(expected_guid_str)?;
+        
+        if parent_data_write_guid != expected_guid {
+            return Err(Error::ParentGuidMismatch {
+                expected: expected_guid_str.clone(),
+                found: parent_data_write_guid.to_string(),
+            });
+        }
+    } else {
+        return Err(Error::InvalidParentLocator(...));
+    }
+    ```
 
 5. **Test coverage**: 4 unit tests added:
    - `test_parent_guid_mismatch_error_format`: Tests error message format
@@ -212,7 +212,7 @@ let parent_vhdx = Self::open_internal(parent_full_path, true, &new_chain_state)?
 ### Files Modified
 
 - `src/error.rs`: Added error variants
-- `src/file/vhdx_file.rs`: Added ParentChainState, MAX_PARENT_CHAIN_DEPTH, open_internal(), modified parent loading
+- `src/file/file.rs`: Added ParentChainState, MAX_PARENT_CHAIN_DEPTH, open_internal(), modified parent loading
 
 ### Verification
 
@@ -410,14 +410,14 @@ Successfully implemented three-layer path traversal protection for parent locato
 fn validate_parent_path(parent_path: &str, base_dir: &Path) -> Result<PathBuf> {
     // Layer 1: Reject absolute paths
     if Path::new(parent_path).is_absolute() {
-        return Err(VhdxError::InvalidParentPath(
+        return Err(Error::InvalidParentPath(
             "Absolute paths not allowed".to_string()
         ));
     }
     
     // Layer 2: Check for .. components
     if parent_path.contains("..") {
-        return Err(VhdxError::InvalidParentPath(
+        return Err(Error::InvalidParentPath(
             "Path traversal not allowed".to_string()
         ));
     }
@@ -428,7 +428,7 @@ fn validate_parent_path(parent_path: &str, base_dir: &Path) -> Result<PathBuf> {
     let canonical_resolved = resolved.canonicalize()?;
     
     if !canonical_resolved.starts_with(&canonical_base) {
-        return Err(VhdxError::InvalidParentPath(
+        return Err(Error::InvalidParentPath(
             "Path escapes base directory".to_string()
         ));
     }
@@ -484,7 +484,7 @@ Section 2.2.4: Parent Locator structure stores parent path in key-value pairs. T
 ### Files Modified
 
 - `src/error.rs`: Added `InvalidParentPath` error variant
-- `src/file/vhdx_file.rs`: Added `validate_parent_path()` function, integrated into parent loading, added 5 unit tests
+- `src/file/file.rs`: Added `validate_parent_path()` function, integrated into parent loading, added 5 unit tests
 
 ### Verification
 

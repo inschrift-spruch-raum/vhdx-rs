@@ -584,7 +584,7 @@ Max Concurrent: 7 (Wave 1)
 
 ### Wave 3: API Changes (2 tasks)
 
-- [ ] 11. Rename File::open parameter from read_only to write
+- [x] 11. Rename File::open parameter from read_only to write
 
   **What to do**:
   - Change `pub fn open<P: AsRef<Path>>(path: P, read_only: bool)` to `pub fn open<P: AsRef<Path>>(path: P, write: bool)`
@@ -622,7 +622,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES (breaking)
   - Message: `refactor(file)!: rename open parameter from read_only to write`
 
-- [ ] 12. Update tests for new API
+- [x] 12. Update tests for new API
 
   **What to do**:
   - Update all tests using `VhdxFile::open(path, read_only)` to `File::open(path, write)`
@@ -646,7 +646,7 @@ Max Concurrent: 7 (Wave 1)
 
 ### Wave 4: CLI Refactoring (4 tasks)
 
-- [ ] 13. Create workspace structure and cli/ crate
+- [x] 13. Create workspace structure and cli/ crate
 
   **What to do**:
   - Convert root to workspace: add `[workspace]` to root Cargo.toml
@@ -675,7 +675,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES
   - Message: `chore(workspace): create workspace structure with cli/ crate`
 
-- [ ] 14. Migrate CLI logic to cli/ (delete write command)
+- [x] 14. Migrate CLI logic to cli/ (delete write command)
 
   **What to do**:
   - Extract CLI logic from `src/main.rs`
@@ -717,7 +717,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES
   - Message: `refactor(cli): migrate CLI to cli/ crate, remove write command`
 
-- [ ] 15. Remove CLI code and clap from library
+- [x] 15. Remove CLI code and clap from library
 
   **What to do**:
   - Remove `src/main.rs` from library crate
@@ -740,7 +740,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES
   - Message: `refactor(lib): remove CLI code and clap dependency`
 
-- [ ] 16. Update workspace Cargo.toml
+- [x] 16. Update workspace Cargo.toml
 
   **What to do**:
   - Configure workspace members: `["vhdx-rs", "cli"]` (or appropriate paths)
@@ -763,7 +763,7 @@ Max Concurrent: 7 (Wave 1)
 
 ### Wave 5: Test Synchronization (3 tasks)
 
-- [ ] 17. Fix tests in tests/ directory
+- [x] 17. Fix tests in tests/ directory
 
   **What to do**:
   - Update all integration tests in `tests/`
@@ -788,7 +788,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES
   - Message: `fix(tests): update integration tests for new API`
 
-- [ ] 18. Fix inline tests in src/
+- [x] 18. Fix inline tests in src/
 
   **What to do**:
   - Update all `#[cfg(test)]` modules in src/
@@ -808,7 +808,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES
   - Message: `fix(tests): update inline tests for new API`
 
-- [ ] 19. Run full test suite
+- [x] 19. Run full test suite
 
   **What to do**:
   - Run complete test suite: `cargo test --workspace`
@@ -841,7 +841,7 @@ Max Concurrent: 7 (Wave 1)
 
 ### Wave 6: Documentation and Final Verification (5 tasks)
 
-- [ ] 20. Update doc comments
+- [x] 20. Update doc comments
 
   **What to do**:
   - Update all doc comments referencing old type names
@@ -866,7 +866,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES
   - Message: `docs: update doc comments for renamed types`
 
-- [ ] 21. Run cargo doc and fix warnings
+- [x] 21. Run cargo doc and fix warnings
 
   **What to do**:
   - Run `cargo doc --no-deps --workspace`
@@ -887,7 +887,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES
   - Message: `fix(docs): resolve cargo doc warnings`
 
-- [ ] 22. Run cargo clippy and fix warnings
+- [x] 22. Run cargo clippy and fix warnings
 
   **What to do**:
   - Run `cargo clippy --workspace`
@@ -905,7 +905,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES
   - Message: `fix(clippy): resolve all clippy warnings`
 
-- [ ] 23. Final build and test verification
+- [x] 23. Final build and test verification
 
   **What to do**:
   - Final verification:

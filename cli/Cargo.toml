@@ -1,0 +1,9 @@
+[package]
+name = "vhdx-tool"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+
+[dependencies]
+vhdx-rs = { path = ".." }
+clap.workspace = true

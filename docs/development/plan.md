@@ -252,7 +252,7 @@ Scenario: Reject non-zero reserved bits
 **What to do**:
 - Define whitelist of recognized required metadata GUIDs
 - Add validation in `MetadataRegion::from_bytes()` to reject unknown required metadata
-- Add new error variant `UnknownRequiredMetadata` to `VhdxError`
+- Add new error variant `UnknownRequiredMetadata` to `Error`
 - Update error messages to include the unknown GUID
 
 **Must NOT do**:
@@ -331,7 +331,7 @@ Scenario: Allow unknown non-required metadata
 ### Task 3: Add Parent Sector Size Validation [x]
 
 **What to do**:
-- In `VhdxFile::open()` when loading differencing disk parent, validate sector sizes match
+- In `File::open()` when loading differencing disk parent, validate sector sizes match
 - Compare `parent.metadata.logical_sector_size()` with `self.metadata.logical_sector_size()`
 - Add error variant `SectorSizeMismatch` if not matching
 
@@ -394,7 +394,7 @@ Scenario: Mismatched sector sizes
 ### Task 4: Add Parent DataWriteGuid Validation [x]
 
 **What to do**:
-- In `VhdxFile::open()` when loading differencing disk parent, validate DataWriteGuid
+- In `File::open()` when loading differencing disk parent, validate DataWriteGuid
 - Extract `parent_linkage` from parent locator
 - Compare with `parent.header.data_write_guid`
 - Use existing `ParentGuidMismatch` error (currently unused)

@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use vhdx_rs::{DiskType, VhdxBuilder, VhdxFile};
+use vhdx_rs::{Builder, DiskType, File};
 
 /// Get a unique temporary file path for tests
 pub fn temp_vhdx_path(name: &str) -> PathBuf {
@@ -17,22 +17,26 @@ pub fn cleanup_vhdx(path: &Path) {
 }
 
 /// Create a temporary dynamic VHDX file for testing
-pub fn create_temp_dynamic_vhdx(name: &str, size: u64) -> (VhdxFile, PathBuf) {
+pub fn create_temp_dynamic_vhdx(name: &str, size: u64) -> (File, PathBuf) {
     let path = temp_vhdx_path(name);
-    let vhdx = VhdxBuilder::new(size)
+    let _vhdx = Builder::new(size)
         .disk_type(DiskType::Dynamic)
         .create(&path)
         .expect("Failed to create dynamic VHDX");
+    // Reopen with write access for tests that need to write
+    let vhdx = File::open(&path, true).expect("Failed to reopen dynamic VHDX with write access");
     (vhdx, path)
 }
 
 /// Create a temporary fixed VHDX file for testing
-pub fn create_temp_fixed_vhdx(name: &str, size: u64) -> (VhdxFile, PathBuf) {
+pub fn create_temp_fixed_vhdx(name: &str, size: u64) -> (File, PathBuf) {
     let path = temp_vhdx_path(name);
-    let vhdx = VhdxBuilder::new(size)
+    let _vhdx = Builder::new(size)
         .disk_type(DiskType::Fixed)
         .create(&path)
         .expect("Failed to create fixed VHDX");
+    // Reopen with write access for tests that need to write
+    let vhdx = File::open(&path, true).expect("Failed to reopen fixed VHDX with write access");
     (vhdx, path)
 }
 

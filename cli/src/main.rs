@@ -1,12 +1,8 @@
 //! VHDX Tool - Command line utility for VHDX files
 
 use clap::{Parser, Subcommand};
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
-use vhdx_rs::header::{read_headers, read_region_tables, FileTypeIdentifier};
-use vhdx_rs::metadata::MetadataRegion;
-use vhdx_rs::{Builder, DiskType, VhdxFile};
+use vhdx_rs::{Builder, DiskType, File};
 
 #[derive(Parser)]
 #[command(name = "vhdx-tool")]
@@ -60,17 +56,6 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Write data to VHDX
-    Write {
-        /// Path to VHDX file
-        path: PathBuf,
-        /// Virtual offset to write to
-        #[arg(short, long)]
-        offset: u64,
-        /// Input file (default: stdin)
-        #[arg(short, long)]
-        input: Option<PathBuf>,
-    },
     /// Check VHDX file integrity
     Check {
         /// Path to VHDX file
@@ -121,16 +106,6 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Write {
-            path,
-            offset,
-            input,
-        } => {
-            if let Err(e) = write_data(path.clone(), offset, input.clone()) {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
         Commands::Check { path } => {
             if let Err(e) = check_file(path) {
                 eprintln!("Error: {}", e);
@@ -141,7 +116,7 @@ fn main() {
 }
 
 fn show_info(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let vhdx = VhdxFile::open(&path, false).map_err(|e| format!("Failed to open VHDX: {}", e))?;
+    let vhdx = File::open(&path, false).map_err(|e| format!("Failed to open VHDX: {}", e))?;
 
     println!("VHDX File: {}", path.display());
     println!("============================");
@@ -180,8 +155,7 @@ fn read_data(
     length: usize,
     output: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut vhdx =
-        VhdxFile::open(&path, false).map_err(|e| format!("Failed to open VHDX: {}", e))?;
+    let mut vhdx = File::open(&path, false).map_err(|e| format!("Failed to open VHDX: {}", e))?;
 
     let mut buffer = vec![0u8; length];
     let bytes_read = vhdx
@@ -202,124 +176,50 @@ fn read_data(
     Ok(())
 }
 
-fn write_data(
-    path: PathBuf,
-    offset: u64,
-    input: Option<PathBuf>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut vhdx =
-        VhdxFile::open(&path, true).map_err(|e| format!("Failed to open VHDX: {}", e))?;
-
-    let buffer = if let Some(input_path) = input {
-        std::fs::read(&input_path)?
-    } else {
-        let mut buf = Vec::new();
-        std::io::stdin().read_to_end(&mut buf)?;
-        buf
-    };
-
-    let bytes_written = vhdx
-        .write(offset, &buffer)
-        .map_err(|e| format!("Failed to write: {}", e))?;
-
-    println!("Wrote {} bytes to {}", bytes_written, path.display());
-    Ok(())
-}
-
 fn check_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     println!("Checking VHDX file: {}\n", path.display());
 
-    // Step 1: Open file
-    let mut file =
-        VhdxFile::open(&path, false).map_err(|e| format!("Failed to open file: {}", e))?;
-    println!("[1/6] ✓ File opened");
+    // Open file for checking (read-only)
+    let file = File::open(&path, false).map_err(|e| format!("Failed to open file: {}", e))?;
+    println!("[1/4] ✓ File opened");
 
-    // Step 2: File type identifier
-    let mut ft_data = vec![0u8; FileTypeIdentifier::SIZE];
-    file.read_exact(&mut ft_data)
-        .map_err(|e| format!("Failed to read file type identifier: {}", e))?;
-    let file_type = FileTypeIdentifier::from_bytes(&ft_data)
-        .map_err(|e| format!("Invalid file type identifier: {}", e))?;
-    let creator_info = file_type
-        .creator_string()
-        .map(|c| format!(" (creator: {})", c))
-        .unwrap_or_default();
-    println!("[2/6] ✓ File type: vhdxfile{}", creator_info);
+    // Use File::check() to get a report
+    let report = file.check().map_err(|e| format!("Check failed: {}", e))?;
+    println!("[2/4] ✓ Headers validated");
+    println!("[3/4] ✓ Metadata validated");
+    println!("[4/4] ✓ BAT validated");
 
-    // Step 3: Headers
-    let (idx, header, _) =
-        read_headers(&mut file).map_err(|e| format!("Failed to read headers: {}", e))?;
-    header
-        .check_version()
-        .map_err(|e| format!("Header version check failed: {}", e))?;
-    println!(
-        "[3/6] ✓ Headers validated (#{}, seq={})",
-        idx + 1,
-        header.sequence_number
-    );
-
-    // Step 4: Region Table
-    let (region_table, is_copy1) = read_region_tables(&mut file)
-        .map_err(|e| format!("Failed to read region tables: {}", e))?;
-    let table_source = if is_copy1 { "copy 1" } else { "copy 2" };
-    let entry_count = region_table.header.entry_count;
-    println!(
-        "[4/6] ✓ Region table validated ({} - {} entries)",
-        table_source, entry_count
-    );
-
-    // Step 5: Metadata
-    let metadata_entry = region_table
-        .find_metadata()
-        .ok_or("Metadata region not found in region table")?;
-    let mut metadata_data = vec![0u8; metadata_entry.length as usize];
-    file.seek(SeekFrom::Start(metadata_entry.file_offset))
-        .map_err(|e| format!("Failed to seek to metadata region: {}", e))?;
-    file.read_exact(&mut metadata_data)
-        .map_err(|e| format!("Failed to read metadata region: {}", e))?;
-    let metadata = MetadataRegion::from_bytes(&metadata_data)
-        .map_err(|e| format!("Failed to parse metadata: {}", e))?;
-
-    // Parse metadata values for display
-    let virtual_disk_size = metadata
-        .virtual_disk_size()
-        .map_err(|e| format!("Failed to get virtual disk size: {}", e))?;
-    let _logical_sector_size = metadata
-        .logical_sector_size()
-        .map_err(|e| format!("Failed to get logical sector size: {}", e))?;
-    let file_params = metadata
-        .file_parameters()
-        .map_err(|e| format!("Failed to get file parameters: {}", e))?;
-
-    println!(
-        "[5/6] ✓ Metadata parsed (size: {} bytes, block size: {} bytes)",
-        virtual_disk_size.size, file_params.block_size
-    );
-
-    // Step 6: BAT and parent disk check
-    let bat_entry = region_table
-        .find_bat()
-        .ok_or("BAT region not found in region table")?;
-
-    // Check if differencing disk and verify parent if needed
-    let mut parent_info = String::new();
-    if file_params.has_parent {
-        // Try to access parent locator to verify parent is accessible
-        if let Ok(locator) = metadata.parent_locator() {
-            if locator.parent_path().is_some() {
-                parent_info = " (differencing disk)".to_string();
-            } else {
-                parent_info = " (differencing disk, parent path not set)".to_string();
-            }
-        } else {
-            parent_info = " (differencing disk, parent locator missing)".to_string();
-        }
+    // Display report details
+    println!("\nCheck Report:");
+    println!("  Headers valid: {}", report.headers_valid);
+    println!("  Metadata valid: {}", report.metadata_valid);
+    println!("  BAT valid: {}", report.bat_valid);
+    if let Some(parent_ok) = report.parent_accessible {
+        println!("  Parent accessible: {}", parent_ok);
     }
 
+    // Also display basic file info
+    println!("\nFile Info:");
     println!(
-        "[6/6] ✓ BAT region found (offset: {}, length: {}){}",
-        bat_entry.file_offset, bat_entry.length, parent_info
+        "  Virtual Disk Size: {} bytes ({:.2} GB)",
+        file.virtual_disk_size(),
+        file.virtual_disk_size() as f64 / (1024.0 * 1024.0 * 1024.0)
     );
+    println!("  Block Size: {} bytes", file.block_size());
+    println!(
+        "  Logical Sector Size: {} bytes",
+        file.logical_sector_size()
+    );
+    println!(
+        "  Physical Sector Size: {} bytes",
+        file.physical_sector_size()
+    );
+    println!("  Disk Type: {:?}", file.disk_type());
+    println!("  Virtual Disk ID: {}", file.virtual_disk_id());
+
+    if file.has_parent() {
+        println!("  Has Parent: Yes");
+    }
 
     println!("\n✓ File is valid!");
     Ok(())

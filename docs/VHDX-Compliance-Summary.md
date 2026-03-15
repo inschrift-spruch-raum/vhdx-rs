@@ -92,7 +92,7 @@ let is_required = flags & 0x4 != 0;
 
 // 验证保留位 3-31 必须为 0
 if flags & 0xFFFFFFF8 != 0 {
-    return Err(VhdxError::InvalidMetadata(...));
+    return Err(Error::InvalidMetadata(...));
 }
 ```
 
@@ -112,7 +112,7 @@ if flags & 0xFFFFFFF8 != 0 {
 
 ```rust
 if parent_sector_size != logical_sector_size {
-    return Err(VhdxError::SectorSizeMismatch {
+    return Err(Error::SectorSizeMismatch {
         parent: parent_sector_size,
         child: logical_sector_size,
     });
@@ -142,7 +142,7 @@ struct ParentChainState {
 **高效位运算检查**:
 ```rust
 if block_size & (block_size - 1) != 0 {
-    return Err(VhdxError::InvalidBlockSize(block_size));
+    return Err(Error::InvalidBlockSize(block_size));
 }
 ```
 

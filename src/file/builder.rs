@@ -2,7 +2,7 @@
 //!
 //! Provides a builder pattern for creating new VHDX files with various configurations.
 
-use std::fs::File;
+use std::fs::File as StdFile;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
@@ -12,7 +12,7 @@ use crate::common::Guid;
 use crate::error::{Error, Result};
 use crate::header::{FileTypeIdentifier, Header, REGION_SIGNATURE};
 
-use super::{file::VhdxFile, DiskType};
+use super::{file::File, DiskType};
 
 /// VHDX Builder for creating new files
 pub struct Builder {
@@ -79,7 +79,7 @@ impl Builder {
     }
 
     /// Build and create the VHDX file
-    pub fn create<P: AsRef<Path>>(self, path: P) -> Result<VhdxFile> {
+    pub fn create<P: AsRef<Path>>(self, path: P) -> Result<File> {
         let path = path.as_ref();
 
         // Validate parameters
@@ -115,7 +115,7 @@ impl Builder {
         }
 
         // Create the file
-        let mut file = File::create(path)?;
+        let mut file = StdFile::create(path)?;
 
         // Generate GUIDs
         let file_write_guid = Guid::new_v4();
@@ -411,6 +411,6 @@ impl Builder {
         drop(file);
 
         // Now open the newly created file
-        VhdxFile::open(path, true)
+        File::open(path, false)
     }
 }

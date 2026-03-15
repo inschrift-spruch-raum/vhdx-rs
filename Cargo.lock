@@ -475,11 +475,18 @@ name = "vhdx-rs"
 version = "0.1.0"
 dependencies = [
  "byteorder",
- "clap",
  "crc32c",
  "tempfile",
  "thiserror",
  "uuid",
+]
+
+[[package]]
+name = "vhdx-tool"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "vhdx-rs",
 ]
 
 [[package]]

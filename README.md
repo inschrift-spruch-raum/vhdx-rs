@@ -37,11 +37,11 @@ vhdx-rs = { path = "path/to/vhdx-rs" }
 ### 示例代码
 
 ```rust
-use vhdx_rs::{VhdxFile, VhdxBuilder, DiskType};
+use vhdx_rs::{File, Builder, DiskType};
 use std::path::Path;
 
 // 打开现有 VHDX 文件
-let mut vhdx = VhdxFile::open(Path::new("disk.vhdx"), true)?;
+let mut vhdx = File::open(Path::new("disk.vhdx"), true)?;
 
 // 读取数据
 let mut buffer = vec![0u8; 4096];
@@ -59,16 +59,16 @@ println!("磁盘类型: {:?}", vhdx.disk_type());
 ### 创建新 VHDX 文件
 
 ```rust
-use vhdx_rs::{VhdxBuilder, DiskType};
+use vhdx_rs::{Builder, DiskType};
 use std::path::Path;
 
 // 创建动态 VHDX (默认)
-VhdxBuilder::new(10 * 1024 * 1024 * 1024) // 10GB
+Builder::new(10 * 1024 * 1024 * 1024) // 10GB
     .disk_type(DiskType::Dynamic)
     .create(Path::new("dynamic.vhdx"))?;
 
 // 创建固定 VHDX
-VhdxBuilder::new(10 * 1024 * 1024 * 1024)
+Builder::new(10 * 1024 * 1024 * 1024)
     .disk_type(DiskType::Fixed)
     .create(Path::new("fixed.vhdx"))?;
 ```
@@ -128,7 +128,7 @@ vhdx-tool create disk.vhdx --size 10G --type fixed
 
 ## 核心 API
 
-### VhdxFile
+### File
 
 主 VHDX 文件操作结构。
 
@@ -155,7 +155,7 @@ pub fn disk_type(&self) -> DiskType;
 pub fn has_parent(&self) -> bool;
 ```
 
-### VhdxBuilder
+### Builder
 
 用于创建新的 VHDX 文件。
 
@@ -165,7 +165,7 @@ pub fn block_size(self, size: u32) -> Self;
 pub fn sector_sizes(self, logical: u32, physical: u32) -> Self;
 pub fn disk_type(self, disk_type: DiskType) -> Self;
 pub fn parent_path<P: Into<String>>(self, path: P) -> Self;
-pub fn create<P: AsRef<Path>>(self, path: P) -> Result<VhdxFile>;
+pub fn create<P: AsRef<Path>>(self, path: P) -> Result<File>;
 ```
 
 ### DiskType
@@ -221,8 +221,8 @@ src/
 │   ├── differencing.rs # DifferencingBlockIo (差异磁盘)
 │   └── cache.rs        # BlockCache
 ├── file/               # VHDX 文件操作
-│   ├── vhdx_file.rs    # VhdxFile 结构 (打开、读取、写入等)
-│   └── builder.rs      # VhdxBuilder (创建 VHDX 文件)
+│   ├── file.rs         # File 结构 (打开、读取、写入等)
+│   └── builder.rs      # Builder (创建 VHDX 文件)
 └── utils/              # 工具函数
     └── mod.rs
 tests/

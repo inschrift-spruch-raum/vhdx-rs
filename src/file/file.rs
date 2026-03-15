@@ -181,7 +181,7 @@ pub struct CheckReport {
 
 /// VHDX file handle
 #[allow(dead_code)]
-pub struct VhdxFile {
+pub struct File {
     /// Underlying file
     pub(crate) file: StdFile,
     /// File path
@@ -213,12 +213,13 @@ pub struct VhdxFile {
     /// Is file open in read-only mode
     pub(crate) read_only: bool,
     /// Parent file (for differencing disks)
-    pub(crate) parent: Option<Box<VhdxFile>>,
+    pub(crate) parent: Option<Box<File>>,
     /// Log writer for metadata updates
     pub(crate) log_writer: Option<crate::log::LogWriter>,
 }
 
-impl VhdxFile {
+#[allow(dead_code)]
+impl File {
     /// Open an existing VHDX file
     ///
     /// This will replay the log if necessary.
@@ -375,7 +376,7 @@ impl VhdxFile {
             None
         };
 
-        let mut vhdx = VhdxFile {
+        let mut vhdx = File {
             file,
             path,
             file_type,
