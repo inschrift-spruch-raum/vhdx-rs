@@ -154,39 +154,39 @@ impl File {
 12. **文档更新** - doc comments 中的类型引用同步更新
 
 ### Definition of Done
-- [ ] `cargo build --workspace` 成功，无警告
-- [ ] `cargo test --workspace` 全部通过
-- [ ] `cargo doc --workspace` 生成文档，无 broken links
-- [ ] `cargo clippy --workspace` 无警告
-- [ ] CLI 工具功能完整（info, create, read, check）
-- [ ] 所有 `VhdxXxx` 类型已重命名
-- [ ] 内部模块不再直接暴露（非 pub）
-- [ ] `DiskType` 重复定义已消除
-- [ ] 目录结构保持平铺
-- [ ] `File::check()` 方法可用
-- [ ] `File::open(path, write)` API 正确（原 read_only 参数）
+- [x] `cargo build --workspace` 成功，无警告
+- [x] `cargo test --workspace` 全部通过
+- [x] `cargo doc --workspace` 生成文档，无 broken links
+- [x] `cargo clippy --workspace` 无警告
+- [x] CLI 工具功能完整（info, create, read, check）
+- [x] 所有 `VhdxXxx` 类型已重命名
+- [x] 内部模块不再直接暴露（非 pub）
+- [x] `DiskType` 重复定义已消除
+- [x] 目录结构保持平铺
+- [x] `File::check()` 方法可用
+- [x] `File::open(path, write)` API 正确（原 read_only 参数）
 
 ### Must Have
-- [ ] lib.rs 仅导出必要公共API（无 prelude）
-- [ ] 类型重命名（VhdxXxx → Xxx）
-- [ ] 内部模块可见性改为非 pub
-- [ ] CLI 重构为独立 workspace crate
-- [ ] CLI 删除 write 命令
-- [ ] `File::open` 参数从 `read_only` 改为 `write`
-- [ ] 添加 `File::check()` 方法
-- [ ] DiskType 重复定义统一
-- [ ] 测试同步修复
-- [ ] doc comments 更新
-- [ ] 库 Cargo.toml 移除 clap 依赖
+- [x] lib.rs 仅导出必要公共API（无 prelude）
+- [x] 类型重命名（VhdxXxx → Xxx）
+- [x] 内部模块可见性改为非 pub
+- [x] CLI 重构为独立 workspace crate
+- [x] CLI 删除 write 命令
+- [x] `File::open` 参数从 `read_only` 改为 `write`
+- [x] 添加 `File::check()` 方法
+- [x] DiskType 重复定义统一
+- [x] 测试同步修复
+- [x] doc comments 更新
+- [x] 库 Cargo.toml 移除 clap 依赖
 
 ### Must NOT Have (Guardrails)
-- [ ] 不改变任何内部实现逻辑（只改命名和可见性）
-- [ ] 不新增或删除功能（除 API 变更外）
-- [ ] 不创建 core/ 或其他嵌套目录
-- [ ] 不把简单任务过度拆分
-- [ ] 不保留旧的 `Vhdx` 前缀别名（breaking change，彻底清理）
-- [ ] 不重命名 block_io/ 目录
-- [ ] 不创建 prelude 模块
+- [x] 不改变任何内部实现逻辑（只改命名和可见性）
+- [x] 不新增或删除功能（除 API 变更外）
+- [x] 不创建 core/ 或其他嵌套目录
+- [x] 不把简单任务过度拆分
+- [x] 不保留旧的 `Vhdx` 前缀别名（breaking change，彻底清理）
+- [x] 不重命名 block_io/ 目录
+- [x] 不创建 prelude 模块
 
 ---
 
@@ -943,7 +943,7 @@ Max Concurrent: 7 (Wave 1)
   **Commit**: YES
   - Message: `chore(verify): final build and test verification`
 
-- [ ] 24. Git cleanup
+- [x] 24. Git cleanup
 
   **What to do**:
   - Clean up git history
@@ -970,7 +970,7 @@ Max Concurrent: 7 (Wave 1)
 
 > 4 review agents run in PARALLEL. ALL must APPROVE.
 
-- [ ] F1. **Plan Compliance Audit** — `oracle`
+- [x] F1. **Plan Compliance Audit** — `oracle`
 
   **What to do**:
   - Verify all "Must Have" items are implemented
@@ -989,7 +989,7 @@ Max Concurrent: 7 (Wave 1)
   - [ ] Flat structure maintained
   - [ ] VERDICT: APPROVE
 
-- [ ] F2. **Code Quality Review** — `unspecified-high`
+- [x] F2. **Code Quality Review** — `unspecified-high`
 
   **What to do**:
   - Run `cargo build`, `cargo clippy`, `cargo fmt --check`
@@ -1001,7 +1001,7 @@ Max Concurrent: 7 (Wave 1)
   - [ ] Format PASS
   - [ ] VERDICT: APPROVE
 
-- [ ] F3. **API Surface Review** — `deep`
+- [x] F3. **API Surface Review** — `deep`
 
   **What to do**:
   - Review public API surface
@@ -1020,7 +1020,7 @@ Max Concurrent: 7 (Wave 1)
   - [ ] File::open(path, write) API correct
   - [ ] VERDICT: APPROVE
 
-- [ ] F4. **Integration Test** — `unspecified-high`
+- [x] F4. **Integration Test** — `unspecified-high`
 
   **What to do**:
   - Full integration test from clean state
@@ -1129,37 +1129,37 @@ grep "clap" vhdx-rs/Cargo.toml
 
 ### Final Checklist
 
-- [ ] All "Must Have" present
-  - [ ] lib.rs 仅导出必要公共API（Error, File, Builder, DiskType）
-  - [ ] 无 prelude 模块
-  - [ ] 类型重命名（VhdxXxx → Xxx）
-  - [ ] 内部模块可见性改为非 pub
-  - [ ] CLI 重构为独立 workspace crate
-  - [ ] CLI 删除 write 命令
-- [ ] `File::open(path, write)` 参数名变更（原 read_only）
-  - [ ] 添加 `File::check()` 方法
-  - [ ] DiskType 重复定义统一
-  - [ ] 测试同步修复
-  - [ ] doc comments 更新
-  - [ ] 库移除 clap 依赖
+- [x] All "Must Have" present
+  - [x] lib.rs 仅导出必要公共API（Error, File, Builder, DiskType）
+  - [x] 无 prelude 模块
+  - [x] 类型重命名（VhdxXxx → Xxx）
+  - [x] 内部模块可见性改为非 pub
+  - [x] CLI 重构为独立 workspace crate
+  - [x] CLI 删除 write 命令
+- [x] `File::open(path, write)` 参数名变更（原 read_only）
+  - [x] 添加 `File::check()` 方法
+  - [x] DiskType 重复定义统一
+  - [x] 测试同步修复
+  - [x] doc comments 更新
+  - [x] 库移除 clap 依赖
 
-- [ ] All "Must NOT Have" absent
-  - [ ] 无内部实现逻辑修改
-  - [ ] 无功能新增/删除（除 API 变更外）
-  - [ ] 无 core/ 目录创建
-  - [ ] 无旧 Vhdx 前缀残留
-  - [ ] 无 block_io/ 重命名
-  - [ ] 无 prelude 模块
-  - [ ] 无 CLI write 命令
+- [x] All "Must NOT Have" absent
+  - [x] 无内部实现逻辑修改
+  - [x] 无功能新增/删除（除 API 变更外）
+  - [x] 无 core/ 目录创建
+  - [x] 无旧 Vhdx 前缀残留
+  - [x] 无 block_io/ 重命名
+  - [x] 无 prelude 模块
+  - [x] 无 CLI write 命令
 
-- [ ] Quality Gates
-  - [ ] `cargo build --workspace` passes
-  - [ ] `cargo test --workspace` passes
-  - [ ] `cargo doc --workspace` passes
-  - [ ] `cargo clippy --workspace` passes
-  - [ ] CLI works (4 commands: info, create, read, check)
-  - [ ] File::check() works
-  - [ ] File::open(path, write) works
+- [x] Quality Gates
+  - [x] `cargo build --workspace` passes
+  - [x] `cargo test --workspace` passes
+  - [x] `cargo doc --workspace` passes
+  - [x] `cargo clippy --workspace` passes
+  - [x] CLI works (4 commands: info, create, read, check)
+  - [x] File::check() works
+  - [x] File::open(path, write) works
 
 ### Breaking Changes Summary
 
