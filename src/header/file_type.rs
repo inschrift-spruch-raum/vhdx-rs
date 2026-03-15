@@ -2,7 +2,7 @@
 //!
 //! Stored at offset 0, 64KB in size
 
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use byteorder::{ByteOrder, LittleEndian};
 
 /// File Type Identifier signature: "vhdxfile"
@@ -26,9 +26,7 @@ impl FileTypeIdentifier {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::FileTooSmall(
-                "file size is insufficient".to_string(),
-            ));
+            return Err(Error::FileTooSmall("file size is insufficient".to_string()));
         }
 
         // Check signature
@@ -36,7 +34,7 @@ impl FileTypeIdentifier {
         signature.copy_from_slice(&data[0..8]);
 
         if signature != FILE_TYPE_SIGNATURE {
-            return Err(VhdxError::InvalidSignature {
+            return Err(Error::InvalidSignature {
                 expected: String::from_utf8_lossy(FILE_TYPE_SIGNATURE).to_string(),
                 got: String::from_utf8_lossy(&signature).to_string(),
             });

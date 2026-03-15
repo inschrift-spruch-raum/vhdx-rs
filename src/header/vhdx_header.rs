@@ -6,7 +6,7 @@
 
 use crate::common::crc32c::crc32c_with_zero_field;
 use crate::common::guid::Guid;
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use byteorder::{ByteOrder, LittleEndian};
 
 /// Header signature: "head"
@@ -16,7 +16,7 @@ pub const HEADER_SIGNATURE: &[u8] = b"head";
 ///
 /// 4KB structure at offset 64KB or 128KB
 #[derive(Debug, Clone)]
-pub struct VhdxHeader {
+pub struct Header {
     pub signature: [u8; 4],
     pub checksum: u32,
     pub sequence_number: u64,
@@ -29,7 +29,7 @@ pub struct VhdxHeader {
     pub log_offset: u64,
 }
 
-impl VhdxHeader {
+impl Header {
     /// Size of header structure
     pub const SIZE: usize = 4096;
     /// Offset of Header 1
@@ -40,9 +40,7 @@ impl VhdxHeader {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::FileTooSmall(
-                "file size is insufficient".to_string(),
-            ));
+            return Err(Error::FileTooSmall("file size is insufficient".to_string()));
         }
 
         // Check signature
@@ -50,7 +48,7 @@ impl VhdxHeader {
         signature.copy_from_slice(&data[0..4]);
 
         if signature != HEADER_SIGNATURE {
-            return Err(VhdxError::InvalidSignature {
+            return Err(Error::InvalidSignature {
                 expected: String::from_utf8_lossy(HEADER_SIGNATURE).to_string(),
                 got: String::from_utf8_lossy(&signature).to_string(),
             });
@@ -74,7 +72,7 @@ impl VhdxHeader {
         let log_length = LittleEndian::read_u32(&data[68..72]);
         let log_offset = LittleEndian::read_u64(&data[72..80]);
 
-        Ok(VhdxHeader {
+        Ok(Header {
             signature,
             checksum,
             sequence_number,
@@ -118,7 +116,7 @@ impl VhdxHeader {
     pub fn new(sequence_number: u64) -> Self {
         let mut signature = [0u8; 4];
         signature.copy_from_slice(HEADER_SIGNATURE);
-        VhdxHeader {
+        Header {
             signature,
             checksum: 0,
             sequence_number,
@@ -163,12 +161,12 @@ impl VhdxHeader {
     /// Check version compatibility
     pub fn check_version(&self) -> Result<()> {
         if self.version != 1 {
-            return Err(VhdxError::UnsupportedVersion(self.version as u32));
+            return Err(Error::UnsupportedVersion(self.version as u32));
         }
         if self.log_version != 0 {
             // Only valid if log_guid is zero (no log)
             if !self.log_guid.is_nil() {
-                return Err(VhdxError::UnsupportedVersion(self.log_version as u32));
+                return Err(Error::UnsupportedVersion(self.log_version as u32));
             }
         }
         Ok(())
@@ -179,20 +177,20 @@ impl VhdxHeader {
 ///
 /// Returns (current_header_index, current_header, other_header)
 /// Index 0 = Header 1 at 64KB, Index 1 = Header 2 at 128KB
-pub fn read_headers(file: &mut std::fs::File) -> Result<(usize, VhdxHeader, VhdxHeader)> {
+pub fn read_headers(file: &mut std::fs::File) -> Result<(usize, Header, Header)> {
     use std::io::{Read, Seek, SeekFrom};
 
     // Read Header 1
-    let mut header1_data = vec![0u8; VhdxHeader::SIZE];
-    file.seek(SeekFrom::Start(VhdxHeader::OFFSET_1))?;
+    let mut header1_data = vec![0u8; Header::SIZE];
+    file.seek(SeekFrom::Start(Header::OFFSET_1))?;
     file.read_exact(&mut header1_data)?;
-    let header1 = VhdxHeader::from_bytes(&header1_data)?;
+    let header1 = Header::from_bytes(&header1_data)?;
 
     // Read Header 2
-    let mut header2_data = vec![0u8; VhdxHeader::SIZE];
-    file.seek(SeekFrom::Start(VhdxHeader::OFFSET_2))?;
+    let mut header2_data = vec![0u8; Header::SIZE];
+    file.seek(SeekFrom::Start(Header::OFFSET_2))?;
     file.read_exact(&mut header2_data)?;
-    let header2 = VhdxHeader::from_bytes(&header2_data)?;
+    let header2 = Header::from_bytes(&header2_data)?;
 
     // Determine which header is current
     let header1_valid = header1.is_valid(&header1_data);
@@ -202,27 +200,23 @@ pub fn read_headers(file: &mut std::fs::File) -> Result<(usize, VhdxHeader, Vhdx
         (true, true) => {
             // Security: Validate critical fields are consistent
             if header1.file_write_guid != header2.file_write_guid {
-                return Err(VhdxError::HeaderInconsistent(
+                return Err(Error::HeaderInconsistent(
                     "file_write_guid mismatch".to_string(),
                 ));
             }
             if header1.data_write_guid != header2.data_write_guid {
-                return Err(VhdxError::HeaderInconsistent(
+                return Err(Error::HeaderInconsistent(
                     "data_write_guid mismatch".to_string(),
                 ));
             }
             if header1.log_guid != header2.log_guid {
-                return Err(VhdxError::HeaderInconsistent(
-                    "log_guid mismatch".to_string(),
-                ));
+                return Err(Error::HeaderInconsistent("log_guid mismatch".to_string()));
             }
             if header1.version != header2.version {
-                return Err(VhdxError::HeaderInconsistent(
-                    "version mismatch".to_string(),
-                ));
+                return Err(Error::HeaderInconsistent("version mismatch".to_string()));
             }
             if header1.log_version != header2.log_version {
-                return Err(VhdxError::HeaderInconsistent(
+                return Err(Error::HeaderInconsistent(
                     "log_version mismatch".to_string(),
                 ));
             }
@@ -236,7 +230,7 @@ pub fn read_headers(file: &mut std::fs::File) -> Result<(usize, VhdxHeader, Vhdx
         }
         (true, false) => Ok((0, header1, header2)),
         (false, true) => Ok((1, header2, header1)),
-        (false, false) => Err(VhdxError::NoValidHeader),
+        (false, false) => Err(Error::NoValidHeader),
     }
 }
 
@@ -246,15 +240,15 @@ pub fn read_headers(file: &mut std::fs::File) -> Result<(usize, VhdxHeader, Vhdx
 pub fn update_headers(
     file: &mut std::fs::File,
     current_idx: usize,
-    new_header: &VhdxHeader,
+    new_header: &Header,
 ) -> Result<()> {
     use std::io::{Seek, SeekFrom, Write};
 
     // Determine which header to update first (the non-current one)
     let update_order = if current_idx == 0 {
-        vec![(VhdxHeader::OFFSET_2, 1), (VhdxHeader::OFFSET_1, 0)]
+        vec![(Header::OFFSET_2, 1), (Header::OFFSET_1, 0)]
     } else {
-        vec![(VhdxHeader::OFFSET_1, 0), (VhdxHeader::OFFSET_2, 1)]
+        vec![(Header::OFFSET_1, 0), (Header::OFFSET_2, 1)]
     };
 
     for (offset, _idx) in update_order {
@@ -280,14 +274,14 @@ mod tests {
 
     #[test]
     fn test_vhdx_header() {
-        let header = VhdxHeader::new(1);
+        let header = Header::new(1);
         let mut bytes = header.to_bytes();
 
         // Update checksum in the bytes
         let checksum = crc32c_with_zero_field(&bytes, 4, 4);
         LittleEndian::write_u32(&mut bytes[4..8], checksum);
 
-        let header2 = VhdxHeader::from_bytes(&bytes).unwrap();
+        let header2 = Header::from_bytes(&bytes).unwrap();
         assert!(header2.is_valid(&bytes));
         assert_eq!(header.sequence_number, header2.sequence_number);
         assert_eq!(header.version, header2.version);
@@ -297,8 +291,8 @@ mod tests {
     #[test]
     fn test_header_consistency_mismatch() {
         // Create two headers with different GUIDs but both valid
-        let header1 = VhdxHeader::new(1);
-        let mut header2 = VhdxHeader::new(2);
+        let header1 = Header::new(1);
+        let mut header2 = Header::new(2);
 
         // Ensure they have different file_write_guid
         header2.file_write_guid = Guid::new_v4();
@@ -317,7 +311,7 @@ mod tests {
             file.write_all(b"vhdxfile").unwrap();
 
             // Pad to 64KB (Header 1 offset)
-            let padding = vec![0u8; VhdxHeader::OFFSET_1 as usize - 8];
+            let padding = vec![0u8; Header::OFFSET_1 as usize - 8];
             file.write_all(&padding).unwrap();
 
             // Write header 1
@@ -327,12 +321,8 @@ mod tests {
             file.write_all(&data1).unwrap();
 
             // Pad to 128KB (Header 2 offset)
-            let padding2 = vec![
-                0u8;
-                VhdxHeader::OFFSET_2 as usize
-                    - VhdxHeader::OFFSET_1 as usize
-                    - VhdxHeader::SIZE
-            ];
+            let padding2 =
+                vec![0u8; Header::OFFSET_2 as usize - Header::OFFSET_1 as usize - Header::SIZE];
             file.write_all(&padding2).unwrap();
 
             // Write header 2
@@ -356,7 +346,7 @@ mod tests {
         assert!(result.is_err(), "Headers with different GUIDs should fail");
 
         match result.unwrap_err() {
-            VhdxError::HeaderInconsistent(msg) => {
+            Error::HeaderInconsistent(msg) => {
                 assert!(
                     msg.contains("file_write_guid"),
                     "Error should mention file_write_guid mismatch: {}",
@@ -374,7 +364,7 @@ mod tests {
     #[test]
     fn test_header_consistency_data_write_guid_mismatch() {
         // Create two headers with same file_write_guid but different data_write_guid
-        let header1 = VhdxHeader::new(1);
+        let header1 = Header::new(1);
         let mut header2 = header1.clone();
         header2.sequence_number = 2;
         header2.data_write_guid = Guid::new_v4(); // Different data_write_guid
@@ -389,7 +379,7 @@ mod tests {
             let mut file = std::fs::File::create(&file_path).unwrap();
             file.write_all(b"vhdxfile").unwrap();
 
-            let padding = vec![0u8; VhdxHeader::OFFSET_1 as usize - 8];
+            let padding = vec![0u8; Header::OFFSET_1 as usize - 8];
             file.write_all(&padding).unwrap();
 
             let mut data1 = header1.to_bytes();
@@ -397,12 +387,8 @@ mod tests {
             LittleEndian::write_u32(&mut data1[4..8], checksum1);
             file.write_all(&data1).unwrap();
 
-            let padding2 = vec![
-                0u8;
-                VhdxHeader::OFFSET_2 as usize
-                    - VhdxHeader::OFFSET_1 as usize
-                    - VhdxHeader::SIZE
-            ];
+            let padding2 =
+                vec![0u8; Header::OFFSET_2 as usize - Header::OFFSET_1 as usize - Header::SIZE];
             file.write_all(&padding2).unwrap();
 
             let mut data2 = header2.to_bytes();
@@ -427,7 +413,7 @@ mod tests {
         );
 
         match result.unwrap_err() {
-            VhdxError::HeaderInconsistent(msg) => {
+            Error::HeaderInconsistent(msg) => {
                 assert!(
                     msg.contains("data_write_guid"),
                     "Error should mention data_write_guid mismatch: {}",

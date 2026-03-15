@@ -5,7 +5,7 @@
 
 use crate::common::crc32c::crc32c_with_zero_field;
 use crate::common::guid::Guid;
-use crate::error::{Result, VhdxError};
+use crate::error::{Error, Result};
 use byteorder::{ByteOrder, LittleEndian};
 use uuid::Uuid;
 
@@ -37,16 +37,14 @@ impl RegionTableHeader {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::FileTooSmall(
-                "file size is insufficient".to_string(),
-            ));
+            return Err(Error::FileTooSmall("file size is insufficient".to_string()));
         }
 
         let mut signature = [0u8; 4];
         signature.copy_from_slice(&data[0..4]);
 
         if signature != REGION_SIGNATURE {
-            return Err(VhdxError::InvalidSignature {
+            return Err(Error::InvalidSignature {
                 expected: String::from_utf8_lossy(REGION_SIGNATURE).to_string(),
                 got: String::from_utf8_lossy(&signature).to_string(),
             });
@@ -57,7 +55,7 @@ impl RegionTableHeader {
 
         // Validate entry count (max 2047)
         if entry_count > 2047 {
-            return Err(VhdxError::InvalidRegion(format!(
+            return Err(Error::InvalidRegion(format!(
                 "Entry count {} exceeds maximum 2047",
                 entry_count
             )));
@@ -93,9 +91,7 @@ impl RegionTableEntry {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::FileTooSmall(
-                "file size is insufficient".to_string(),
-            ));
+            return Err(Error::FileTooSmall("file size is insufficient".to_string()));
         }
 
         let mut guid_bytes = [0u8; 16];
@@ -108,17 +104,17 @@ impl RegionTableEntry {
 
         // Validate alignment (must be 1MB aligned)
         if file_offset % (1024 * 1024) != 0 {
-            return Err(VhdxError::Alignment(file_offset, 1024 * 1024));
+            return Err(Error::Alignment(file_offset, 1024 * 1024));
         }
 
         // Validate length (must be 1MB multiple)
         if length % (1024 * 1024) != 0 {
-            return Err(VhdxError::Alignment(length as u64, 1024 * 1024));
+            return Err(Error::Alignment(length as u64, 1024 * 1024));
         }
 
         // Validate minimum offset (must be >= 1MB)
         if file_offset < 1024 * 1024 {
-            return Err(VhdxError::InvalidRegion(format!(
+            return Err(Error::InvalidRegion(format!(
                 "Region offset {} must be >= 1MB",
                 file_offset
             )));
@@ -166,9 +162,7 @@ impl RegionTable {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::FileTooSmall(
-                "file size is insufficient".to_string(),
-            ));
+            return Err(Error::FileTooSmall("file size is insufficient".to_string()));
         }
 
         // Parse header
@@ -176,7 +170,7 @@ impl RegionTable {
 
         // Verify checksum over entire 64KB
         if !header.verify_checksum(data) {
-            return Err(VhdxError::InvalidChecksum);
+            return Err(Error::InvalidChecksum);
         }
 
         // Parse entries
@@ -186,7 +180,7 @@ impl RegionTable {
         for i in 0..header.entry_count as usize {
             let entry_offset = entries_start + i * RegionTableEntry::SIZE;
             if entry_offset + RegionTableEntry::SIZE > data.len() {
-                return Err(VhdxError::InvalidRegion(
+                return Err(Error::InvalidRegion(
                     "Entry extends beyond table".to_string(),
                 ));
             }
@@ -218,7 +212,7 @@ impl RegionTable {
                 let b_end = b.file_offset + b.length as u64;
 
                 if a.file_offset < b_end && b.file_offset < a_end {
-                    return Err(VhdxError::InvalidRegion(format!(
+                    return Err(Error::InvalidRegion(format!(
                         "Regions overlap: [{}..{}) and [{}..{})",
                         a.file_offset, a_end, b.file_offset, b_end
                     )));
@@ -232,7 +226,7 @@ impl RegionTable {
     pub fn validate_known_regions(&self) -> Result<()> {
         for entry in &self.entries {
             if entry.is_required() && !entry.is_bat() && !entry.is_metadata() {
-                return Err(VhdxError::RequiredRegionNotFound(format!(
+                return Err(Error::RequiredRegionNotFound(format!(
                     "Unknown required region: {}",
                     entry.guid
                 )));
@@ -254,9 +248,7 @@ pub fn read_region_tables(file: &mut std::fs::File) -> Result<(RegionTable, bool
     match file.read_exact(&mut table1_data) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-            return Err(VhdxError::FileTooSmall(
-                "file size is insufficient".to_string(),
-            ));
+            return Err(Error::FileTooSmall("file size is insufficient".to_string()));
         }
         Err(e) => return Err(e.into()),
     }
@@ -278,7 +270,7 @@ pub fn read_region_tables(file: &mut std::fs::File) -> Result<(RegionTable, bool
     let table2 = if !table2_data.is_empty() {
         RegionTable::from_bytes(&table2_data)
     } else {
-        Err(VhdxError::InvalidRegion("Table 2 not present".to_string()))
+        Err(Error::InvalidRegion("Table 2 not present".to_string()))
     };
 
     // Prefer table 1 if valid, otherwise try table 2

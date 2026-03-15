@@ -14,7 +14,4 @@ pub use region_table::{
     read_region_tables, RegionTable, RegionTableEntry, RegionTableHeader, BAT_GUID, METADATA_GUID,
     REGION_SIGNATURE,
 };
-pub use vhdx_header::{read_headers, update_headers, VhdxHeader, HEADER_SIGNATURE};
-
-/// Type alias for internal use
-pub type Header = VhdxHeader;
+pub use vhdx_header::{read_headers, update_headers, Header, HEADER_SIGNATURE};
