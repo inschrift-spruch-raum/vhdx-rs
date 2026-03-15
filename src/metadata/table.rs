@@ -23,13 +23,15 @@ impl MetadataTableHeader {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 8 {
-            return Err(VhdxError::FileTooSmall);
+            return Err(VhdxError::FileTooSmall(
+                "file size is insufficient".to_string(),
+            ));
         }
 
         let mut signature = [0u8; 8];
         signature.copy_from_slice(&data[0..8]);
 
-        if &signature != METADATA_SIGNATURE {
+        if signature != METADATA_SIGNATURE {
             return Err(VhdxError::InvalidSignature {
                 expected: String::from_utf8_lossy(METADATA_SIGNATURE).to_string(),
                 got: String::from_utf8_lossy(&signature).to_string(),
@@ -63,7 +65,9 @@ impl MetadataTableEntry {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::FileTooSmall);
+            return Err(VhdxError::FileTooSmall(
+                "file size is insufficient".to_string(),
+            ));
         }
 
         let mut item_id = [0u8; 16];

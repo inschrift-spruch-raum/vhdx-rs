@@ -26,14 +26,16 @@ impl FileTypeIdentifier {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::FileTooSmall);
+            return Err(VhdxError::FileTooSmall(
+                "file size is insufficient".to_string(),
+            ));
         }
 
         // Check signature
         let mut signature = [0u8; 8];
         signature.copy_from_slice(&data[0..8]);
 
-        if &signature != FILE_TYPE_SIGNATURE {
+        if signature != FILE_TYPE_SIGNATURE {
             return Err(VhdxError::InvalidSignature {
                 expected: String::from_utf8_lossy(FILE_TYPE_SIGNATURE).to_string(),
                 got: String::from_utf8_lossy(&signature).to_string(),

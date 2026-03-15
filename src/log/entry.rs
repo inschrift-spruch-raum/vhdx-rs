@@ -35,7 +35,7 @@ impl LogEntryHeader {
         let mut signature = [0u8; 4];
         signature.copy_from_slice(&data[0..4]);
 
-        if &signature != LOG_ENTRY_SIGNATURE {
+        if signature != LOG_ENTRY_SIGNATURE {
             return Err(VhdxError::InvalidSignature {
                 expected: String::from_utf8_lossy(LOG_ENTRY_SIGNATURE).to_string(),
                 got: String::from_utf8_lossy(&signature).to_string(),

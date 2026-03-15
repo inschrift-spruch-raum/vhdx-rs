@@ -102,7 +102,7 @@ impl SectorBitmap {
     /// # Returns
     /// Required bitmap size in bytes (rounded up to nearest byte)
     pub fn bitmap_size_for_sectors(num_sectors: u64) -> usize {
-        ((num_sectors + 7) / 8) as usize
+        num_sectors.div_ceil(8) as usize
     }
 
     /// Calculate the required bitmap size for a chunk

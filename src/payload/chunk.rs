@@ -166,7 +166,7 @@ impl ChunkInfo {
     /// # Returns
     /// Number of payload blocks (rounded up)
     pub fn num_payload_blocks(&self, virtual_disk_size: u64) -> u64 {
-        (virtual_disk_size + self.block_size - 1) / self.block_size
+        virtual_disk_size.div_ceil(self.block_size)
     }
 
     /// Calculate number of sector bitmap blocks needed
@@ -177,7 +177,7 @@ impl ChunkInfo {
     /// # Returns
     /// Number of sector bitmap blocks (rounded up)
     pub fn num_sector_bitmap_blocks(&self, num_payload_blocks: u64) -> u64 {
-        (num_payload_blocks + self.chunk_ratio - 1) / self.chunk_ratio
+        num_payload_blocks.div_ceil(self.chunk_ratio)
     }
 
     /// Calculate total number of BAT entries needed
@@ -214,12 +214,12 @@ impl ChunkCalculator {
 
     /// Calculate number of payload blocks
     pub fn num_payload_blocks(virtual_disk_size: u64, block_size: u64) -> u64 {
-        (virtual_disk_size + block_size - 1) / block_size
+        virtual_disk_size.div_ceil(block_size)
     }
 
     /// Calculate number of sector bitmap blocks
     pub fn num_sector_bitmap_blocks(num_payload_blocks: u64, chunk_ratio: u64) -> u64 {
-        (num_payload_blocks + chunk_ratio - 1) / chunk_ratio
+        num_payload_blocks.div_ceil(chunk_ratio)
     }
 }
 

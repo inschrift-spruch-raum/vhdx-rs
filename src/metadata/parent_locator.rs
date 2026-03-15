@@ -29,7 +29,7 @@ impl ParentLocatorEntry {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::FileTooSmall);
+            return Err(VhdxError::FileTooSmall("file size is insufficient".to_string()));
         }
 
         let key_offset = LittleEndian::read_u32(&data[0..4]);

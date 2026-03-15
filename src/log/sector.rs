@@ -26,7 +26,7 @@ impl DataSector {
         let mut signature = [0u8; 4];
         signature.copy_from_slice(&data[0..4]);
 
-        if &signature != DATA_SECTOR_SIGNATURE {
+        if signature != DATA_SECTOR_SIGNATURE {
             return Err(VhdxError::InvalidSignature {
                 expected: String::from_utf8_lossy(DATA_SECTOR_SIGNATURE).to_string(),
                 got: String::from_utf8_lossy(&signature).to_string(),

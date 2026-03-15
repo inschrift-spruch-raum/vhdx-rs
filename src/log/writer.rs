@@ -68,7 +68,7 @@ impl LogWriter {
         let total = header_size + descriptors_size + data_sectors_size;
 
         // Round up to 4KB
-        ((total + 4095) / 4096) * 4096
+        total.div_ceil(4096) * 4096
     }
 
     /// Write a log entry with a single data update
@@ -158,7 +158,7 @@ impl LogWriter {
         file_offset: u64,
         length: u64,
     ) -> Result<u64> {
-        if length % 4096 != 0 {
+        if !length.is_multiple_of(4096) {
             return Err(VhdxError::InvalidLogEntry);
         }
 

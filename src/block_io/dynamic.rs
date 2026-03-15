@@ -103,18 +103,14 @@ impl<'a> DynamicBlockIo<'a> {
                                 }
                                 Err(_) => {
                                     // No data at Windows offset, return zeros
-                                    for i in bytes_read..bytes_read + bytes_from_block {
-                                        buf[i] = 0;
-                                    }
+                                    buf[bytes_read..bytes_read + bytes_from_block].fill(0);
                                 }
                             }
                         }
                         PayloadBlockState::PartiallyPresent => {
                             // Partially present should not occur in pure dynamic disks
                             // Treat as unallocated (return zeros)
-                            for i in bytes_read..bytes_read + bytes_from_block {
-                                buf[i] = 0;
-                            }
+                            buf[bytes_read..bytes_read + bytes_from_block].fill(0);
                         }
                         PayloadBlockState::Undefined => {
                             return Err(VhdxError::InvalidBatEntry);
@@ -123,9 +119,7 @@ impl<'a> DynamicBlockIo<'a> {
                 }
                 None => {
                     // Block not in BAT - return zeros
-                    for i in bytes_read..bytes_read + bytes_from_block {
-                        buf[i] = 0;
-                    }
+                    buf[bytes_read..bytes_read + bytes_from_block].fill(0);
                 }
             }
 

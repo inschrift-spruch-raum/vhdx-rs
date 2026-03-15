@@ -40,7 +40,7 @@ impl FileParameters {
         const MIN_BLOCK_SIZE: u32 = 1024 * 1024; // 1MB
         const MAX_BLOCK_SIZE: u32 = 256 * 1024 * 1024; // 256MB
 
-        if block_size < MIN_BLOCK_SIZE || block_size > MAX_BLOCK_SIZE {
+        if !(MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE).contains(&block_size) {
             return Err(VhdxError::InvalidBlockSize(block_size));
         }
 

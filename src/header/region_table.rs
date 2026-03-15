@@ -37,13 +37,15 @@ impl RegionTableHeader {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::FileTooSmall);
+            return Err(VhdxError::FileTooSmall(
+                "file size is insufficient".to_string(),
+            ));
         }
 
         let mut signature = [0u8; 4];
         signature.copy_from_slice(&data[0..4]);
 
-        if &signature != REGION_SIGNATURE {
+        if signature != REGION_SIGNATURE {
             return Err(VhdxError::InvalidSignature {
                 expected: String::from_utf8_lossy(REGION_SIGNATURE).to_string(),
                 got: String::from_utf8_lossy(&signature).to_string(),
@@ -91,7 +93,9 @@ impl RegionTableEntry {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::FileTooSmall);
+            return Err(VhdxError::FileTooSmall(
+                "file size is insufficient".to_string(),
+            ));
         }
 
         let mut guid_bytes = [0u8; 16];
@@ -162,7 +166,9 @@ impl RegionTable {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::FileTooSmall);
+            return Err(VhdxError::FileTooSmall(
+                "file size is insufficient".to_string(),
+            ));
         }
 
         // Parse header
@@ -248,7 +254,9 @@ pub fn read_region_tables(file: &mut std::fs::File) -> Result<(RegionTable, bool
     match file.read_exact(&mut table1_data) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-            return Err(VhdxError::FileTooSmall);
+            return Err(VhdxError::FileTooSmall(
+                "file size is insufficient".to_string(),
+            ));
         }
         Err(e) => return Err(e.into()),
     }

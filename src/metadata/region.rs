@@ -35,7 +35,7 @@ impl MetadataRegion {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < MetadataTableHeader::SIZE {
-            return Err(VhdxError::FileTooSmall);
+            return Err(VhdxError::FileTooSmall("file size is insufficient".to_string()));
         }
 
         let header = MetadataTableHeader::from_bytes(data)?;

@@ -67,8 +67,8 @@ pub enum VhdxError {
     #[error("Invalid virtual offset: {0}")]
     InvalidOffset(u64),
 
-    #[error("File too small")]
-    FileTooSmall,
+    #[error("File too small: {0}")]
+    FileTooSmall(String),
 
     #[error("Alignment error: {0} is not aligned to {1}")]
     Alignment(u64, u64),
@@ -90,4 +90,10 @@ pub enum VhdxError {
 
     #[error("Invalid disk size: {size} (must be {min}-{max} bytes and sector-aligned)")]
     InvalidDiskSize { size: u64, min: u64, max: u64 },
+
+    #[error("Invalid file: {0}")]
+    InvalidFile(String),
+
+    #[error("Header inconsistency detected: {0}")]
+    HeaderInconsistent(String),
 }

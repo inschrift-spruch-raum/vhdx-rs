@@ -224,28 +224,27 @@ impl VhdxFile {
             .read(true)
             .write(!read_only)
             .open(&path)?;
-        // 这个地方语义还要取反就挺不好的
 
         // Get current file size for disk type detection
         let current_file_size = file.metadata()?.len();
+
+        // Minimum VHDX file size: 1 MiB (Windows standard)
+        const MIN_VHDX_SIZE: u64 = 1024 * 1024;
+        if current_file_size < MIN_VHDX_SIZE {
+            return Err(VhdxError::FileTooSmall(format!(
+                "File too small ({} bytes), minimum 1MiB required",
+                current_file_size
+            )));
+        }
 
         // Read file type identifier
         let mut ft_data = vec![0u8; FileTypeIdentifier::SIZE];
         file.read_exact(&mut ft_data)?;
         let file_type = FileTypeIdentifier::from_bytes(&ft_data)?;
-        // 为了能实际存储数据,Windows官方所提供的磁盘管理功能创建时都是1MiB起步的,这里判断得太小了
 
         // Read headers and determine current one
         let (_header_idx, mut header, _) = read_headers(&mut file)?;
-        /*
-        _header_idx 读取了但是实际没有用到
-        理应双header检验,但实际并没有,除非其他地方已经检验
-        命名问题:
-        1.在代码内部是应该直接叫Header好还是VhdxHeader好
-        1.1.我个人认为在外部仍然保留VhdxHeader
-        2.为什么这是一个专门的函数而不是Header::read
-        */
-        
+
         // Store sequence number before moving header
         let sequence_number = header.sequence_number;
 
@@ -1170,5 +1169,89 @@ mod tests {
             }
             _ => panic!("Expected InvalidParentPath error variant"),
         }
+    }
+
+    /// Test that files smaller than 1 MiB are rejected
+    #[test]
+    fn test_file_too_small_rejected() {
+        let temp_dir = std::env::temp_dir().join("vhdx_test_file_size");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let file_path = temp_dir.join("small.vhdx");
+
+        // Create a file smaller than 1 MiB (only write "vhdxfile" signature)
+        {
+            let mut file = std::fs::File::create(&file_path).unwrap();
+            file.write_all(b"vhdxfile").unwrap();
+            // File size is now 8 bytes, far below 1 MiB minimum
+        }
+
+        // Try to open - should fail with FileTooSmall
+        let result = VhdxFile::open(&file_path, true);
+        assert!(
+            result.is_err(),
+            "File smaller than 1 MiB should be rejected"
+        );
+
+        match result.err().expect("Expected an error") {
+            VhdxError::FileTooSmall(msg) => {
+                assert!(
+                    msg.contains("minimum 1MiB") || msg.contains("minimum 1 MiB"),
+                    "Error message should mention minimum 1MiB requirement, got: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected FileTooSmall error, got {:?}", other),
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Test various small file sizes are all rejected
+    #[test]
+    fn test_file_size_boundary() {
+        let temp_dir = std::env::temp_dir().join("vhdx_test_file_size_boundary");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Test various sizes below 1 MiB
+        let test_sizes = [
+            100,             // 100 bytes
+            1024,            // 1 KiB
+            64 * 1024,       // 64 KiB
+            100 * 1024,      // 100 KiB
+            512 * 1024,      // 512 KiB
+            1024 * 1024 - 1, // 1 MiB - 1 byte
+        ];
+
+        for size in &test_sizes {
+            let file_path = temp_dir.join(format!("test_{}.vhdx", size));
+            {
+                let mut file = std::fs::File::create(&file_path).unwrap();
+                // Write "vhdxfile" signature
+                file.write_all(b"vhdxfile").unwrap();
+                // Pad to desired size
+                if *size > 8 {
+                    let padding = vec![0u8; *size - 8];
+                    file.write_all(&padding).unwrap();
+                }
+            }
+
+            let result = VhdxFile::open(&file_path, true);
+            assert!(
+                result.is_err(),
+                "File of size {} bytes should be rejected (below 1 MiB)",
+                size
+            );
+
+            match result.err().expect("Expected an error") {
+                VhdxError::FileTooSmall(_) => {
+                    // Expected
+                }
+                other => panic!("Expected FileTooSmall for size {}, got {:?}", size, other),
+            }
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

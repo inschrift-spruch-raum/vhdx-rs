@@ -45,11 +45,7 @@ impl LogReplayer {
                         let seq_num = entry.header.sequence_number;
 
                         // Check sequence number continuity
-                        if current_sequence.is_empty() {
-                            current_sequence.push(entry);
-                            current_seq_num = seq_num;
-                            entry_offset += entry_length;
-                        } else if seq_num == current_seq_num + 1 {
+                        if current_sequence.is_empty() || seq_num == current_seq_num + 1 {
                             current_sequence.push(entry);
                             current_seq_num = seq_num;
                             entry_offset += entry_length;

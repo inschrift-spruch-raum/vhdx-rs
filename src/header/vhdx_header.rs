@@ -40,14 +40,16 @@ impl VhdxHeader {
     /// Parse from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
-            return Err(VhdxError::FileTooSmall);
+            return Err(VhdxError::FileTooSmall(
+                "file size is insufficient".to_string(),
+            ));
         }
 
         // Check signature
         let mut signature = [0u8; 4];
         signature.copy_from_slice(&data[0..4]);
 
-        if &signature != HEADER_SIGNATURE {
+        if signature != HEADER_SIGNATURE {
             return Err(VhdxError::InvalidSignature {
                 expected: String::from_utf8_lossy(HEADER_SIGNATURE).to_string(),
                 got: String::from_utf8_lossy(&signature).to_string(),
@@ -198,7 +200,34 @@ pub fn read_headers(file: &mut std::fs::File) -> Result<(usize, VhdxHeader, Vhdx
 
     match (header1_valid, header2_valid) {
         (true, true) => {
-            // Both valid - use higher sequence number
+            // Security: Validate critical fields are consistent
+            if header1.file_write_guid != header2.file_write_guid {
+                return Err(VhdxError::HeaderInconsistent(
+                    "file_write_guid mismatch".to_string(),
+                ));
+            }
+            if header1.data_write_guid != header2.data_write_guid {
+                return Err(VhdxError::HeaderInconsistent(
+                    "data_write_guid mismatch".to_string(),
+                ));
+            }
+            if header1.log_guid != header2.log_guid {
+                return Err(VhdxError::HeaderInconsistent(
+                    "log_guid mismatch".to_string(),
+                ));
+            }
+            if header1.version != header2.version {
+                return Err(VhdxError::HeaderInconsistent(
+                    "version mismatch".to_string(),
+                ));
+            }
+            if header1.log_version != header2.log_version {
+                return Err(VhdxError::HeaderInconsistent(
+                    "log_version mismatch".to_string(),
+                ));
+            }
+
+            // Both valid and consistent - use higher sequence number
             if header1.sequence_number > header2.sequence_number {
                 Ok((0, header1, header2))
             } else {
@@ -247,6 +276,7 @@ pub fn update_headers(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Seek, SeekFrom, Write};
 
     #[test]
     fn test_vhdx_header() {
@@ -261,5 +291,152 @@ mod tests {
         assert!(header2.is_valid(&bytes));
         assert_eq!(header.sequence_number, header2.sequence_number);
         assert_eq!(header.version, header2.version);
+    }
+
+    /// Test header consistency: two valid headers with different GUIDs should fail
+    #[test]
+    fn test_header_consistency_mismatch() {
+        // Create two headers with different GUIDs but both valid
+        let header1 = VhdxHeader::new(1);
+        let mut header2 = VhdxHeader::new(2);
+
+        // Ensure they have different file_write_guid
+        header2.file_write_guid = Guid::new_v4();
+        header2.data_write_guid = Guid::new_v4();
+        header2.log_guid = Guid::new_v4();
+
+        // Create temp file
+        let temp_dir = std::env::temp_dir().join("vhdx_test_header_consistency");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let file_path = temp_dir.join("test.vhdx");
+
+        // Write file type identifier first
+        {
+            let mut file = std::fs::File::create(&file_path).unwrap();
+            // Write "vhdxfile" signature at offset 0
+            file.write_all(b"vhdxfile").unwrap();
+
+            // Pad to 64KB (Header 1 offset)
+            let padding = vec![0u8; VhdxHeader::OFFSET_1 as usize - 8];
+            file.write_all(&padding).unwrap();
+
+            // Write header 1
+            let mut data1 = header1.to_bytes();
+            let checksum1 = crc32c_with_zero_field(&data1, 4, 4);
+            LittleEndian::write_u32(&mut data1[4..8], checksum1);
+            file.write_all(&data1).unwrap();
+
+            // Pad to 128KB (Header 2 offset)
+            let padding2 = vec![
+                0u8;
+                VhdxHeader::OFFSET_2 as usize
+                    - VhdxHeader::OFFSET_1 as usize
+                    - VhdxHeader::SIZE
+            ];
+            file.write_all(&padding2).unwrap();
+
+            // Write header 2
+            let mut data2 = header2.to_bytes();
+            let checksum2 = crc32c_with_zero_field(&data2, 4, 4);
+            LittleEndian::write_u32(&mut data2[4..8], checksum2);
+            file.write_all(&data2).unwrap();
+
+            // Ensure file is at least 1MiB (minimum VHDX size)
+            let current_pos = file.seek(SeekFrom::End(0)).unwrap();
+            const MIN_VHDX_SIZE: u64 = 1024 * 1024;
+            if current_pos < MIN_VHDX_SIZE {
+                let extra_padding = vec![0u8; (MIN_VHDX_SIZE - current_pos) as usize];
+                file.write_all(&extra_padding).unwrap();
+            }
+        }
+
+        // Try to read headers - should fail with HeaderInconsistent
+        let mut file = std::fs::File::open(&file_path).unwrap();
+        let result = read_headers(&mut file);
+        assert!(result.is_err(), "Headers with different GUIDs should fail");
+
+        match result.unwrap_err() {
+            VhdxError::HeaderInconsistent(msg) => {
+                assert!(
+                    msg.contains("file_write_guid"),
+                    "Error should mention file_write_guid mismatch: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected HeaderInconsistent error, got {:?}", other),
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Test header consistency: data_write_guid mismatch
+    #[test]
+    fn test_header_consistency_data_write_guid_mismatch() {
+        // Create two headers with same file_write_guid but different data_write_guid
+        let header1 = VhdxHeader::new(1);
+        let mut header2 = header1.clone();
+        header2.sequence_number = 2;
+        header2.data_write_guid = Guid::new_v4(); // Different data_write_guid
+
+        // Create temp file
+        let temp_dir = std::env::temp_dir().join("vhdx_test_data_write_guid");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let file_path = temp_dir.join("test.vhdx");
+
+        // Write file with mismatched headers
+        {
+            let mut file = std::fs::File::create(&file_path).unwrap();
+            file.write_all(b"vhdxfile").unwrap();
+
+            let padding = vec![0u8; VhdxHeader::OFFSET_1 as usize - 8];
+            file.write_all(&padding).unwrap();
+
+            let mut data1 = header1.to_bytes();
+            let checksum1 = crc32c_with_zero_field(&data1, 4, 4);
+            LittleEndian::write_u32(&mut data1[4..8], checksum1);
+            file.write_all(&data1).unwrap();
+
+            let padding2 = vec![
+                0u8;
+                VhdxHeader::OFFSET_2 as usize
+                    - VhdxHeader::OFFSET_1 as usize
+                    - VhdxHeader::SIZE
+            ];
+            file.write_all(&padding2).unwrap();
+
+            let mut data2 = header2.to_bytes();
+            let checksum2 = crc32c_with_zero_field(&data2, 4, 4);
+            LittleEndian::write_u32(&mut data2[4..8], checksum2);
+            file.write_all(&data2).unwrap();
+
+            // Ensure minimum file size
+            let current_pos = file.seek(SeekFrom::End(0)).unwrap();
+            const MIN_VHDX_SIZE: u64 = 1024 * 1024;
+            if current_pos < MIN_VHDX_SIZE {
+                let extra_padding = vec![0u8; (MIN_VHDX_SIZE - current_pos) as usize];
+                file.write_all(&extra_padding).unwrap();
+            }
+        }
+
+        let mut file = std::fs::File::open(&file_path).unwrap();
+        let result = read_headers(&mut file);
+        assert!(
+            result.is_err(),
+            "Headers with different data_write_guid should fail"
+        );
+
+        match result.unwrap_err() {
+            VhdxError::HeaderInconsistent(msg) => {
+                assert!(
+                    msg.contains("data_write_guid"),
+                    "Error should mention data_write_guid mismatch: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected HeaderInconsistent error, got {:?}", other),
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

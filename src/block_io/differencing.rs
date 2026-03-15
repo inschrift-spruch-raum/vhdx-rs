@@ -213,10 +213,8 @@ impl<'a> DifferencingBlockIo<'a> {
                                     &mut buf[bytes_read..bytes_read + bytes_from_block],
                                 )?;
                             } else {
-                                // No parent - return zeros
-                                for i in bytes_read..bytes_read + bytes_from_block {
-                                    buf[i] = 0;
-                                }
+                                // No parent - zero-fill
+                                buf[bytes_read..bytes_read + bytes_from_block].fill(0);
                             }
                         }
                         PayloadBlockState::Undefined => {
@@ -232,8 +230,8 @@ impl<'a> DifferencingBlockIo<'a> {
                             &mut buf[bytes_read..bytes_read + bytes_from_block],
                         )?;
                     } else {
-                        for i in bytes_read..bytes_read + bytes_from_block {
-                            buf[i] = 0;
+                        for item in buf.iter_mut().take(bytes_from_block) {
+                            *item = 0;
                         }
                     }
                 }
@@ -467,9 +465,7 @@ impl<'a> DifferencingBlockIo<'a> {
             parent.read(virtual_offset, buf)
         } else {
             // No parent - return zeros
-            for i in 0..buf.len() {
-                buf[i] = 0;
-            }
+            buf.fill(0);
             Ok(buf.len())
         }
     }

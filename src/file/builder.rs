@@ -125,16 +125,15 @@ impl VhdxBuilder {
         // Calculate sizes
         let chunk_size = (1u64 << 23) * self.logical_sector_size as u64;
         let chunk_ratio = chunk_size / self.block_size as u64;
-        let num_payload_blocks =
-            (self.virtual_disk_size + self.block_size as u64 - 1) / self.block_size as u64;
-        let num_sector_bitmap_blocks = (num_payload_blocks + chunk_ratio - 1) / chunk_ratio;
+        let num_payload_blocks = self.virtual_disk_size.div_ceil(self.block_size as u64);
+        let num_sector_bitmap_blocks = num_payload_blocks.div_ceil(chunk_ratio);
         let num_bat_entries = num_payload_blocks + num_sector_bitmap_blocks;
 
         // Calculate file layout
         // Windows expects: Metadata (2MB) -> BAT (3MB), not BAT -> Metadata
         let header_size = 1024 * 1024; // 1MB header section
         let metadata_size = 1024 * 1024; // 1MB metadata
-        let bat_size = ((num_bat_entries * 8 + 1024 * 1024 - 1) / (1024 * 1024)) * (1024 * 1024); // 1MB aligned
+        let bat_size = (num_bat_entries * 8).div_ceil(1024 * 1024) * (1024 * 1024); // 1MB aligned
         let _log_size = 0u64; // No separate log region - embedded in header
 
         let metadata_offset = header_size * 2; // Metadata at 2MB

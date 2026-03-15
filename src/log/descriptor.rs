@@ -26,7 +26,7 @@ impl ZeroDescriptor {
         let mut signature = [0u8; 4];
         signature.copy_from_slice(&data[0..4]);
 
-        if &signature != ZERO_DESCRIPTOR_SIGNATURE {
+        if signature != ZERO_DESCRIPTOR_SIGNATURE {
             return Err(VhdxError::InvalidSignature {
                 expected: String::from_utf8_lossy(ZERO_DESCRIPTOR_SIGNATURE).to_string(),
                 got: String::from_utf8_lossy(&signature).to_string(),
@@ -84,7 +84,7 @@ impl DataDescriptor {
         let mut signature = [0u8; 4];
         signature.copy_from_slice(&data[0..4]);
 
-        if &signature != DATA_DESCRIPTOR_SIGNATURE {
+        if signature != DATA_DESCRIPTOR_SIGNATURE {
             return Err(VhdxError::InvalidSignature {
                 expected: String::from_utf8_lossy(DATA_DESCRIPTOR_SIGNATURE).to_string(),
                 got: String::from_utf8_lossy(&signature).to_string(),
