@@ -6,7 +6,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use vhdx_rs::header::{read_headers, read_region_tables, FileTypeIdentifier};
 use vhdx_rs::metadata::MetadataRegion;
-use vhdx_rs::{DiskType, Builder, VhdxFile};
+use vhdx_rs::{DiskType, Builder, File};
 
 #[derive(Parser)]
 #[command(name = "vhdx-tool")]
@@ -141,7 +141,7 @@ fn main() {
 }
 
 fn show_info(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let vhdx = VhdxFile::open(&path, true).map_err(|e| format!("Failed to open VHDX: {}", e))?;
+    let vhdx = File::open(&path, true).map_err(|e| format!("Failed to open VHDX: {}", e))?;
 
     println!("VHDX File: {}", path.display());
     println!("============================");
@@ -181,7 +181,7 @@ fn read_data(
     output: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut vhdx =
-        VhdxFile::open(&path, true).map_err(|e| format!("Failed to open VHDX: {}", e))?;
+        File::open(&path, true).map_err(|e| format!("Failed to open VHDX: {}", e))?;
 
     let mut buffer = vec![0u8; length];
     let bytes_read = vhdx
@@ -208,7 +208,7 @@ fn write_data(
     input: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut vhdx =
-        VhdxFile::open(&path, false).map_err(|e| format!("Failed to open VHDX: {}", e))?;
+        File::open(&path, false).map_err(|e| format!("Failed to open VHDX: {}", e))?;
 
     let buffer = if let Some(input_path) = input {
         std::fs::read(&input_path)?

@@ -3,10 +3,10 @@
 //! Provides high-level API for opening, reading, writing, and creating VHDX files.
 
 pub mod builder;
-pub mod vhdx_file;
+pub mod file;
 
 pub use builder::Builder;
-pub use vhdx_file::VhdxFile;
+pub use file::File;
 
 /// VHDX disk type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

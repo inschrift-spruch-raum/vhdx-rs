@@ -21,4 +21,4 @@ pub mod payload;
 
 // Re-exports for convenience
 pub use error::Error;
-pub use file::{DiskType, Builder, VhdxFile};
+pub use file::{DiskType, Builder, File};

@@ -3,7 +3,7 @@
 //! Provides file-level operations like open, read, write, and metadata queries.
 
 use std::collections::HashSet;
-use std::fs::File;
+use std::fs::File as StdFile;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
@@ -12,7 +12,7 @@ use crate::block_io::{DynamicBlockIo, FixedBlockIo};
 use crate::common::Guid;
 use crate::error::{Error, Result};
 use crate::header::{
-    read_headers, read_region_tables, update_headers, FileTypeIdentifier, RegionTable, Header,
+    read_headers, read_region_tables, update_headers, FileTypeIdentifier, Header, RegionTable,
 };
 use crate::log::LogReplayer;
 use crate::metadata::MetadataRegion;
@@ -85,12 +85,16 @@ fn validate_parent_path(
 ) -> Result<std::path::PathBuf> {
     // Reject absolute paths
     if std::path::Path::new(parent_path).is_absolute() {
-        return Err(Error::InvalidParentPath("Absolute paths not allowed".to_string(),));
+        return Err(Error::InvalidParentPath(
+            "Absolute paths not allowed".to_string(),
+        ));
     }
 
     // Check for .. components
     if parent_path.contains("..") {
-        return Err(Error::InvalidParentPath("Path traversal not allowed".to_string(),));
+        return Err(Error::InvalidParentPath(
+            "Path traversal not allowed".to_string(),
+        ));
     }
 
     // Resolve path relative to base directory
@@ -108,7 +112,9 @@ fn validate_parent_path(
 
     // Ensure resolved path is within base directory
     if !canonical_resolved.starts_with(&canonical_base) {
-        return Err(Error::InvalidParentPath("Path escapes base directory".to_string(),));
+        return Err(Error::InvalidParentPath(
+            "Path escapes base directory".to_string(),
+        ));
     }
 
     Ok(canonical_resolved)
@@ -164,7 +170,7 @@ fn detect_disk_type(
 #[allow(dead_code)]
 pub struct VhdxFile {
     /// Underlying file
-    pub(crate) file: File,
+    pub(crate) file: StdFile,
     /// File path
     pub(crate) path: std::path::PathBuf,
     /// File type identifier
@@ -194,12 +200,12 @@ pub struct VhdxFile {
     /// Is file open in read-only mode
     pub(crate) read_only: bool,
     /// Parent file (for differencing disks)
-    pub(crate) parent: Option<Box<VhdxFile>>,
+    pub(crate) parent: Option<Box<File>>,
     /// Log writer for metadata updates
     pub(crate) log_writer: Option<crate::log::LogWriter>,
 }
 
-impl VhdxFile {
+impl File {
     /// Open an existing VHDX file
     ///
     /// This will replay the log if necessary.
@@ -321,8 +327,10 @@ impl VhdxFile {
 
                     // Validate parent_linkage2 MUST NOT exist per MS-VHDX spec Section 2.2.4
                     if locator.parent_linkage2().is_some() {
-                        return Err(Error::InvalidParentLocator("parent_linkage2 MUST NOT exist per MS-VHDX spec Section 2.2.4"
-                            .to_string(),));
+                        return Err(Error::InvalidParentLocator(
+                            "parent_linkage2 MUST NOT exist per MS-VHDX spec Section 2.2.4"
+                                .to_string(),
+                        ));
                     }
 
                     // Validate DataWriteGuid matches per MS-VHDX spec Section 2.2.4
@@ -338,7 +346,9 @@ impl VhdxFile {
                         }
                     } else {
                         // parent_linkage is required for differencing disks
-                        return Err(Error::InvalidParentLocator("parent_linkage is required for differencing disks".to_string(),));
+                        return Err(Error::InvalidParentLocator(
+                            "parent_linkage is required for differencing disks".to_string(),
+                        ));
                     }
 
                     Some(Box::new(parent_vhdx))
@@ -352,7 +362,7 @@ impl VhdxFile {
             None
         };
 
-        let mut vhdx = VhdxFile {
+        let mut vhdx = File {
             file,
             path,
             file_type,
@@ -391,7 +401,7 @@ impl VhdxFile {
     }
 
     /// Replay log entries
-    fn replay_log(file: &mut File, header: &mut Header, read_only: bool) -> Result<()> {
+    fn replay_log(file: &mut StdFile, header: &mut Header, read_only: bool) -> Result<()> {
         if header.log_offset == 0 || header.log_length == 0 || header.log_guid.is_nil() {
             return Ok(());
         }
@@ -539,7 +549,7 @@ impl VhdxFile {
                     let result = block_io
                         .with_log_writer(log_writer)
                         .write(virtual_offset, buf);
-                    // Return LogWriter to VhdxFile (simplified - in production would use RefCell)
+                    // Return LogWriter to File (simplified - in production would use RefCell)
                     // For now, we accept that LogWriter is consumed
                     result
                 } else {
@@ -643,7 +653,7 @@ mod tests {
             .unwrap();
 
         // Open child - should succeed with matching sector sizes
-        let result = VhdxFile::open(&child_path, true);
+        let result = File::open(&child_path, true);
         assert!(
             result.is_ok(),
             "Opening differencing disk with matching sector sizes should succeed"
@@ -803,7 +813,7 @@ mod tests {
             .unwrap();
 
         // Open grandchild - should succeed with chain depth 3
-        let result = VhdxFile::open(&grandchild_path, true);
+        let result = File::open(&grandchild_path, true);
         assert!(
             result.is_ok(),
             "Opening grandchild disk with valid parent chain (depth 3) should succeed, got: {:?}",
@@ -1176,7 +1186,7 @@ mod tests {
         }
 
         // Try to open - should fail with FileTooSmall
-        let result = VhdxFile::open(&file_path, true);
+        let result = File::open(&file_path, true);
         assert!(
             result.is_err(),
             "File smaller than 1 MiB should be rejected"
@@ -1226,7 +1236,7 @@ mod tests {
                 }
             }
 
-            let result = VhdxFile::open(&file_path, true);
+            let result = File::open(&file_path, true);
             assert!(
                 result.is_err(),
                 "File of size {} bytes should be rejected (below 1 MiB)",
