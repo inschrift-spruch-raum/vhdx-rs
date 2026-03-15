@@ -220,27 +220,32 @@ impl VhdxFile {
         chain_state: &ParentChainState,
     ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let mut file = if read_only {
-            File::open(&path)?
-        } else {
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&path)?
-        };
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(!read_only)
+            .open(&path)?;
+        // 这个地方语义还要取反就挺不好的
 
         // Get current file size for disk type detection
-        let current_file_size = file.seek(SeekFrom::End(0))?;
-        file.seek(SeekFrom::Start(0))?;
+        let current_file_size = file.metadata()?.len();
 
         // Read file type identifier
         let mut ft_data = vec![0u8; FileTypeIdentifier::SIZE];
         file.read_exact(&mut ft_data)?;
         let file_type = FileTypeIdentifier::from_bytes(&ft_data)?;
+        // 为了能实际存储数据,Windows官方所提供的磁盘管理功能创建时都是1MiB起步的,这里判断得太小了
 
         // Read headers and determine current one
         let (_header_idx, mut header, _) = read_headers(&mut file)?;
-
+        /*
+        _header_idx 读取了但是实际没有用到
+        理应双header检验,但实际并没有,除非其他地方已经检验
+        命名问题:
+        1.在代码内部是应该直接叫Header好还是VhdxHeader好
+        1.1.我个人认为在外部仍然保留VhdxHeader
+        2.为什么这是一个专门的函数而不是Header::read
+        */
+        
         // Store sequence number before moving header
         let sequence_number = header.sequence_number;
 

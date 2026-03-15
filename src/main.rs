@@ -226,6 +226,7 @@ fn write_data(
 fn check_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     println!("Checking VHDX file: {}", path.display());
 
+    // 我非常惊讶于这里居然直接调用内部文件而不是lib.rs暴露的接口
     match VhdxFile::open(&path, true) {
         Ok(vhdx) => {
             println!("✓ File opened successfully");
@@ -233,6 +234,7 @@ fn check_file(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
             println!("✓ Region table validated");
             println!("✓ Metadata parsed");
             println!("✓ BAT loaded");
+            // 这里一股脑直接输出肯定不对
 
             if vhdx.has_parent() {
                 println!("✓ Parent disk accessible");
