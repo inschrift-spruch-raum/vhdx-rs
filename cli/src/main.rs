@@ -47,7 +47,7 @@ enum Commands {
         /// Path to VHDX file
         path: PathBuf,
         /// Virtual offset to read from
-        #[arg(short, long)]
+        #[arg(short = 'f', long)]
         offset: u64,
         /// Number of bytes to read
         #[arg(short, long)]
