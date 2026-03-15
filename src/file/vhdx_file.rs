@@ -22,6 +22,9 @@ use super::DiskType;
 /// Maximum allowed parent chain depth to prevent DoS attacks
 const MAX_PARENT_CHAIN_DEPTH: usize = 16;
 
+/// Fixed VHDX data offset from the start of file (4MB)
+const FIXED_DATA_OFFSET: u64 = 0x00400000;
+
 /// State tracked during parent chain traversal to detect cycles and limit depth
 #[derive(Debug, Clone)]
 struct ParentChainState {
@@ -117,6 +120,52 @@ fn validate_parent_path(
     Ok(canonical_resolved)
 }
 
+/// Detect disk type based on file parameters, BAT state, and file size
+///
+/// Detection logic:
+/// 1. If has_parent is true -> Differencing
+/// 2. If leave_block_allocated is true AND file size matches fixed disk size -> Fixed
+/// 3. If BAT[0] is FullyPresent -> Fixed (legacy/traditional fixed disk)
+/// 4. Otherwise -> Dynamic
+fn detect_disk_type(
+    file_params: &crate::metadata::FileParameters,
+    bat: &Bat,
+    virtual_disk_size: u64,
+    current_file_size: u64,
+) -> DiskType {
+    // Differencing disks always have has_parent = true
+    if file_params.has_parent {
+        return DiskType::Differencing;
+    }
+
+    // Check for traditional fixed disk: BAT[0] is FullyPresent
+    if let Some(first_entry) = bat.get_payload_entry(0) {
+        if first_entry.state == crate::bat::PayloadBlockState::FullyPresent {
+            return DiskType::Fixed;
+        }
+    }
+
+    // For Windows-created fixed disks:
+    // - leave_block_allocated is typically true (blocks are pre-allocated)
+    // - File size should be approximately FIXED_DATA_OFFSET + virtual_disk_size
+    // - BAT is empty (all entries are NotPresent)
+    if file_params.leave_block_allocated {
+        // Expected file size for a fixed disk: header (4MB) + virtual disk size
+        let expected_min_size = FIXED_DATA_OFFSET + virtual_disk_size;
+        // Allow some tolerance for metadata and rounding
+        let tolerance = 1024 * 1024; // 1MB tolerance
+
+        if current_file_size >= expected_min_size.saturating_sub(tolerance)
+            && current_file_size <= expected_min_size.saturating_add(tolerance)
+        {
+            return DiskType::Fixed;
+        }
+    }
+
+    // If no parent and doesn't match fixed disk criteria, it's dynamic
+    DiskType::Dynamic
+}
+
 /// VHDX file handle
 #[allow(dead_code)]
 pub struct VhdxFile {
@@ -180,6 +229,10 @@ impl VhdxFile {
                 .open(&path)?
         };
 
+        // Get current file size for disk type detection
+        let current_file_size = file.seek(SeekFrom::End(0))?;
+        file.seek(SeekFrom::Start(0))?;
+
         // Read file type identifier
         let mut ft_data = vec![0u8; FileTypeIdentifier::SIZE];
         file.read_exact(&mut ft_data)?;
@@ -239,23 +292,8 @@ impl VhdxFile {
         // Set BAT file offset for updates
         bat.set_bat_file_offset(bat_entry.file_offset);
 
-        // Determine disk type
-        let disk_type = if file_params.has_parent {
-            DiskType::Differencing
-        } else {
-            // Check if it's fixed or dynamic based on BAT entries
-            // Fixed disk: first payload block is FULLY_PRESENT
-            // Dynamic disk: first payload block is NOT_PRESENT
-            if let Some(first_entry) = bat.get_payload_entry(0) {
-                if first_entry.state == crate::bat::PayloadBlockState::FullyPresent {
-                    DiskType::Fixed
-                } else {
-                    DiskType::Dynamic
-                }
-            } else {
-                DiskType::Dynamic
-            }
-        };
+        // Determine disk type using improved detection logic
+        let disk_type = detect_disk_type(&file_params, &bat, virtual_disk_size, current_file_size);
 
         // Load parent for differencing disks
         let parent = if disk_type == DiskType::Differencing {

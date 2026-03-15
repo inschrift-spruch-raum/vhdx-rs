@@ -8,6 +8,10 @@ use crate::error::{Result, VhdxError};
 use crate::log::LogWriter;
 use std::io::{Read, Seek, SeekFrom, Write};
 
+/// Windows dynamic VHDX data offset
+/// Windows stores the first payload block at 0x00400000 even for dynamic disks
+const WINDOWS_PAYLOAD_OFFSET: u64 = 0x00400000;
+
 /// Dynamic disk block I/O (allocates blocks on demand)
 ///
 /// For dynamic disks, blocks are allocated only when data is written
@@ -86,9 +90,23 @@ impl<'a> DynamicBlockIo<'a> {
                         PayloadBlockState::Zero
                         | PayloadBlockState::NotPresent
                         | PayloadBlockState::Unmapped => {
-                            // Return zeros for unallocated blocks
-                            for i in bytes_read..bytes_read + bytes_from_block {
-                                buf[i] = 0;
+                            // Try Windows-style direct storage first
+                            // Windows may store data at 0x00400000 + virtual_offset even for dynamic disks
+                            let windows_offset = WINDOWS_PAYLOAD_OFFSET + current_offset;
+                            self.file.seek(SeekFrom::Start(windows_offset))?;
+                            match self
+                                .file
+                                .read_exact(&mut buf[bytes_read..bytes_read + bytes_from_block])
+                            {
+                                Ok(_) => {
+                                    // Data was found at Windows offset
+                                }
+                                Err(_) => {
+                                    // No data at Windows offset, return zeros
+                                    for i in bytes_read..bytes_read + bytes_from_block {
+                                        buf[i] = 0;
+                                    }
+                                }
                             }
                         }
                         PayloadBlockState::PartiallyPresent => {
