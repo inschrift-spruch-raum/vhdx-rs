@@ -21,4 +21,4 @@ mod payload;
 
 // Re-exports for convenience
 pub use error::Error;
-pub use file::{Builder, DiskType, File};
+pub use file::{Builder, CheckReport, DiskType, File};
