@@ -102,7 +102,7 @@ impl BlockCache {
 
     /// Evict least recently used entry
     fn evict_lru(&mut self) {
-        if let Some((&oldest_key, _)) = self.access_count.iter().min_by_key(|(_, &count)| count) {
+        if let Some((&oldest_key, _)) = self.access_count.iter().min_by_key(|&(_, &count)| count) {
             self.cache.remove(&oldest_key);
             self.access_count.remove(&oldest_key);
         }
