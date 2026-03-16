@@ -1,26 +1,25 @@
-[workspace]
-members = ["cli"]
-resolver = "2"
-
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "VHDX (Virtual Hard Disk v2) library and CLI tool"
+
+[workspace]
+members = ["vhdx-cli"]
+resolver = "2"
 
 [workspace.dependencies]
 uuid = { version = "1.22", features = ["v4"] }
-thiserror = "2.0"
+thiserror = "2.0.18"
 byteorder = "1.5"
 clap = { version = "4.6", features = ["derive"] }
 crc32c = "0.6"
 tempfile = "3.27"
 
-# Library crate
+# Main library crate
 [package]
 name = "vhdx-rs"
 version.workspace = true
 edition.workspace = true
-description.workspace = true
+description = "VHDX (Virtual Hard Disk v2) library"
 
 [dependencies]
 uuid.workspace = true
