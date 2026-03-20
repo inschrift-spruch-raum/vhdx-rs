@@ -21,73 +21,153 @@ vhdx::
 │       ├── write(self) -> Self             # 启用写权限（RW）
 │       └── finish(self) -> Result<File>    # 完成打开
 │
-│   └── CreateOptions                 # 关联类型：创建选项（原 Builder）
-│       ├── size(self, u64) -> Self              # 必需：虚拟磁盘大小
-│       ├── disk_type(self, DiskType) -> Self  # 可选：磁盘类型
-│       ├── block_size(self, u32) -> Self        # 可选：块大小
-│       └── finish(self) -> Result<File>         # 完成创建
+│   └── CreateOptions                          # 关联类型：创建选项
+│       ├── size(self, u64) -> Self            # 必需：虚拟磁盘大小
+│       ├── fixed(self, bool) -> Self          # 可选：固定磁盘
+│       ├── has_parent(self, bool) -> Self     # 可选：差分磁盘
+│       ├── block_size(self, u32) -> Self      # 可选：块大小
+│       └── finish(self) -> Result<File>       # 完成创建
 │
-├── section::                          # Section模块 - 物理文件结构映射
-│   ├── Sections                       # 容器，管理所有sections (懒加载)
+├── section::                               # Section模块 - 物理文件结构映射
+│   ├── Sections                            # 容器，管理所有sections (懒加载)
 │   │   ├── header(&self) -> &Header
 │   │   ├── bat(&self) -> &Bat
 │   │   ├── metadata(&self) -> &Metadata
 │   │   ├── log(&self) -> &Log
-│   │   └── payload(&self) -> &Payload
+│   │   └── blocks(&self) -> &Blocks
 │   │
-│   ├── Header                         # Header Section (1 MB)
-│   │   ├── raw(&self) -> &[u8]        # 完整1MB字节 (FileType + Headers + RegionTables)
+│   ├── Header                              # Header Section (1 MB)
+│   │   ├── raw(&self) -> &[u8]             # 完整1MB字节 (FileType + Headers + RegionTables)
 │   │   ├── file_type(&self) -> &FileTypeIdentifier
-│   │   ├── header_1(&self) -> &HeaderStructure
-│   │   ├── header_2(&self) -> &HeaderStructure
-│   │   ├── current_header(&self) -> &HeaderStructure
-│   │   ├── region_table_1(&self) -> &RegionTable
-│   │   └── region_table_2(&self) -> &RegionTable
+│   │   ├── header(&self, index: usize) -> Option<&HeaderStructure>  # 0=current, 1=header1, 2=header2
+│   │   └── region_table(&self, index: usize) -> Option<&RegionTable>  # 0=current, 1=rt1, 2=rt2
 │   │
-│   ├── Bat                            # BAT Section
-│   │   ├── raw(&self) -> &[u8]        # 完整BAT区域字节
-│   │   ├── entry(&self, index: u64) -> Option<BatEntry>
+│   │   └── FileTypeIdentifier              # 文件类型标识符
+│   │
+│   │   └── HeaderStructure                 # VHDX Header
+│   │
+│   │   └── RegionTable                     # Region Table
+│   │       ├── header: RegionTableHeader
+│   │       └── entries: Vec<RegionTableEntry>
+│   │       │
+│   │       └── RegionTableHeader           # Region Table Header
+│   │       └── RegionTableEntry            # Region Table Entry
+│   │
+│   ├── Bat                                 # BAT Section
+│   │   ├── raw(&self) -> &[u8]
+│   │   ├── entry(&self, index: u64) -> Option<&BatEntry>
 │   │   ├── entries(&self) -> &[BatEntry]
 │   │   └── len(&self) -> usize
 │   │
-│   ├── Metadata                       # Metadata Section (合并原metadata+raw)
-│   │   ├── raw(&self) -> &[u8]        # 完整Metadata区域字节 (Table + Items)
+│   │   └── BatEntry                        # BAT Entry 枚举
+│   │       ├── Payload(PayloadEntry)       # Payload Block Entry 变体
+│   │       │   └── state(&self) -> PayloadBlockState
+│   │       │
+│   │       ├── SectorBitmap(SectorBitmapEntry)  # Sector Bitmap Block Entry 变体
+│   │       │   └── state(&self) -> SectorBitmapState
+│   │       │
+│   │       └── file_offset_mb(&self) -> u64   # 通用方法
+│   │
+│   │       └── PayloadBlockState           # Payload Block 状态枚举
+│   │           ├── NotPresent
+│   │           ├── Undefined
+│   │           ├── Zero
+│   │           ├── Unmapped
+│   │           ├── FullyPresent
+│   │           └── PartiallyPresent
+│   │
+│   │       └── SectorBitmapState           # Sector Bitmap Block 状态枚举 (差异磁盘)
+│   │           ├── NotPresent
+│   │           └── Present
+│   │
+│   ├── Metadata                            # Metadata Section
+│   │   ├── raw(&self) -> &[u8]
 │   │   ├── table(&self) -> &MetadataTable
-│   │   ├── entries(&self) -> &[MetadataTableEntry]
-│   │   ├── item(&self, guid: Guid) -> Option<&[u8]>
-│   │   │
-│   │   ├── disk_type(&self) -> DiskType           # 解析后的值
-│   │   ├── virtual_size(&self) -> u64
-│   │   ├── virtual_disk_id(&self) -> Guid
-│   │   ├── logical_sector_size(&self) -> u32
-│   │   ├── physical_sector_size(&self) -> u32
-│   │   ├── block_size(&self) -> u32
-│   │   ├── has_parent(&self) -> bool
-│   │   ├── leave_block_allocated(&self) -> bool
-│   │   └── parent_locator(&self) -> Option<ParentLocator>
+│   │   └── items(&self) -> &MetadataItems
 │   │
-│   ├── Log                            # Log Section
-│   │   ├── raw(&self) -> &[u8]        # 完整Log区域字节
-│   │   ├── entries(&self) -> LogEntryIter
-│   │   └── is_empty(&self) -> bool
+│   │   └── MetadataTable
+│   │       ├── header(&self) -> &TableHeader
+│   │       ├── entry(&self, item_id: &Guid) -> Option<&TableEntry>
+│   │       └── entries(&self) -> &[TableEntry]
 │   │
-│   └── Payload                        # Payload Section
-│       ├── raw(&self) -> &[u8]        # 完整Payload区域字节 (通常很大)
-│       ├── block(&self, index: u64) -> Option<Block>
-│       └── block_count(&self) -> u64
+│   │       └── TableHeader
+│   │
+│   │       └── TableEntry
+│   │           └── flags(&self) -> &EntryFlags
+│   │
+│   │           └── EntryFlags
+│   │               ├── is_user(&self) -> bool
+│   │               ├── is_virtual_disk(&self) -> bool
+│   │               └── is_required(&self) -> bool
+│   │
+│   │   └── MetadataItems
+│   │       ├── file_parameters(&self) -> Option<&FileParameters>
+│   │       ├── virtual_disk_size(&self) -> Option<u64>
+│   │       ├── virtual_disk_id(&self) -> Option<&Guid>
+│   │       ├── logical_sector_size(&self) -> Option<u32>
+│   │       ├── physical_sector_size(&self) -> Option<u32>
+│   │       └── parent_locator(&self) -> Option<&ParentLocator>
+│   │
+│   │       └── FileParameters
+│   │           ├── block_size(&self) -> u32
+│   │           ├── leave_block_allocated(&self) -> bool
+│   │           └── has_parent(&self) -> bool
+│   │
+│   │       └── ParentLocator
+│   │           ├── header(&self) -> &LocatorHeader
+│   │           ├── entry(&self, index: usize) -> Option<&KeyValueEntry>
+│   │           ├── entries(&self) -> &[KeyValueEntry]
+│   │           └── key_value_data(&self) -> &[u8]
+│   │
+│   │           └── LocatorHeader
+│   │
+│   │           └── KeyValueEntry
+│   │               ├── key(&self, data: &[u8]) -> Option<String>
+│   │               └── value(&self, data: &[u8]) -> Option<String>
+│   │
+│   ├── Log                                 # Log Section
+│   │   ├── raw(&self) -> &[u8]
+│   │   ├── entry(&self, index: usize) -> Option<&Entry>
+│   │   └── entries(&self) -> &[Entry]
+│   │
+│   │   └── Entry                           # Log Entry
+│   │       ├── header(&self) -> &LogEntryHeader
+│   │       ├── descriptor(&self, index: usize) -> Option<&Descriptor>
+│   │       ├── descriptors(&self) -> &[Descriptor]
+│   │       └── data(&self) -> &[DataSector]
+│   │
+│   │       └── Descriptor                  # Descriptor 枚举
+│   │           ├── Data(DataDescriptor)    # Data Descriptor 变体
+│   │           │
+│   │           └── Zero(ZeroDescriptor)    # Zero Descriptor 变体
+│   │
+│   │           └── DataDescriptor          # Data Descriptor
+│   │
+│   │           └── ZeroDescriptor          # Zero Descriptor
+│   │
+│   │       └── LogEntryHeader              # Log Entry Header
+│   │
+│   │       └── DataSector                  # Data Sector
+│   │
+│   └── Blocks                              # Blocks Section (Payload & Sector Bitmap)
+│       ├── raw(&self) -> &[u8]
+│       ├── block(&self, index: u64) -> Option<&Block>
+│       └── blocks(&self) -> &[Block]
+│       │
+│       └── Block                           # Block 枚举
+│           ├── Payload(PayloadBlock)       # Payload Block 变体
+│           │
+│           └── SectorBitmap(SectorBitmapBlock)  # Sector Bitmap Block 变体
+│           │
+│           └── read(&self, offset: u64, buf: &mut [u8]) -> Result<usize>  # 通用方法
+│           │
+│           └── PayloadBlock                # Payload Block
+│           │
+│           └── SectorBitmapBlock           # Sector Bitmap Block
 │
-├── DiskType                           # 磁盘类型枚举
-│   ├── Fixed
-│   ├── Dynamic
-│   └── Differencing
+├── Guid                                    # GUID 类型
 │
-├── Guid                               # GUID 类型
-│   ├── data1: u32
-│   ├── data2: u16
-│   ├── data3: u16
-│   └── data4: [u8; 8]
-│
-└── Error                              # 错误类型
+└── Error                                   # 错误类型
     ├── Io(std::io::Error)
     ├── InvalidFile(String)
     ├── CorruptedHeader(String)
@@ -166,8 +246,11 @@ impl File::CreateOptions {
     /// 设置虚拟磁盘大小（必需）
     pub fn size(self, virtual_size: u64) -> Self;
     
-    /// 设置磁盘类型（可选，默认 Dynamic）
-    pub fn disk_type(self, disk_type: DiskType) -> Self;
+    /// 设置是否为固定磁盘（可选，默认 Dynamic）
+    pub fn fixed(self, fixed: bool) -> Self;
+    
+    /// 设置是否为差分磁盘（可选，默认 false）
+    pub fn has_parent(self, has_parent: bool) -> Self;
     
     /// 设置块大小（可选，默认 32MB）
     pub fn block_size(self, size: u32) -> Self;
@@ -207,9 +290,9 @@ impl Sections {
     /// 懒加载：首次调用时从文件读取Log区域
     pub fn log(&self) -> &Log;
     
-    /// 访问Payload Section
-    /// 懒加载：首次调用时从文件读取Payload区域元数据（不读取全部数据块）
-    pub fn payload(&self) -> &Payload;
+    /// 访问Blocks Section
+    /// 懒加载：首次调用时从文件读取Blocks区域元数据（不读取全部数据块）
+    pub fn blocks(&self) -> &Blocks;
 }
 ```
 
@@ -229,23 +312,22 @@ impl Header {
     /// 文件类型标识符
     pub fn file_type(&self) -> &FileTypeIdentifier;
     
-    /// 第一个Header (偏移64KB)
-    pub fn header_1(&self) -> &HeaderStructure;
+    /// 获取Header
+    /// - index = 0: 返回 current header（根据 sequence_number 自动选择）
+    /// - index = 1: 返回 header 1（物理第一个，偏移 64KB）
+    /// - index = 2: 返回 header 2（物理第二个，偏移 128KB）
+    /// - index > 2: 返回 None
+    pub fn header(&self, index: usize) -> Option<&HeaderStructure>;
     
-    /// 第二个Header (偏移128KB)
-    pub fn header_2(&self) -> &HeaderStructure;
-    
-    /// 当前Header（根据SequenceNumber自动选择）
-    pub fn current_header(&self) -> &HeaderStructure;
-    
-    /// 第一个Region Table (偏移192KB)
-    pub fn region_table_1(&self) -> &RegionTable;
-    
-    /// 第二个Region Table (偏移256KB)
-    pub fn region_table_2(&self) -> &RegionTable;
+    /// 获取Region Table
+    /// - index = 0: 返回 current header 对应的 region table
+    /// - index = 1: 返回 region table 1（偏移 192KB）
+    /// - index = 2: 返回 region table 2（偏移 256KB）
+    /// - index > 2: 返回 None
+    pub fn region_table(&self, index: usize) -> Option<&RegionTable>;
 }
 
-/// File Type Identifier (64KB)
+/// File Type Identifier (8 bytes signature + 512 bytes creator) (64KB)
 #[repr(C, packed)]
 pub struct FileTypeIdentifier {
     pub signature: [u8; 8],      // "vhdxfile"
@@ -256,7 +338,7 @@ pub struct FileTypeIdentifier {
 #[repr(C, packed)]
 pub struct HeaderStructure {
     pub signature: [u8; 4],      // "head"
-    pub checksum: u32,
+    pub checksum: u32,           // CRC-32C
     pub sequence_number: u64,
     pub file_write_guid: Guid,
     pub data_write_guid: Guid,
@@ -315,25 +397,54 @@ impl Bat {
     pub fn is_empty(&self) -> bool;
 }
 
-/// BAT Entry (64位)
+/// BAT Entry 枚举
+/// 区分 Payload Block Entry 和 Sector Bitmap Block Entry
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BatEntry {
+    Payload(PayloadEntry),
+    SectorBitmap(SectorBitmapEntry),
+}
+
+/// Payload Block Entry (64位)
+///
+/// **注意**：此结构体直接映射BAT Entry的原始64位值（小端序）。
 /// Layout: [State(3bits)|Reserved(17bits)|FileOffsetMB(44bits)]
-#[repr(C, packed)]
-pub struct BatEntry(pub u64);
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(transparent)]
+pub struct PayloadEntry {
+    /// 原始64位BAT Entry值
+    pub raw: u64,
+}
+
+impl PayloadEntry {
+    /// 获取 Payload Block 状态
+    pub fn state(&self) -> PayloadBlockState;
+}
+
+/// Sector Bitmap Block Entry (64位)
+///
+/// **注意**：此结构体直接映射BAT Entry的原始64位值（小端序）。
+/// Layout: [State(3bits)|Reserved(17bits)|FileOffsetMB(44bits)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(transparent)]
+pub struct SectorBitmapEntry {
+    /// 原始64位BAT Entry值
+    pub raw: u64,
+}
+
+impl SectorBitmapEntry {
+    /// 获取 Sector Bitmap Block 状态
+    pub fn state(&self) -> SectorBitmapState;
+}
 
 impl BatEntry {
-    /// 获取块状态
-    pub fn state(&self) -> PayloadBlockState;
-    
-    /// 获取文件偏移（MB为单位）
-    pub fn file_offset_mb(&self) -> u64;
-    
-    /// 获取实际文件偏移（字节）
-    pub fn file_offset(&self) -> u64 {
-        self.file_offset_mb() * 1024 * 1024
+    /// 获取文件偏移（MB为单位）- 通用方法
+    pub fn file_offset_mb(&self) -> u64 {
+        match self {
+            BatEntry::Payload(e) => (e.raw >> 20) & 0xFFFFFFFFFFF,  // 44 bits
+            BatEntry::SectorBitmap(e) => (e.raw >> 20) & 0xFFFFFFFFFFF,
+        }
     }
-    
-    /// 验证Entry有效性
-    pub fn is_valid(&self) -> bool;
 }
 
 /// Payload Block State
@@ -346,108 +457,206 @@ pub enum PayloadBlockState {
     FullyPresent = 6,
     PartiallyPresent = 7,
 }
+
+/// Sector Bitmap Block State (用于差异磁盘)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SectorBitmapState {
+    NotPresent = 0,  // 块未分配
+    Present = 6,     // 块存在
+}
 ```
 
-### 7. Metadata Section (合并设计)
+### 7. Metadata Section
 
 ```rust
 /// Metadata Section
 /// 
 /// 结构：MetadataTable(64KB固定) + MetadataItems(可变大小)
-/// 合并了原metadata模块(高阶API)和raw模块(低阶结构)
-pub struct Metadata {
-    // 内部缓存原始字节和解析后的值
-}
+pub struct Metadata;
 
 impl Metadata {
-    // ===== Raw 访问 (低阶API) =====
-    
     /// 返回完整的Metadata Section原始字节
-    /// 段序：MetadataTable(64KB) | MetadataItems(按Entry.Offset排列)
     pub fn raw(&self) -> &[u8];
     
-    /// Metadata Table (64KB固定大小)
+    /// 访问Metadata Table
     pub fn table(&self) -> &MetadataTable;
     
-    /// Metadata Table Entries
-    pub fn entries(&self) -> &[MetadataTableEntry];
-    
-    /// 获取指定GUID的原始Metadata Item数据
-    pub fn item(&self, guid: Guid) -> Option<&[u8]>;
-    
-    // ===== Parsed 访问 (高阶API) =====
-    
-    /// 磁盘类型（从FileParameters派生）
-    /// - has_parent = true → Differencing
-    /// - leave_block_allocated = true → Fixed
-    /// - 否则 → Dynamic
-    pub fn disk_type(&self) -> DiskType;
-    
-    /// 虚拟磁盘大小（字节）
-    pub fn virtual_size(&self) -> u64;
-    
-    /// 虚拟磁盘ID（GUID）
-    pub fn virtual_disk_id(&self) -> Guid;
-    
-    /// 逻辑扇区大小（512 或 4096）
-    pub fn logical_sector_size(&self) -> u32;
-    
-    /// 物理扇区大小（512 或 4096）
-    pub fn physical_sector_size(&self) -> u32;
-    
-    /// 块大小（字节）
-    pub fn block_size(&self) -> u32;
-    
-    /// 是否有父磁盘（差异磁盘）
-    pub fn has_parent(&self) -> bool;
-    
-    /// 是否预分配块（固定磁盘特性）
-    pub fn leave_block_allocated(&self) -> bool;
-    
-    /// 父磁盘定位器（差异磁盘）
-    pub fn parent_locator(&self) -> Option<ParentLocator>;
+    /// 访问Metadata Items
+    pub fn items(&self) -> &MetadataItems;
 }
 
-/// Metadata Table (64KB固定)
+/// Metadata Table (64KB固定大小)
+pub struct MetadataTable;
+
+impl MetadataTable {
+    /// 访问Table Header
+    pub fn header(&self) -> &TableHeader;
+    
+    /// 根据Item ID查找Entry
+    pub fn entry(&self, item_id: &Guid) -> Option<&TableEntry>;
+    
+    /// 获取所有Entries
+    pub fn entries(&self) -> &[TableEntry];
+}
+
+/// Table Header (32字节)
 #[repr(C, packed)]
-pub struct MetadataTable {
+pub struct TableHeader {
     pub signature: [u8; 8],      // "metadata"
-    pub reserved: u16,
+    pub reserved: [u8; 2],
     pub entry_count: u16,
     pub reserved2: [u8; 20],
-    // 之后紧跟着entry_count个MetadataTableEntry
 }
 
-/// Metadata Table Entry (32字节)
+/// Table Entry (32字节)
 #[repr(C, packed)]
-pub struct MetadataTableEntry {
-    pub item_id: Guid,           // Item GUID
-    pub offset: u32,             // 相对于Metadata Section起点的偏移
-    pub length: u32,             // Item长度
-    pub flags: u32,              // IsUser | IsVirtualDisk | IsRequired
+pub struct TableEntry {
+    pub item_id: Guid,
+    pub offset: u32,
+    pub length: u32,
+    pub flags: u32,
     pub reserved: u32,
 }
 
-/// 磁盘类型
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum DiskType {
-    Fixed,        // 固定大小，预分配全部空间
-    Dynamic,      // 动态扩展，按需分配
-    Differencing, // 差异磁盘，基于父磁盘
+impl TableEntry {
+    /// 获取Entry Flags
+    pub fn flags(&self) -> &EntryFlags;
 }
 
-impl DiskType {
-    /// 是否为稀疏磁盘（Dynamic 或 Differencing）
-    pub fn is_sparse(&self) -> bool;
+/// Entry Flags (TableEntry.flags的包装)
+pub struct EntryFlags(pub u32);
+
+impl EntryFlags {
+    /// 是否为用户元数据 (Bit 31)
+    pub fn is_user(&self) -> bool;
     
-    /// 是否有父磁盘
+    /// 是否为虚拟磁盘元数据 (Bit 30)
+    pub fn is_virtual_disk(&self) -> bool;
+    
+    /// 是否为必需项 (Bit 29)
+    pub fn is_required(&self) -> bool;
+}
+
+/// Metadata Items (64KB之后，变长)
+pub struct MetadataItems;
+
+impl MetadataItems {
+    /// 获取File Parameters
+    pub fn file_parameters(&self) -> Option<&FileParameters>;
+    
+    /// 获取虚拟磁盘大小
+    pub fn virtual_disk_size(&self) -> Option<u64>;
+    
+    /// 获取虚拟磁盘ID
+    pub fn virtual_disk_id(&self) -> Option<&Guid>;
+    
+    /// 获取逻辑扇区大小
+    pub fn logical_sector_size(&self) -> Option<u32>;
+    
+    /// 获取物理扇区大小
+    pub fn physical_sector_size(&self) -> Option<u32>;
+    
+    /// 获取父定位器（差分磁盘）
+    pub fn parent_locator(&self) -> Option<&ParentLocator>;
+}
+
+/// File Parameters (8字节)
+#[repr(C, packed)]
+pub struct FileParameters {
+    pub block_size: u32,
+    pub flags: u32,
+}
+
+impl FileParameters {
+    /// 块大小（1MB-256MB，2的幂）
+    pub fn block_size(&self) -> u32;
+    
+    /// 是否保留块分配（固定磁盘）
+    pub fn leave_block_allocated(&self) -> bool;
+    
+    /// 是否有父磁盘（差分磁盘）
     pub fn has_parent(&self) -> bool;
 }
 
-/// 父磁盘定位器
-pub struct ParentLocator {
+/// Parent Locator（差分磁盘，变长结构）
+pub struct ParentLocator;
+
+impl ParentLocator {
+    /// 访问Locator Header
+    pub fn header(&self) -> &LocatorHeader;
+    
+    /// 根据索引获取Key-Value Entry
+    pub fn entry(&self, index: usize) -> Option<&KeyValueEntry>;
+    
+    /// 获取所有Key-Value Entries
+    pub fn entries(&self) -> &[KeyValueEntry];
+    
+    /// 获取Key-Value数据区域
+    pub fn key_value_data(&self) -> &[u8];
+}
+
+/// Locator Header (20字节)
+#[repr(C, packed)]
+pub struct LocatorHeader {
     pub locator_type: Guid,
-    pub entries: HashMap<String, String>,
+    pub reserved: u16,
+    pub key_value_count: u16,
+}
+
+/// Key-Value Entry (12字节)
+#[repr(C, packed)]
+pub struct KeyValueEntry {
+    pub key_offset: u32,
+    pub value_offset: u32,
+    pub key_length: u16,
+    pub value_length: u16,
+}
+
+impl KeyValueEntry {
+    /// 从key_value_data中获取Key字符串（UTF-16LE解码）
+    pub fn key(&self, data: &[u8]) -> Option<String>;
+    
+    /// 从key_value_data中获取Value字符串（UTF-16LE解码）
+    pub fn value(&self, data: &[u8]) -> Option<String>;
+}
+
+/// 标准Metadata Item GUID常量
+pub mod StandardItems {
+    pub const FILE_PARAMETERS: Guid = Guid::from_bytes([
+        0x37, 0x67, 0xA1, 0xCA, 0x36, 0xFA, 0x43, 0x4D,
+        0xB3, 0xB6, 0x33, 0xF0, 0xAA, 0x44, 0xE7, 0x6B
+    ]); // CAA16737-FA36-4D43-B3B6-33F0AA44E76B
+    
+    pub const VIRTUAL_DISK_SIZE: Guid = Guid::from_bytes([
+        0x24, 0x42, 0xA5, 0x2F, 0x1B, 0xCD, 0x76, 0x48,
+        0xB2, 0x11, 0x5D, 0xBE, 0xD8, 0x3B, 0xF4, 0xB8
+    ]); // 2FA54224-CD1B-4876-B211-5DBED83BF4B8
+    
+    pub const VIRTUAL_DISK_ID: Guid = Guid::from_bytes([
+        0xAB, 0x12, 0xCA, 0xBE, 0xE6, 0xB2, 0x23, 0x45,
+        0x93, 0xEF, 0xC3, 0x09, 0xE0, 0x00, 0xC7, 0x46
+    ]); // BECA12AB-B2E6-4523-93EF-C309E000C746
+    
+    pub const LOGICAL_SECTOR_SIZE: Guid = Guid::from_bytes([
+        0x1D, 0xBF, 0x41, 0x81, 0x6F, 0xA9, 0x09, 0x47,
+        0xBA, 0x47, 0xF2, 0x33, 0xA8, 0xFA, 0xAB, 0x5F
+    ]); // 8141BF1D-A96F-4709-BA47-F233A8FAAB5F
+    
+    pub const PHYSICAL_SECTOR_SIZE: Guid = Guid::from_bytes([
+        0xC7, 0x48, 0xA3, 0xCD, 0x5D, 0x44, 0x71, 0x44,
+        0x9C, 0xC9, 0xE9, 0x88, 0x52, 0x51, 0xC5, 0x56
+    ]); // CDA348C7-445D-4471-9CC9-E9885251C556
+    
+    pub const PARENT_LOCATOR: Guid = Guid::from_bytes([
+        0x2D, 0x5F, 0xD3, 0xA8, 0x0B, 0xB3, 0x4D, 0x45,
+        0xAB, 0xF7, 0xD3, 0xD8, 0x48, 0x34, 0xAB, 0x0C
+    ]); // A8D35F2D-B30B-454D-ABF7-D3D84834AB0C
+    
+    /// VHDX Parent Locator Type GUID
+    pub const LOCATOR_TYPE_VHDX: Guid = Guid::from_bytes([
+        0xB7, 0xEF, 0x4A, 0xB0, 0x9E, 0xD1, 0x81, 0x4A,
+        0xB7, 0x89, 0x25, 0xB8, 0xE9, 0x44, 0x59, 0x13
+    ]); // B04AEFB7-D19E-4A81-B789-25B8E9445913
 }
 ```
 
@@ -463,29 +672,34 @@ impl Log {
     /// 返回完整的Log区域原始字节
     pub fn raw(&self) -> &[u8];
     
-    /// 遍历Log Entries
-    pub fn entries(&self) -> LogEntryIter;
+    /// 根据索引获取Entry
+    pub fn entry(&self, index: usize) -> Option<&Entry>;
     
-    /// Log是否为空
-    pub fn is_empty(&self) -> bool;
-    
-    /// 是否需要重放
-    pub fn replay_required(&self) -> bool;
+    /// 获取所有Entries
+    pub fn entries(&self) -> &[Entry];
 }
 
-/// Log Entry Header (64字节)
-#[repr(C, packed)]
-pub struct LogEntryHeader {
-    pub signature: [u8; 4],      // "loge"
-    pub checksum: u32,
-    pub entry_length: u32,
-    pub tail: u32,
-    pub sequence_number: u64,
-    pub descriptor_count: u32,
-    pub reserved: u32,
-    pub log_guid: Guid,
-    pub flushed_file_offset: u64,
-    pub last_file_offset: u64,
+/// Log Entry（组合结构，包含header、descriptors和sectors）
+pub struct Entry;
+
+impl Entry {
+    /// 获取Log Entry Header
+    pub fn header(&self) -> &LogEntryHeader;
+    
+    /// 根据索引获取单个Descriptor
+    pub fn descriptor(&self, index: usize) -> Option<&Descriptor>;
+    
+    /// 获取所有Descriptors（按原始顺序）
+    pub fn descriptors(&self) -> &[Descriptor];
+    
+    /// 获取Data Sectors
+    pub fn data(&self) -> &[DataSector];
+}
+
+/// Descriptor 枚举
+pub enum Descriptor {
+    Data(DataDescriptor),
+    Zero(ZeroDescriptor),
 }
 
 /// Data Descriptor (32字节)
@@ -508,6 +722,21 @@ pub struct ZeroDescriptor {
     pub sequence_number: u64,
 }
 
+/// Log Entry Header (64字节)
+#[repr(C, packed)]
+pub struct LogEntryHeader {
+    pub signature: [u8; 4],      // "loge"
+    pub checksum: u32,
+    pub entry_length: u32,
+    pub tail: u32,
+    pub sequence_number: u64,
+    pub descriptor_count: u32,
+    pub reserved: u32,
+    pub log_guid: Guid,
+    pub flushed_file_offset: u64,
+    pub last_file_offset: u64,
+}
+
 /// Data Sector (4KB)
 #[repr(C, packed)]
 pub struct DataSector {
@@ -518,41 +747,69 @@ pub struct DataSector {
 }
 ```
 
-### 9. Payload Section
+### 9. Blocks Section
 
 ```rust
-/// Payload Section
+/// Blocks Section
 /// 
-/// 实际的虚拟磁盘数据块
-pub struct Payload;
+/// 包含 Payload Blocks 和 Sector Bitmap Blocks 的数据区域
+pub struct Blocks;
 
-impl Payload {
-    /// 返回完整的Payload区域原始字节
+impl Blocks {
+    /// 返回完整的Blocks区域原始字节
     /// 注意：对于大文件这会非常大，谨慎使用
     pub fn raw(&self) -> &[u8];
     
-    /// 获取指定索引的数据块
-    pub fn block(&self, index: u64) -> Option<Block>;
+    /// 获取指定索引的Block
+    pub fn block(&self, index: u64) -> Option<&Block>;
     
-    /// 数据块总数
-    pub fn block_count(&self) -> u64;
-    
-    /// 块大小（字节）
-    pub fn block_size(&self) -> u32;
+    /// 获取所有Blocks
+    pub fn blocks(&self) -> &[Block];
 }
 
-/// 数据块
-pub struct Block;
+/// Block 枚举
+/// 区分 Payload Block 和 Sector Bitmap Block
+#[derive(Clone, Debug, PartialEq)]
+pub enum Block {
+    Payload(PayloadBlock),
+    SectorBitmap(SectorBitmapBlock),
+}
+
+/// Payload Block
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayloadBlock;
+
+/// Sector Bitmap Block（用于差异磁盘）
+#[derive(Clone, Debug, PartialEq)]
+pub struct SectorBitmapBlock;
+
+impl SectorBitmapBlock {
+    /// 检查指定扇位是否存在于当前文件（差异磁盘）
+    /// offset: 扇区在虚拟磁盘中的偏移（字节）
+    pub fn is_sector_present(&self, sector_index: u64) -> bool;
+}
 
 impl Block {
-    /// 块状态
-    pub fn state(&self) -> PayloadBlockState;
-    
-    /// 读取块数据
+    /// 读取块数据 - 通用方法
     pub fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize>;
-    
-    /// 是否为Sector Bitmap块
-    pub fn is_sector_bitmap(&self) -> bool;
+}
+
+/// Payload Block State
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PayloadBlockState {
+    NotPresent = 0,
+    Undefined = 1,
+    Zero = 2,
+    Unmapped = 3,
+    FullyPresent = 6,
+    PartiallyPresent = 7,
+}
+
+/// Sector Bitmap Block State（用于差异磁盘）
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SectorBitmapState {
+    NotPresent = 0,  // 块未分配
+    Present = 6,     // 块存在
 }
 ```
 
@@ -565,16 +822,15 @@ impl Block {
 // 核心类型
 pub use error::{Error, Result};
 pub use types::Guid;
-pub use common::DiskType;
 
 // Section 模块
 pub mod section {
     pub use sections::Sections;
     pub use header::{Header, FileTypeIdentifier, HeaderStructure, RegionTable, RegionTableHeader, RegionTableEntry};
-    pub use bat::{Bat, BatEntry, PayloadBlockState};
-    pub use metadata::{Metadata, MetadataTable, MetadataTableEntry, ParentLocator};
-    pub use log::{Log, LogEntryHeader, DataDescriptor, ZeroDescriptor, DataSector};
-    pub use payload::{Payload, Block};
+    pub use bat::{Bat, BatEntry, PayloadEntry, SectorBitmapEntry};
+    pub use metadata::Metadata;
+    pub use log::{Log, Entry, LogEntryHeader, DataDescriptor, ZeroDescriptor, DataSector};
+    pub use blocks::{Blocks, Block, PayloadBlock, SectorBitmapBlock, PayloadBlockState, SectorBitmapState};
 }
 
 // 主 API
@@ -591,7 +847,7 @@ mod section {
     mod bat;
     mod metadata;
     mod log;
-    mod payload;
+    mod blocks;
 }
 ```
 
@@ -614,15 +870,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 访问Header Section
     let header = sections.header();
     println!("File Type: {:?}", header.file_type().signature);
-    println!("Current Header Seq: {}", header.current_header().sequence_number);
+    println!("Current Header Seq: {}", header.header(0).unwrap().sequence_number);
     
     // 访问Metadata Section（同时提供raw和parsed访问）
     let metadata = sections.metadata();
     
-    // Parsed访问：便捷方法
-    println!("Disk Type: {:?}", metadata.disk_type());
+    // 从 FileParameters 获取磁盘类型和块大小
+    if let Some(fp) = metadata.file_parameters() {
+        println!("Block Size: {} bytes", fp.block_size);
+        println!("Has Parent: {}", fp.has_parent());
+        println!("Leave Blocks Allocated: {}", fp.leave_blocks_allocated());
+    }
     println!("Virtual Size: {} bytes", metadata.virtual_size());
-    println!("Block Size: {} bytes", metadata.block_size());
     
     // Raw访问：原始字节
     let raw_metadata = metadata.raw();
@@ -647,8 +906,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 遍历前10个BAT Entries
     for i in 0..10.min(bat.len() as u64) {
         if let Some(entry) = bat.entry(i) {
-            println!("Block {}: State={:?}, Offset={}MB",
-                i, entry.state(), entry.file_offset_mb());
+            match entry {
+                BatEntry::Payload(e) => {
+                    println!("Block {}: Payload State={:?}, Offset={}MB",
+                        i, e.state(), entry.file_offset_mb());
+                }
+                BatEntry::SectorBitmap(e) => {
+                    println!("Block {}: SectorBitmap State={:?}, Offset={}MB",
+                        i, e.state(), entry.file_offset_mb());
+                }
+            }
         }
     }
     
@@ -663,13 +930,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 3. 创建动态磁盘
 
 ```rust
-use vhdx::{File, DiskType};
+use vhdx::File;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 创建 10GB 动态磁盘
+    // 创建 10GB 动态磁盘（默认：非固定、无父磁盘）
     let mut file = File::create("disk.vhdx")?
         .size(10 * 1024 * 1024 * 1024)
-        .disk_type(DiskType::Dynamic)
         .block_size(32 * 1024 * 1024)  // 32MB块
         .finish()?;
     
@@ -678,9 +944,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     file.flush()?;
     
     // 验证创建的Metadata
-    let metadata = file.metadata();
-    assert_eq!(metadata.disk_type(), DiskType::Dynamic);
-    assert_eq!(metadata.block_size(), 32 * 1024 * 1024);
+    let metadata = file.sections().metadata();
+    if let Some(fp) = metadata.file_parameters() {
+        assert_eq!(fp.block_size(), 32 * 1024 * 1024);
+        assert!(!fp.has_parent());
+        assert!(!fp.leave_block_allocated());  // 动态磁盘
+    }
+    
+    Ok(())
+}
+```
+
+### 3a. 创建固定磁盘
+
+```rust
+use vhdx::File;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 创建 10GB 固定磁盘
+    let mut file = File::create("disk.vhdx")?
+        .size(10 * 1024 * 1024 * 1024)
+        .fixed(true)  // 固定磁盘
+        .block_size(32 * 1024 * 1024)
+        .finish()?;
+    
+    // 验证
+    let metadata = file.sections().metadata();
+    if let Some(fp) = metadata.file_parameters() {
+        assert!(fp.leave_block_allocated());  // 固定磁盘
+        assert!(!fp.has_parent());
+    }
     
     Ok(())
 }
@@ -714,24 +1007,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### 5. 检查差异磁盘
+### 5. 检查磁盘类型
 
 ```rust
-use vhdx::{File, section::DiskType};
+use vhdx::File;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file = File::open("diff.vhdx")?.finish()?;
-    let metadata = file.metadata();
+    let sections = file.sections();
+    let metadata = sections.metadata();
     
-    if metadata.disk_type() == DiskType::Differencing {
-        println!("This is a differencing disk");
-        println!("Has parent: {}", metadata.has_parent());
-        
-        if let Some(locator) = metadata.parent_locator() {
-            println!("Parent Locator Type: {}", locator.locator_type);
-            for (key, value) in &locator.entries {
-                println!("  {}: {}", key, value);
+    if let Some(fp) = metadata.file_parameters() {
+        if fp.has_parent() {
+            println!("This is a differencing disk");
+            println!("Block size: {}", fp.block_size());
+            
+            if let Some(locator) = metadata.parent_locator() {
+                println!("Parent Locator Entries: {}", locator.header().key_value_count);
+                for (i, entry) in locator.entries().iter().enumerate() {
+                    let key = entry.key(locator.key_value_data()).unwrap_or_default();
+                    let value = entry.value(locator.key_value_data()).unwrap_or_default();
+                    println!("  [{}] {}: {}", i, key, value);
+                }
             }
+        } else if fp.leave_block_allocated() {
+            println!("This is a fixed disk");
+        } else {
+            println!("This is a dynamic disk");
         }
     }
     
