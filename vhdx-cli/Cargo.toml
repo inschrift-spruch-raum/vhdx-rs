@@ -1,0 +1,9 @@
+[package]
+name = "vhdx-tool"
+version.workspace = true
+edition.workspace = true
+description = "VHDX (Virtual Hard Disk v2) CLI tool"
+
+[dependencies]
+vhdx-rs = { path = ".." }
+clap = { version = "4.6", features = ["derive"] }
