@@ -405,7 +405,7 @@ impl KeyValueEntry {
     }
 
     /// Get key string from key-value data
-    pub fn key<'a>(&self, data: &'a [u8]) -> Option<String> {
+    pub fn key(&self, data: &[u8]) -> Option<String> {
         let start = self.key_offset as usize;
         let end = start + self.key_length as usize;
         let key_data = data.get(start..end)?;
@@ -420,7 +420,7 @@ impl KeyValueEntry {
     }
 
     /// Get value string from key-value data
-    pub fn value<'a>(&self, data: &'a [u8]) -> Option<String> {
+    pub fn value(&self, data: &[u8]) -> Option<String> {
         let start = self.value_offset as usize;
         let end = start + self.value_length as usize;
         let value_data = data.get(start..end)?;

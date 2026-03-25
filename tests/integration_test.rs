@@ -1,6 +1,5 @@
 //! Integration tests for vhdx-rs
 
-use std::io::{Read, Seek, SeekFrom, Write};
 use tempfile::NamedTempFile;
 
 #[test]

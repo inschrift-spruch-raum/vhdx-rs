@@ -1,8 +1,8 @@
 //! IO module for sector-level operations
 
-use crate::error::{Error, Result};
 use crate::File;
 use crate::PayloadBlockState;
+use crate::error::{Error, Result};
 
 /// IO module for sector-level read/write operations
 pub struct IO<'a> {
@@ -49,7 +49,7 @@ impl<'a> IO<'a> {
         let sector_size = self.file.logical_sector_size() as usize;
         let num_sectors = buf.len() / sector_size;
 
-        if buf.len() % sector_size != 0 {
+        if !buf.len().is_multiple_of(sector_size) {
             return Err(Error::InvalidParameter(
                 "Buffer size must be a multiple of sector size".to_string(),
             ));
@@ -65,8 +65,8 @@ impl<'a> IO<'a> {
             } else {
                 // Sector out of bounds - fill with zeros
                 let sector_buf = &mut buf[i * sector_size..(i + 1) * sector_size];
-                for j in 0..sector_buf.len() {
-                    sector_buf[j] = 0;
+                for item in sector_buf.iter_mut() {
+                    *item = 0;
                 }
                 total_read += sector_size;
             }
@@ -76,11 +76,11 @@ impl<'a> IO<'a> {
     }
 
     /// Write sectors starting at the given sector number
-    pub fn write_sectors(&self, start_sector: u64, data: &[u8]) -> Result<usize> {
+    pub fn write_sectors(&self, _start_sector: u64, data: &[u8]) -> Result<usize> {
         let sector_size = self.file.logical_sector_size() as usize;
-        let num_sectors = data.len() / sector_size;
+        let _num_sectors = data.len() / sector_size;
 
-        if data.len() % sector_size != 0 {
+        if !data.len().is_multiple_of(sector_size) {
             return Err(Error::InvalidParameter(
                 "Data size must be a multiple of sector size".to_string(),
             ));

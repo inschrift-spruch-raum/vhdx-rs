@@ -33,7 +33,7 @@ pub use sections::{
 };
 
 // IO module
-pub use io_module::{PayloadBlock, Sector, IO};
+pub use io_module::{IO, PayloadBlock, Sector};
 
 // File operations
 pub use file::File;

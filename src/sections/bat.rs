@@ -83,12 +83,12 @@ impl Bat {
 
     /// Calculate the number of payload blocks from virtual disk size
     pub fn calculate_payload_blocks(virtual_disk_size: u64, block_size: u32) -> u64 {
-        (virtual_disk_size + block_size as u64 - 1) / block_size as u64
+        virtual_disk_size.div_ceil(block_size as u64)
     }
 
     /// Calculate the number of sector bitmap blocks
     pub fn calculate_sector_bitmap_blocks(payload_blocks: u64, chunk_ratio: u32) -> u64 {
-        (payload_blocks + chunk_ratio as u64 - 1) / chunk_ratio as u64
+        payload_blocks.div_ceil(chunk_ratio as u64)
     }
 
     /// Calculate total BAT entries (payload + sector bitmap)
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn test_calculate_payload_blocks() {
         // 10 GB disk with 32 MB blocks
-        let blocks = Bat::calculate_payload_blocks(10 * GB, 32 * 1024 * 1024);
+        let blocks = Bat::calculate_payload_blocks(10 * 1024 * MB, 32 * 1024 * 1024);
         assert_eq!(blocks, 320);
     }
 }

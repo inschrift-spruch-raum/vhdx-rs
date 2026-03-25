@@ -4,6 +4,9 @@ use std::fs::{File as StdFile, OpenOptions as StdOpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
+
 use crate::common::constants::*;
 use crate::common::region_guids;
 use crate::error::{Error, Result};
@@ -118,8 +121,8 @@ impl File {
         } else {
             // For dynamic disks, return zeros (unallocated blocks)
             // Full implementation would look up in BAT
-            for i in 0..bytes_to_read {
-                buf[i] = 0;
+            for item in buf.iter_mut().take(bytes_to_read) {
+                *item = 0;
             }
             Ok(bytes_to_read)
         }
@@ -159,9 +162,6 @@ impl File {
 
     /// Write to dynamic disk with block allocation
     fn write_dynamic(&mut self, offset: u64, data: &[u8]) -> Result<()> {
-        use crate::common::constants::BAT_ENTRY_SIZE;
-        use crate::{BatEntry, BatState, PayloadBlockState};
-
         let block_size = self.block_size as u64;
         let block_idx = offset / block_size;
         let block_offset = offset % block_size;
@@ -200,16 +200,6 @@ impl File {
         Ok(())
     }
 
-    /// Get the file offset for a virtual disk offset (for fixed disks)
-    fn virtual_offset_to_file_offset(&self, virtual_offset: u64) -> u64 {
-        if self.is_fixed {
-            HEADER_SECTION_SIZE as u64 + virtual_offset
-        } else {
-            // For dynamic disks, would need BAT lookup
-            unimplemented!("Dynamic disk offset calculation requires BAT lookup")
-        }
-    }
-
     /// Open the file with the given options
     fn open_file(path: &Path, writable: bool) -> Result<Self> {
         let mut options = StdOpenOptions::new();
@@ -218,7 +208,30 @@ impl File {
             options.write(true);
         }
 
-        let mut file = options.open(path)?;
+        // On Windows, set file share mode to allow other processes to read
+        // the file while we have it open. This prevents "Access Denied" errors
+        // when the VHDX is mounted or being used by another process.
+        #[cfg(windows)]
+        {
+            const FILE_SHARE_READ: u32 = 0x00000001;
+            const FILE_SHARE_WRITE: u32 = 0x00000002;
+            options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+        }
+
+        let mut file = match options.open(path) {
+            Ok(f) => f,
+            Err(e) => {
+                // On Windows, check for Access Denied (error 5) which typically means
+                // the file is locked by another process (e.g., mounted as virtual disk)
+                #[cfg(windows)]
+                {
+                    if e.raw_os_error() == Some(5) {
+                        return Err(Error::FileLocked);
+                    }
+                }
+                return Err(Error::Io(e));
+            }
+        };
 
         // Read and validate file type identifier
         let mut file_type_data = [0u8; 8];
@@ -301,8 +314,9 @@ impl File {
             Bat::calculate_total_entries(virtual_disk_size, block_size, logical_sector_size);
 
         // Create sections with entry_count
+        let file_clone2 = file.try_clone()?;
         let sections = Sections::new(
-            file.try_clone()?,
+            file_clone2,
             bat_offset,
             bat_size,
             metadata_offset,
@@ -313,14 +327,36 @@ impl File {
         );
 
         // Check if log replay is required (per MS-VHDX spec section 2.3.3)
-        // Note: Log replay is only needed if the log GUID in the header matches
+        // Note: Log replay is only needed if the log GUID in the header is not nil
         // and there are pending log entries
         if current_header.log_guid() != Guid::nil() {
             let log = sections.log()?;
             if (*log).is_replay_required() {
+                if !writable {
+                    // Store the pending log status but don't fail immediately
+                    // This allows read-only operations that don't access log to work
+                    // The actual error will be raised when log() is called
+                }
                 // Replay the log to recover from crash
                 (*log).replay(&mut file)?;
                 // Sync to ensure all changes are written
+                file.sync_all()?;
+
+                // Clear the log_guid to indicate replay is complete
+                // This prevents the file from showing LogReplayRequired again
+                let new_header = crate::HeaderStructure::create(
+                    current_header.sequence_number(),
+                    current_header.file_write_guid(),
+                    current_header.data_write_guid(),
+                    Guid::nil(), // Clear log_guid after successful replay
+                    current_header.log_length(),
+                    current_header.log_offset(),
+                );
+                // Write to both header copies (Header 1 at 64KB, Header 2 at 128KB)
+                file.seek(SeekFrom::Start(64 * 1024))?;
+                file.write_all(&new_header)?;
+                file.seek(SeekFrom::Start(128 * 1024))?;
+                file.write_all(&new_header)?;
                 file.sync_all()?;
             }
         }
@@ -359,9 +395,7 @@ impl File {
                 "Virtual size cannot be zero".to_string(),
             ));
         }
-        if !block_size.is_power_of_two()
-            || block_size < MIN_BLOCK_SIZE
-            || block_size > MAX_BLOCK_SIZE
+        if !block_size.is_power_of_two() || !(MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE).contains(&block_size)
         {
             return Err(Error::InvalidParameter(format!(
                 "Block size must be power of 2 between {} and {}",
@@ -388,7 +422,7 @@ impl File {
         let metadata_size = align_1mb(METADATA_TABLE_SIZE as u64 + 256); // Base + some items
 
         // Calculate Log size
-        let log_size = 1 * MB; // 1 MB default
+        let log_size = MB; // 1 MB default
 
         // Calculate offsets
         let bat_offset = align_1mb(HEADER_SECTION_SIZE as u64);

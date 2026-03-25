@@ -4,8 +4,7 @@ use std::cell::RefCell;
 use std::io::{Read, Seek, SeekFrom};
 
 use crate::common::constants::*;
-use crate::error::{Error, Result};
-use crate::types::Guid;
+use crate::error::Result;
 
 mod bat;
 mod header;
@@ -116,6 +115,7 @@ pub struct Sections {
 
 impl Sections {
     /// Create a new Sections container
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         file: std::fs::File,
         bat_offset: u64,
@@ -202,12 +202,6 @@ impl Sections {
         file.read_exact(&mut data)?;
         Ok(data)
     }
-}
-
-/// Helper function to compute CRC-32C checksum
-/// Used for headers and region tables
-pub fn compute_crc32c(data: &[u8]) -> u32 {
-    crc32c::crc32c(data)
 }
 
 /// Compute CRC-32C with a field zeroed out

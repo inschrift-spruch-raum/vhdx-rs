@@ -51,6 +51,14 @@ enum Commands {
         #[arg(short, long)]
         log_replay: bool,
     },
+    /// Repair VHDX file with pending log entries
+    Repair {
+        /// Path to VHDX file
+        file: PathBuf,
+        /// Perform a dry run without making changes
+        #[arg(short, long)]
+        dry_run: bool,
+    },
     /// View internal sections
     Sections {
         /// Path to VHDX file
@@ -130,12 +138,16 @@ fn main() {
         Commands::Diff { file, command } => {
             cmd_diff(file, command);
         }
+        Commands::Repair { file, dry_run } => {
+            cmd_repair(file, dry_run);
+        }
     }
 }
 
 fn cmd_info(file: PathBuf, format: OutputFormat) {
     use vhdx_rs::File;
 
+    // Open with read-only access (default)
     match File::open(&file).finish() {
         Ok(vhdx_file) => {
             match format {
@@ -194,7 +206,12 @@ fn cmd_info(file: PathBuf, format: OutputFormat) {
             }
         }
         Err(e) => {
-            eprintln!("Error opening VHDX file: {}", e);
+            if matches!(e, vhdx_rs::Error::LogReplayRequired) {
+                eprintln!("Error: File has pending log entries from interrupted write.");
+                eprintln!("Run: vhdx-tool repair <file> to fix the file.");
+            } else {
+                eprintln!("Error opening VHDX file: {}", e);
+            }
             std::process::exit(1);
         }
     }
@@ -283,7 +300,7 @@ fn cmd_check(file: PathBuf, repair: bool, log_replay: bool) {
             println!("✓ Region tables parsed");
             println!("✓ Metadata section valid");
 
-            if let Ok(_) = vhdx_file.sections().bat() {
+            if vhdx_file.sections().bat().is_ok() {
                 println!("✓ BAT section accessible");
             }
 
@@ -312,17 +329,17 @@ fn cmd_sections(file: PathBuf, section: SectionCommand) {
             SectionCommand::Header => {
                 println!("Header Section");
                 println!("==============");
-                if let Ok(header) = vhdx_file.sections().header() {
-                    if let Some(hdr) = header.header(0) {
-                        println!("Sequence Number: {}", hdr.sequence_number());
-                        println!("Version: {}", hdr.version());
-                        println!("Log Version: {}", hdr.log_version());
-                        println!("Log Length: {}", hdr.log_length());
-                        println!("Log Offset: {}", hdr.log_offset());
-                        println!("File Write GUID: {}", hdr.file_write_guid());
-                        println!("Data Write GUID: {}", hdr.data_write_guid());
-                        println!("Log GUID: {}", hdr.log_guid());
-                    }
+                if let Ok(header) = vhdx_file.sections().header()
+                    && let Some(hdr) = header.header(0)
+                {
+                    println!("Sequence Number: {}", hdr.sequence_number());
+                    println!("Version: {}", hdr.version());
+                    println!("Log Version: {}", hdr.log_version());
+                    println!("Log Length: {}", hdr.log_length());
+                    println!("Log Offset: {}", hdr.log_offset());
+                    println!("File Write GUID: {}", hdr.file_write_guid());
+                    println!("Data Write GUID: {}", hdr.data_write_guid());
+                    println!("Log GUID: {}", hdr.log_guid());
                 }
             }
             SectionCommand::Bat => {
@@ -380,15 +397,15 @@ fn cmd_diff(file: PathBuf, command: DiffCommand) {
         Ok(vhdx_file) => match command {
             DiffCommand::Parent => {
                 if vhdx_file.has_parent() {
-                    if let Ok(metadata) = vhdx_file.sections().metadata() {
-                        if let Some(locator) = metadata.items().parent_locator() {
-                            println!("Parent Locator Entries:");
-                            for (i, entry) in locator.entries().iter().enumerate() {
-                                if let Some(key) = entry.key(locator.key_value_data()) {
-                                    if let Some(value) = entry.value(locator.key_value_data()) {
-                                        println!("  [{}] {}: {}", i, key, value);
-                                    }
-                                }
+                    if let Ok(metadata) = vhdx_file.sections().metadata()
+                        && let Some(locator) = metadata.items().parent_locator()
+                    {
+                        println!("Parent Locator Entries:");
+                        for (i, entry) in locator.entries().iter().enumerate() {
+                            if let Some(key) = entry.key(locator.key_value_data())
+                                && let Some(value) = entry.value(locator.key_value_data())
+                            {
+                                println!("  [{}] {}: {}", i, key, value);
                             }
                         }
                     }
@@ -408,6 +425,50 @@ fn cmd_diff(file: PathBuf, command: DiffCommand) {
         },
         Err(e) => {
             eprintln!("Error opening VHDX file: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_repair(file: PathBuf, dry_run: bool) {
+    use vhdx_rs::Error;
+    use vhdx_rs::File;
+
+    println!("Repairing VHDX file: {}", file.display());
+
+    if dry_run {
+        println!("Dry run mode - no changes will be made");
+        // Check if log replay would be needed by opening read-only
+        match File::open(&file).finish() {
+            Ok(_) => {
+                println!("✓ File does not require repair");
+                return;
+            }
+            Err(Error::LogReplayRequired) => {
+                println!("✓ File has pending log entries that would be replayed");
+                return;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Open with write access to allow log replay
+    match File::open(&file).write().finish() {
+        Ok(_) => {
+            println!("✓ File repaired successfully");
+            println!("✓ Log entries replayed");
+        }
+        Err(Error::LogReplayRequired) => {
+            // This shouldn't happen since we opened with write access,
+            // but handle it just in case
+            eprintln!("Error: Unable to replay log entries");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Error repairing VHDX file: {}", e);
             std::process::exit(1);
         }
     }

@@ -42,6 +42,11 @@ impl Log {
         while offset + LOG_ENTRY_HEADER_SIZE <= self.raw_data.len() {
             if let Ok(entry) = self.try_parse_entry_at(offset) {
                 let entry_len = entry.header().entry_length() as usize;
+                // Prevent infinite loop if entry_length is 0 or malformed (less than header size)
+                if entry_len < LOG_ENTRY_HEADER_SIZE {
+                    offset += DATA_SECTOR_SIZE;
+                    continue;
+                }
                 entries.push(entry);
                 offset += entry_len;
             } else {

@@ -3,17 +3,11 @@
 /// Size constants
 pub const KB: u64 = 1024;
 pub const MB: u64 = 1024 * KB;
-pub const GB: u64 = 1024 * MB;
-pub const TB: u64 = 1024 * GB;
-
-/// VHDX file alignment (1 MB)
-pub const VHDX_ALIGNMENT: u64 = MB;
 
 /// Header section size (1 MB)
 pub const HEADER_SECTION_SIZE: usize = MB as usize;
 
 /// File Type Identifier offset and size
-pub const FILE_TYPE_OFFSET: u64 = 0;
 pub const FILE_TYPE_SIZE: usize = 64 * 1024; // 64 KB
 
 /// Header 1 offset (64 KB)
@@ -42,7 +36,6 @@ pub const BAT_ENTRY_SIZE: usize = 8;
 
 /// Sector sizes
 pub const LOGICAL_SECTOR_SIZE_512: u32 = 512;
-pub const LOGICAL_SECTOR_SIZE_4096: u32 = 4096;
 
 /// Default block size (32 MB)
 pub const DEFAULT_BLOCK_SIZE: u32 = 32 * 1024 * 1024;
@@ -73,7 +66,6 @@ pub const METADATA_SIGNATURE: &[u8; 8] = b"metadata";
 pub const LOG_ENTRY_SIGNATURE: &[u8; 4] = b"loge";
 pub const DATA_DESCRIPTOR_SIGNATURE: &[u8; 4] = b"desc";
 pub const ZERO_DESCRIPTOR_SIGNATURE: &[u8; 4] = b"zero";
-pub const DATA_SECTOR_SIGNATURE: &[u8; 4] = b"data";
 
 /// Version constants
 pub const VHDX_VERSION: u16 = 1;
@@ -135,12 +127,6 @@ pub mod metadata_guids {
         0x2D, 0x5F, 0xD3, 0xA8, 0x0B, 0xB3, 0x4D, 0x45, 0xAB, 0xF7, 0xD3, 0xD8, 0x48, 0x34, 0xAB,
         0x0C,
     ]);
-
-    /// VHDX Parent Locator Type GUID: B04AEFB7-D19E-4A81-B789-25B8E9445913
-    pub const LOCATOR_TYPE_VHDX: Guid = Guid::from_bytes([
-        0xB7, 0xEF, 0x4A, 0xB0, 0x9E, 0xD1, 0x81, 0x4A, 0xB7, 0x89, 0x25, 0xB8, 0xE9, 0x44, 0x59,
-        0x13,
-    ]);
 }
 
 /// Align a value up to the specified alignment
@@ -148,24 +134,9 @@ pub fn align_up(value: u64, alignment: u64) -> u64 {
     (value + alignment - 1) & !(alignment - 1)
 }
 
-/// Align a value down to the specified alignment
-pub fn align_down(value: u64, alignment: u64) -> u64 {
-    value & !(alignment - 1)
-}
-
-/// Check if a value is aligned
-pub fn is_aligned(value: u64, alignment: u64) -> bool {
-    value & (alignment - 1) == 0
-}
-
 /// Align to 1 MB boundary
 pub fn align_1mb(value: u64) -> u64 {
     align_up(value, MB)
-}
-
-/// Align to 4 KB boundary
-pub fn align_4kb(value: u64) -> u64 {
-    align_up(value, 4 * KB)
 }
 
 #[cfg(test)]
@@ -178,22 +149,6 @@ mod tests {
         assert_eq!(align_up(1, MB), MB);
         assert_eq!(align_up(MB, MB), MB);
         assert_eq!(align_up(MB + 1, MB), 2 * MB);
-    }
-
-    #[test]
-    fn test_align_down() {
-        assert_eq!(align_down(0, MB), 0);
-        assert_eq!(align_down(1, MB), 0);
-        assert_eq!(align_down(MB, MB), MB);
-        assert_eq!(align_down(MB + 1, MB), MB);
-    }
-
-    #[test]
-    fn test_is_aligned() {
-        assert!(is_aligned(0, MB));
-        assert!(is_aligned(MB, MB));
-        assert!(!is_aligned(1, MB));
-        assert!(!is_aligned(MB + 1, MB));
     }
 
     #[test]

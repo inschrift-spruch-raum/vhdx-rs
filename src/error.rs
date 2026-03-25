@@ -15,6 +15,12 @@ pub enum Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// File is locked by another process (Windows-specific)
+    #[error(
+        "File is locked by another process. The VHDX file may be mounted or in use by another application. Close any applications using this file and try again."
+    )]
+    FileLocked,
+
     /// Invalid VHDX file format
     #[error("Invalid VHDX file: {0}")]
     InvalidFile(String),
@@ -44,7 +50,9 @@ pub enum Error {
     ParentMismatch { expected: Guid, actual: Guid },
 
     /// Log replay required
-    #[error("Log replay required")]
+    #[error(
+        "Log replay required: The VHDX file has pending changes from an interrupted write. Open with write access to replay the log and recover the file."
+    )]
     LogReplayRequired,
 
     /// Invalid parameter
