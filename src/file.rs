@@ -425,9 +425,11 @@ impl File {
         let log_size = MB; // 1 MB default
 
         // Calculate offsets
-        let bat_offset = align_1mb(HEADER_SECTION_SIZE as u64);
-        let metadata_offset = bat_offset + bat_size;
-        let log_offset = metadata_offset + metadata_size;
+        // Windows expects: Metadata (2MB) -> BAT (3MB), not BAT -> Metadata
+        // Metadata must be at 2MB (after 1MB header section), not 1MB
+        let metadata_offset = HEADER_SECTION_SIZE as u64 * 2; // 2MB
+        let bat_offset = metadata_offset + metadata_size;
+        let log_offset = bat_offset + bat_size;
         let payload_offset = align_1mb(log_offset + log_size); // Must be 1MB aligned per MS-VHDX spec
 
         // Write File Type Identifier
@@ -437,6 +439,23 @@ impl File {
         // Initialize remaining header section to zeros
         let header_padding = vec![0u8; HEADER_SECTION_SIZE - FILE_TYPE_SIZE];
         file.write_all(&header_padding)?;
+
+        // Write Metadata (must come before BAT for Windows compatibility)
+        file.seek(SeekFrom::Start(metadata_offset))?;
+        let metadata_data = create_metadata(
+            virtual_size,
+            block_size,
+            logical_sector_size,
+            fixed,
+            has_parent,
+            data_write_guid,
+        )?;
+        file.write_all(&metadata_data)?;
+        let actual_metadata_size = metadata_data.len() as u64;
+        if actual_metadata_size < metadata_size {
+            let padding = vec![0u8; (metadata_size - actual_metadata_size) as usize];
+            file.write_all(&padding)?;
+        }
 
         // Write BAT (initially all zeros for dynamic, or allocated for fixed)
         file.seek(SeekFrom::Start(bat_offset))?;
@@ -454,23 +473,6 @@ impl File {
             vec![0u8; bat_size as usize] // All zeros = NotPresent
         };
         file.write_all(&bat_data)?;
-
-        // Write Metadata
-        file.seek(SeekFrom::Start(metadata_offset))?;
-        let metadata_data = create_metadata(
-            virtual_size,
-            block_size,
-            logical_sector_size,
-            fixed,
-            has_parent,
-            data_write_guid,
-        )?;
-        file.write_all(&metadata_data)?;
-        let actual_metadata_size = metadata_data.len() as u64;
-        if actual_metadata_size < metadata_size {
-            let padding = vec![0u8; (metadata_size - actual_metadata_size) as usize];
-            file.write_all(&padding)?;
-        }
 
         // Write Log (zeros)
         file.seek(SeekFrom::Start(log_offset))?;
@@ -622,7 +624,7 @@ fn create_metadata(
     data.extend_from_slice(metadata_guids::FILE_PARAMETERS.as_bytes()); // item_id (16 bytes)
     data.extend_from_slice(&current_offset.to_le_bytes()); // offset (4 bytes)
     data.extend_from_slice(&8u32.to_le_bytes()); // length (4 bytes)
-    data.extend_from_slice(&0x60000000u32.to_le_bytes()); // flags (4 bytes) - IsVirtualDisk | IsRequired
+    data.extend_from_slice(&0x04u32.to_le_bytes()); // flags (4 bytes) - isUser=1 per Windows behavior
     data.extend_from_slice(&[0u8; 4]); // reserved (4 bytes)
     current_offset += 8;
 
@@ -630,7 +632,7 @@ fn create_metadata(
     data.extend_from_slice(metadata_guids::VIRTUAL_DISK_SIZE.as_bytes());
     data.extend_from_slice(&current_offset.to_le_bytes());
     data.extend_from_slice(&8u32.to_le_bytes());
-    data.extend_from_slice(&0x60000000u32.to_le_bytes());
+    data.extend_from_slice(&0x06u32.to_le_bytes()); // flags (4 bytes) - isUser=1, isVirtualDisk=1
     data.extend_from_slice(&[0u8; 4]);
     current_offset += 8;
 
@@ -638,7 +640,7 @@ fn create_metadata(
     data.extend_from_slice(metadata_guids::VIRTUAL_DISK_ID.as_bytes());
     data.extend_from_slice(&current_offset.to_le_bytes());
     data.extend_from_slice(&16u32.to_le_bytes());
-    data.extend_from_slice(&0x60000000u32.to_le_bytes());
+    data.extend_from_slice(&0x06u32.to_le_bytes()); // flags (4 bytes) - isUser=1, isVirtualDisk=1
     data.extend_from_slice(&[0u8; 4]);
     current_offset += 16;
 
@@ -646,7 +648,7 @@ fn create_metadata(
     data.extend_from_slice(metadata_guids::LOGICAL_SECTOR_SIZE.as_bytes());
     data.extend_from_slice(&current_offset.to_le_bytes());
     data.extend_from_slice(&4u32.to_le_bytes());
-    data.extend_from_slice(&0x60000000u32.to_le_bytes());
+    data.extend_from_slice(&0x06u32.to_le_bytes()); // flags (4 bytes) - isUser=1, isVirtualDisk=1
     data.extend_from_slice(&[0u8; 4]);
     current_offset += 4;
 
@@ -654,7 +656,7 @@ fn create_metadata(
     data.extend_from_slice(metadata_guids::PHYSICAL_SECTOR_SIZE.as_bytes());
     data.extend_from_slice(&current_offset.to_le_bytes());
     data.extend_from_slice(&4u32.to_le_bytes());
-    data.extend_from_slice(&0x60000000u32.to_le_bytes());
+    data.extend_from_slice(&0x06u32.to_le_bytes()); // flags (4 bytes) - isUser=1, isVirtualDisk=1
     data.extend_from_slice(&[0u8; 4]);
     current_offset += 4;
 
@@ -663,7 +665,7 @@ fn create_metadata(
         data.extend_from_slice(metadata_guids::PARENT_LOCATOR.as_bytes());
         data.extend_from_slice(&current_offset.to_le_bytes());
         data.extend_from_slice(&24u32.to_le_bytes()); // Minimum size
-        data.extend_from_slice(&0x60000000u32.to_le_bytes());
+        data.extend_from_slice(&0x06u32.to_le_bytes()); // flags (4 bytes) - isUser=1, isVirtualDisk=1
         data.extend_from_slice(&[0u8; 4]);
     }
 
