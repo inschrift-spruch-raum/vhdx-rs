@@ -5,25 +5,25 @@ pub const KB: u64 = 1024;
 pub const MB: u64 = 1024 * KB;
 
 /// Header section size (1 MB)
-pub const HEADER_SECTION_SIZE: usize = MB as usize;
+pub const HEADER_SECTION_SIZE: usize = 1024 * 1024;
 
 /// File Type Identifier offset and size
 pub const FILE_TYPE_SIZE: usize = 64 * 1024; // 64 KB
 
 /// Header 1 offset (64 KB)
-pub const HEADER_1_OFFSET: u64 = 64 * KB;
+pub const HEADER_1_OFFSET: usize = 64 * 1024;
 
 /// Header 2 offset (128 KB)
-pub const HEADER_2_OFFSET: u64 = 128 * KB;
+pub const HEADER_2_OFFSET: usize = 128 * 1024;
 
 /// Header size (4 KB)
 pub const HEADER_SIZE: usize = 4 * 1024;
 
 /// Region Table 1 offset (192 KB)
-pub const REGION_TABLE_1_OFFSET: u64 = 192 * KB;
+pub const REGION_TABLE_1_OFFSET: usize = 192 * 1024;
 
 /// Region Table 2 offset (256 KB)
-pub const REGION_TABLE_2_OFFSET: u64 = 256 * KB;
+pub const REGION_TABLE_2_OFFSET: usize = 256 * 1024;
 
 /// Region Table size (64 KB)
 pub const REGION_TABLE_SIZE: usize = 64 * 1024;
@@ -41,7 +41,7 @@ pub const LOGICAL_SECTOR_SIZE_512: u32 = 512;
 pub const DEFAULT_BLOCK_SIZE: u32 = 32 * 1024 * 1024;
 
 /// Minimum block size (1 MB)
-pub const MIN_BLOCK_SIZE: u32 = MB as u32;
+pub const MIN_BLOCK_SIZE: u32 = 1024 * 1024;
 
 /// Maximum block size (256 MB)
 pub const MAX_BLOCK_SIZE: u32 = 256 * 1024 * 1024;
@@ -130,12 +130,12 @@ pub mod metadata_guids {
 }
 
 /// Align a value up to the specified alignment
-pub fn align_up(value: u64, alignment: u64) -> u64 {
+pub const fn align_up(value: u64, alignment: u64) -> u64 {
     (value + alignment - 1) & !(alignment - 1)
 }
 
 /// Align to 1 MB boundary
-pub fn align_1mb(value: u64) -> u64 {
+pub const fn align_1mb(value: u64) -> u64 {
     align_up(value, MB)
 }
 

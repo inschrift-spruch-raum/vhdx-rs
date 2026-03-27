@@ -12,21 +12,25 @@ pub struct Guid {
 
 impl Guid {
     /// Create a new GUID from raw bytes
+    #[must_use]
     pub const fn from_bytes(data: [u8; 16]) -> Self {
         Self { data }
     }
 
     /// Get the raw bytes of the GUID
-    pub fn as_bytes(&self) -> &[u8; 16] {
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
         &self.data
     }
 
     /// Create a nil GUID (all zeros)
+    #[must_use]
     pub const fn nil() -> Self {
         Self { data: [0; 16] }
     }
 
     /// Check if this is a nil GUID
+    #[must_use]
     pub fn is_nil(&self) -> bool {
         self.data == [0; 16]
     }
@@ -78,7 +82,7 @@ impl From<uuid::Uuid> for Guid {
 
 impl From<Guid> for uuid::Uuid {
     fn from(guid: Guid) -> Self {
-        uuid::Uuid::from_bytes(guid.data)
+        Self::from_bytes(guid.data)
     }
 }
 
@@ -117,7 +121,7 @@ mod tests {
             0xE7, 0x6B,
         ];
         let guid = Guid::from_bytes(bytes);
-        let debug_str = format!("{:?}", guid);
+        let debug_str = format!("{guid:?}");
         // Just verify it contains hyphens (standard GUID format)
         assert!(debug_str.contains('-'));
     }

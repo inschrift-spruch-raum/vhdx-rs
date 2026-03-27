@@ -7,12 +7,17 @@ use std::path::Path;
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 
-use crate::common::constants::*;
+use crate::common::constants::{
+    BAT_ENTRY_SIZE, DEFAULT_BLOCK_SIZE, FILE_TYPE_SIGNATURE, FILE_TYPE_SIZE, HEADER_1_OFFSET,
+    HEADER_2_OFFSET, HEADER_SECTION_SIZE, LOGICAL_SECTOR_SIZE_512, MAX_BLOCK_SIZE, MB,
+    METADATA_SIGNATURE, METADATA_TABLE_SIZE, MIN_BLOCK_SIZE, REGION_TABLE_1_OFFSET,
+    REGION_TABLE_2_OFFSET, REGION_TABLE_SIGNATURE, REGION_TABLE_SIZE, align_1mb,
+};
 use crate::common::region_guids;
 use crate::error::{Error, Result};
 use crate::io_module::IO;
 use crate::sections::Bat;
-use crate::sections::{FileTypeIdentifier, Header, HeaderStructure, Sections};
+use crate::sections::{FileTypeIdentifier, Header, HeaderStructure, Sections, SectionsConfig};
 use crate::types::Guid;
 
 /// VHDX File handle
@@ -32,7 +37,7 @@ pub struct File {
 impl File {
     /// Open an existing VHDX file (read-only by default)
     ///
-    /// Returns OpenOptions for chained configuration.
+    /// Returns [`OpenOptions`] for chained configuration.
     pub fn open(path: impl AsRef<Path>) -> OpenOptions {
         OpenOptions {
             path: path.as_ref().to_path_buf(),
@@ -42,7 +47,7 @@ impl File {
 
     /// Create a new VHDX file
     ///
-    /// Returns CreateOptions for chained configuration.
+    /// Returns [`CreateOptions`] for chained configuration.
     pub fn create(path: impl AsRef<Path>) -> CreateOptions {
         CreateOptions {
             path: path.as_ref().to_path_buf(),
@@ -55,42 +60,44 @@ impl File {
     }
 
     /// Get all sections (lazy-loaded)
-    pub fn sections(&self) -> &Sections {
+    pub const fn sections(&self) -> &Sections {
         &self.sections
     }
 
     /// Get IO module for sector-level operations
-    pub fn io(&self) -> IO<'_> {
+    pub const fn io(&self) -> IO<'_> {
         IO::new(self)
     }
 
     /// Get underlying file handle
-    pub fn inner(&self) -> &StdFile {
+    pub const fn inner(&self) -> &StdFile {
         &self.inner
     }
 
     /// Get virtual disk size
-    pub fn virtual_disk_size(&self) -> u64 {
+    pub const fn virtual_disk_size(&self) -> u64 {
         self.virtual_disk_size
     }
 
     /// Get block size
-    pub fn block_size(&self) -> u32 {
+    pub const fn block_size(&self) -> u32 {
         self.block_size
     }
 
     /// Get logical sector size
-    pub fn logical_sector_size(&self) -> u32 {
+    pub const fn logical_sector_size(&self) -> u32 {
         self.logical_sector_size
     }
 
     /// Check if this is a fixed disk
-    pub fn is_fixed(&self) -> bool {
+    pub const fn is_fixed(&self) -> bool {
         self.is_fixed
     }
 
     /// Check if this is a differencing disk
-    pub fn has_parent(&self) -> bool {
+    ///
+    /// Returns `true` if this disk has a parent (is a differencing disk).
+    pub const fn has_parent(&self) -> bool {
         self.has_parent
     }
 
@@ -98,20 +105,26 @@ impl File {
     ///
     /// Returns the number of bytes read.
     /// For unallocated blocks, returns zeros (sparse file behavior).
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be read.
     pub fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
         if offset >= self.virtual_disk_size {
             return Ok(0);
         }
 
-        let bytes_to_read =
-            std::cmp::min(buf.len() as u64, self.virtual_disk_size - offset) as usize;
+        let bytes_to_read = usize::try_from(std::cmp::min(
+            u64::try_from(buf.len()).unwrap_or(u64::MAX),
+            self.virtual_disk_size - offset,
+        ))
+        .unwrap_or(usize::MAX);
 
         // For fixed disks, read from file
         // For dynamic disks, check BAT and return zeros for unallocated blocks
         // This is a simplified implementation
         if self.is_fixed {
             // Calculate file offset for this virtual offset
-            let header_size = HEADER_SECTION_SIZE as u64;
+            let header_size = u64::try_from(HEADER_SECTION_SIZE).unwrap_or(0);
             let file_offset = header_size + offset;
 
             let mut file = self.inner.try_clone()?;
@@ -133,6 +146,9 @@ impl File {
     /// Returns the number of bytes written.
     /// For fixed disks, writes directly to the payload area.
     /// For dynamic disks, allocates blocks on demand.
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be written to.
     pub fn write(&mut self, offset: u64, data: &[u8]) -> Result<usize> {
         if offset >= self.virtual_disk_size {
             return Err(Error::InvalidParameter(format!(
@@ -141,12 +157,15 @@ impl File {
             )));
         }
 
-        let bytes_to_write =
-            std::cmp::min(data.len() as u64, self.virtual_disk_size - offset) as usize;
+        let bytes_to_write = usize::try_from(std::cmp::min(
+            u64::try_from(data.len()).unwrap_or(u64::MAX),
+            self.virtual_disk_size - offset,
+        ))
+        .unwrap_or(usize::MAX);
 
         if self.is_fixed {
             // For fixed disks, write directly to the payload area
-            let header_size = HEADER_SECTION_SIZE as u64;
+            let header_size = u64::try_from(HEADER_SECTION_SIZE).unwrap_or(0);
             let file_offset = header_size + offset;
 
             self.inner.seek(SeekFrom::Start(file_offset))?;
@@ -162,13 +181,16 @@ impl File {
 
     /// Write to dynamic disk with block allocation
     fn write_dynamic(&mut self, offset: u64, data: &[u8]) -> Result<()> {
-        let block_size = self.block_size as u64;
+        let block_size = u64::from(self.block_size);
         let block_idx = offset / block_size;
         let block_offset = offset % block_size;
 
         // Get BAT
         let bat = self.sections.bat()?;
-        let bat_entry = bat.entry(block_idx);
+        let block_idx_usize = usize::try_from(block_idx).map_err(|_| {
+            Error::InvalidParameter(format!("block_idx {block_idx} exceeds usize::MAX"))
+        })?;
+        let bat_entry = bat.entry(block_idx_usize);
 
         let file_offset = if let Some(entry) = bat_entry {
             // Block exists - use existing offset
@@ -195,43 +217,25 @@ impl File {
     }
 
     /// Flush all pending writes to disk
+    ///
+    /// # Errors
+    /// Returns an error if the sync fails.
     pub fn flush(&mut self) -> Result<()> {
         self.inner.sync_all()?;
         Ok(())
     }
 
     /// Open the file with the given options
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - The file cannot be opened
+    /// - The file is locked by another process (Windows)
+    /// - The file type identifier is invalid
+    /// - The header or region table is corrupted
+    /// - Required regions (BAT, Metadata) are not found
     fn open_file(path: &Path, writable: bool) -> Result<Self> {
-        let mut options = StdOpenOptions::new();
-        options.read(true);
-        if writable {
-            options.write(true);
-        }
-
-        // On Windows, set file share mode to allow other processes to read
-        // the file while we have it open. This prevents "Access Denied" errors
-        // when the VHDX is mounted or being used by another process.
-        #[cfg(windows)]
-        {
-            const FILE_SHARE_READ: u32 = 0x00000001;
-            const FILE_SHARE_WRITE: u32 = 0x00000002;
-            options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
-        }
-
-        let mut file = match options.open(path) {
-            Ok(f) => f,
-            Err(e) => {
-                // On Windows, check for Access Denied (error 5) which typically means
-                // the file is locked by another process (e.g., mounted as virtual disk)
-                #[cfg(windows)]
-                {
-                    if e.raw_os_error() == Some(5) {
-                        return Err(Error::FileLocked);
-                    }
-                }
-                return Err(Error::Io(e));
-            }
-        };
+        let mut file = Self::open_file_with_share_mode(path, writable)?;
 
         // Read and validate file type identifier
         let mut file_type_data = [0u8; 8];
@@ -259,37 +263,109 @@ impl File {
             .region_table(0)
             .ok_or_else(|| Error::InvalidRegionTable("No valid region table found".to_string()))?;
 
-        // Verify checksums (currently disabled - needs debugging)
-        // TODO: Fix checksum calculation in create_region_table
-        // if let Err(e) = current_header.verify_checksum() {
-        //     return Err(Error::CorruptedHeader(format!("Header checksum failed: {}", e)));
-        // }
-        // if let Err(e) = region_table.header().verify_checksum() {
-        //     return Err(Error::InvalidRegionTable(format!("Region table checksum failed: {}", e)));
-        // }
+        // Extract region info and metadata
+        let (bat_offset, bat_size, metadata_offset, metadata_size) =
+            Self::extract_region_info(&region_table)?;
+        let (virtual_disk_size, block_size, is_fixed, has_parent, logical_sector_size) =
+            Self::read_metadata(&mut file, metadata_offset, metadata_size)?;
 
+        // Get log info from header
+        let log_offset = current_header.log_offset();
+        let log_size = u64::from(current_header.log_length());
+
+        // Calculate BAT entry count
+        let entry_count =
+            Bat::calculate_total_entries(virtual_disk_size, block_size, logical_sector_size);
+
+        // Create sections with entry_count
+        let file_clone2 = file.try_clone()?;
+        let sections = Sections::new(SectionsConfig {
+            file: file_clone2,
+            bat_offset,
+            bat_size,
+            metadata_offset,
+            metadata_size,
+            log_offset,
+            log_size,
+            entry_count,
+        });
+
+        // Handle log replay if required
+        Self::handle_log_replay(&mut file, &sections, &current_header, writable)?;
+
+        Ok(Self {
+            inner: file,
+            sections,
+            virtual_disk_size,
+            block_size,
+            logical_sector_size,
+            is_fixed,
+            has_parent,
+        })
+    }
+
+    /// Open file with share mode (Windows-specific handling)
+    fn open_file_with_share_mode(path: &Path, writable: bool) -> Result<StdFile> {
+        let mut options = StdOpenOptions::new();
+        options.read(true);
+        if writable {
+            options.write(true);
+        }
+
+        // On Windows, set file share mode to allow other processes to read
+        // the file while we have it open. This prevents "Access Denied" errors
+        // when the VHDX is mounted or being used by another process.
+        #[cfg(windows)]
+        {
+            const FILE_SHARE_READ: u32 = 0x0000_0001;
+            const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+            options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+        }
+
+        match options.open(path) {
+            Ok(f) => Ok(f),
+            Err(e) => {
+                // On Windows, check for Access Denied (error 5) which typically means
+                // the file is locked by another process (e.g., mounted as virtual disk)
+                #[cfg(windows)]
+                {
+                    if e.raw_os_error() == Some(5) {
+                        return Err(Error::FileLocked);
+                    }
+                }
+                Err(Error::Io(e))
+            }
+        }
+    }
+
+    /// Extract BAT and Metadata region info from region table
+    fn extract_region_info(
+        region_table: &crate::sections::RegionTable<'_>,
+    ) -> Result<(u64, u64, u64, u64)> {
         // Find BAT region
         let bat_entry = region_table
             .find_entry(&region_guids::BAT_REGION)
             .ok_or_else(|| Error::InvalidRegionTable("BAT region not found".to_string()))?;
         let bat_offset = bat_entry.file_offset();
-        let bat_size = bat_entry.length() as u64;
+        let bat_size = u64::from(bat_entry.length());
 
         // Find Metadata region
         let metadata_entry = region_table
             .find_entry(&region_guids::METADATA_REGION)
             .ok_or_else(|| Error::InvalidRegionTable("Metadata region not found".to_string()))?;
         let metadata_offset = metadata_entry.file_offset();
-        let metadata_size = metadata_entry.length() as u64;
+        let metadata_size = u64::from(metadata_entry.length());
 
-        // Get log info from header
-        let log_offset = current_header.log_offset();
-        let log_size = current_header.log_length() as u64;
+        Ok((bat_offset, bat_size, metadata_offset, metadata_size))
+    }
 
-        // Read metadata directly to get disk parameters first
+    /// Read metadata from file and extract disk parameters
+    fn read_metadata(
+        file: &mut StdFile, metadata_offset: u64, metadata_size: u64,
+    ) -> Result<(u64, u32, bool, bool, u32)> {
         let mut file_clone = file.try_clone()?;
         file_clone.seek(SeekFrom::Start(metadata_offset))?;
-        let mut metadata_data = vec![0u8; metadata_size as usize];
+        let mut metadata_data = vec![0u8; usize::try_from(metadata_size).unwrap_or(0)];
         file_clone.read_exact(&mut metadata_data)?;
         let temp_metadata = crate::sections::Metadata::new(metadata_data)?;
         let temp_items = temp_metadata.items();
@@ -309,23 +385,20 @@ impl File {
             .logical_sector_size()
             .unwrap_or(LOGICAL_SECTOR_SIZE_512);
 
-        // Calculate BAT entry count
-        let entry_count =
-            Bat::calculate_total_entries(virtual_disk_size, block_size, logical_sector_size);
+        Ok((
+            virtual_disk_size,
+            block_size,
+            is_fixed,
+            has_parent,
+            logical_sector_size,
+        ))
+    }
 
-        // Create sections with entry_count
-        let file_clone2 = file.try_clone()?;
-        let sections = Sections::new(
-            file_clone2,
-            bat_offset,
-            bat_size,
-            metadata_offset,
-            metadata_size,
-            log_offset,
-            log_size,
-            entry_count,
-        );
-
+    /// Handle log replay if required
+    fn handle_log_replay(
+        file: &mut StdFile, sections: &Sections,
+        current_header: &crate::sections::HeaderStructure<'_>, writable: bool,
+    ) -> Result<()> {
         // Check if log replay is required (per MS-VHDX spec section 2.3.3)
         // Note: Log replay is only needed if the log GUID in the header is not nil
         // and there are pending log entries
@@ -338,7 +411,7 @@ impl File {
                     // The actual error will be raised when log() is called
                 }
                 // Replay the log to recover from crash
-                (*log).replay(&mut file)?;
+                (*log).replay(file)?;
                 // Sync to ensure all changes are written
                 file.sync_all()?;
 
@@ -360,27 +433,24 @@ impl File {
                 file.sync_all()?;
             }
         }
-
-        Ok(Self {
-            inner: file,
-            sections,
-            virtual_disk_size,
-            block_size,
-            logical_sector_size,
-            is_fixed,
-            has_parent,
-        })
+        Ok(())
     }
 
     /// Create a new VHDX file with the given options
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - The file cannot be created or opened
+    /// - Virtual size is zero
+    /// - Block size is not a power of 2 or outside valid range
+    /// - Logical sector size is not 512 or 4096
     fn create_file(
-        path: &Path,
-        virtual_size: u64,
-        fixed: bool,
-        has_parent: bool,
-        block_size: u32,
+        path: &Path, virtual_size: u64, fixed: bool, has_parent: bool, block_size: u32,
         logical_sector_size: u32,
     ) -> Result<Self> {
+        // Validate parameters
+        Self::validate_create_params(virtual_size, block_size, logical_sector_size)?;
+
         // Create the file
         let mut file = StdOpenOptions::new()
             .read(true)
@@ -389,48 +459,22 @@ impl File {
             .truncate(true)
             .open(path)?;
 
-        // Validate parameters
-        if virtual_size == 0 {
-            return Err(Error::InvalidParameter(
-                "Virtual size cannot be zero".to_string(),
-            ));
-        }
-        if !block_size.is_power_of_two() || !(MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE).contains(&block_size)
-        {
-            return Err(Error::InvalidParameter(format!(
-                "Block size must be power of 2 between {} and {}",
-                MIN_BLOCK_SIZE, MAX_BLOCK_SIZE
-            )));
-        }
-        if logical_sector_size != 512 && logical_sector_size != 4096 {
-            return Err(Error::InvalidParameter(
-                "Logical sector size must be 512 or 4096".to_string(),
-            ));
-        }
-
         // Generate GUIDs
         let file_write_guid = Guid::from(uuid::Uuid::new_v4());
         let data_write_guid = Guid::from(uuid::Uuid::new_v4());
         let log_guid = Guid::nil();
 
-        // Calculate BAT size
-        let bat_entries =
-            Bat::calculate_total_entries(virtual_size, block_size, logical_sector_size);
-        let bat_size = align_1mb(bat_entries * BAT_ENTRY_SIZE as u64);
-
-        // Calculate Metadata size
-        let metadata_size = align_1mb(METADATA_TABLE_SIZE as u64 + 256); // Base + some items
-
-        // Calculate Log size
-        let log_size = MB; // 1 MB default
-
-        // Calculate offsets
-        // Windows expects: Metadata (2MB) -> BAT (3MB), not BAT -> Metadata
-        // Metadata must be at 2MB (after 1MB header section), not 1MB
-        let metadata_offset = HEADER_SECTION_SIZE as u64 * 2; // 2MB
-        let bat_offset = metadata_offset + metadata_size;
-        let log_offset = bat_offset + bat_size;
-        let payload_offset = align_1mb(log_offset + log_size); // Must be 1MB aligned per MS-VHDX spec
+        // Calculate sizes
+        let (
+            bat_offset,
+            bat_size,
+            metadata_offset,
+            metadata_size,
+            log_offset,
+            log_size,
+            payload_offset,
+            bat_entries,
+        ) = Self::calculate_layout(virtual_size, block_size, logical_sector_size);
 
         // Write File Type Identifier
         let file_type_data = FileTypeIdentifier::create(Some("vhdx-rs"));
@@ -440,7 +484,7 @@ impl File {
         let header_padding = vec![0u8; HEADER_SECTION_SIZE - FILE_TYPE_SIZE];
         file.write_all(&header_padding)?;
 
-        // Write Metadata (must come before BAT for Windows compatibility)
+        // Write Metadata
         file.seek(SeekFrom::Start(metadata_offset))?;
         let metadata_data = create_metadata(
             virtual_size,
@@ -449,64 +493,47 @@ impl File {
             fixed,
             has_parent,
             data_write_guid,
-        )?;
+        );
         file.write_all(&metadata_data)?;
-        let actual_metadata_size = metadata_data.len() as u64;
+        let actual_metadata_size = u64::try_from(metadata_data.len()).unwrap_or(0);
         if actual_metadata_size < metadata_size {
-            let padding = vec![0u8; (metadata_size - actual_metadata_size) as usize];
+            let padding =
+                vec![0u8; usize::try_from(metadata_size - actual_metadata_size).unwrap_or(0)];
             file.write_all(&padding)?;
         }
 
-        // Write BAT (initially all zeros for dynamic, or allocated for fixed)
+        // Write BAT
         file.seek(SeekFrom::Start(bat_offset))?;
-        let bat_data = if fixed {
-            // For fixed disks, pre-allocate all blocks
-            let mut entries = vec![0u8; bat_entries as usize * BAT_ENTRY_SIZE];
-            for i in 0..bat_entries {
-                let offset = i as usize * BAT_ENTRY_SIZE;
-                let payload_offset_mb = (payload_offset + i * block_size as u64) / MB;
-                let state_and_offset = (payload_offset_mb << 20) | 6u64; // State = FullyPresent
-                entries[offset..offset + 8].copy_from_slice(&state_and_offset.to_le_bytes());
-            }
-            entries
-        } else {
-            vec![0u8; bat_size as usize] // All zeros = NotPresent
-        };
+        let bat_data = Self::create_bat_data(fixed, bat_entries, payload_offset, block_size);
         file.write_all(&bat_data)?;
 
         // Write Log (zeros)
         file.seek(SeekFrom::Start(log_offset))?;
-        let log_data = vec![0u8; log_size as usize];
+        let log_data = vec![0u8; usize::try_from(log_size).unwrap_or(0)];
         file.write_all(&log_data)?;
 
         // Write Headers and Region Tables
-        let header1_offset = HEADER_1_OFFSET;
-        let header2_offset = HEADER_2_OFFSET;
-        let region_table1_offset = REGION_TABLE_1_OFFSET;
-        let region_table2_offset = REGION_TABLE_2_OFFSET;
-
-        // Create and write headers
         let header_data = HeaderStructure::create(
             0, // sequence number
             file_write_guid,
             data_write_guid,
             log_guid,
-            log_size as u32,
+            u32::try_from(log_size).unwrap_or(0),
             log_offset,
         );
 
-        file.seek(SeekFrom::Start(header1_offset))?;
+        file.seek(SeekFrom::Start(HEADER_1_OFFSET as u64))?;
         file.write_all(&header_data)?;
-        file.seek(SeekFrom::Start(header2_offset))?;
+        file.seek(SeekFrom::Start(HEADER_2_OFFSET as u64))?;
         file.write_all(&header_data)?;
 
         // Create and write region tables
         let region_table_data =
-            create_region_table(bat_offset, bat_size, metadata_offset, metadata_size)?;
+            create_region_table(bat_offset, bat_size, metadata_offset, metadata_size);
 
-        file.seek(SeekFrom::Start(region_table1_offset))?;
+        file.seek(SeekFrom::Start(REGION_TABLE_1_OFFSET as u64))?;
         file.write_all(&region_table_data)?;
-        file.seek(SeekFrom::Start(region_table2_offset))?;
+        file.seek(SeekFrom::Start(REGION_TABLE_2_OFFSET as u64))?;
         file.write_all(&region_table_data)?;
 
         // For fixed disks, pre-allocate payload space
@@ -523,6 +550,83 @@ impl File {
         drop(file);
         Self::open_file(path, true)
     }
+
+    /// Validate create file parameters
+    fn validate_create_params(
+        virtual_size: u64, block_size: u32, logical_sector_size: u32,
+    ) -> Result<()> {
+        if virtual_size == 0 {
+            return Err(Error::InvalidParameter(
+                "Virtual size cannot be zero".to_string(),
+            ));
+        }
+        if !block_size.is_power_of_two() || !(MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE).contains(&block_size)
+        {
+            return Err(Error::InvalidParameter(format!(
+                "Block size must be power of 2 between {MIN_BLOCK_SIZE} and {MAX_BLOCK_SIZE}"
+            )));
+        }
+        if logical_sector_size != 512 && logical_sector_size != 4096 {
+            return Err(Error::InvalidParameter(
+                "Logical sector size must be 512 or 4096".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Calculate layout offsets and sizes
+    fn calculate_layout(
+        virtual_size: u64, block_size: u32, logical_sector_size: u32,
+    ) -> (u64, u64, u64, u64, u64, u64, u64, u64) {
+        // Calculate BAT size
+        let bat_entries =
+            Bat::calculate_total_entries(virtual_size, block_size, logical_sector_size);
+        let bat_size = align_1mb(bat_entries * BAT_ENTRY_SIZE as u64);
+
+        // Calculate Metadata size
+        let metadata_size = align_1mb(METADATA_TABLE_SIZE as u64 + 256);
+
+        // Calculate Log size
+        let log_size = MB; // 1 MB default
+
+        // Calculate offsets
+        // Windows expects: Metadata (2MB) -> BAT (3MB), not BAT -> Metadata
+        // Metadata must be at 2MB (after 1MB header section), not 1MB
+        let metadata_offset = HEADER_SECTION_SIZE as u64 * 2; // 2MB
+        let bat_offset = metadata_offset + metadata_size;
+        let log_offset = bat_offset + bat_size;
+        let payload_offset = align_1mb(log_offset + log_size); // Must be 1MB aligned
+
+        (
+            bat_offset,
+            bat_size,
+            metadata_offset,
+            metadata_size,
+            log_offset,
+            log_size,
+            payload_offset,
+            bat_entries,
+        )
+    }
+
+    /// Create BAT data for fixed or dynamic disks
+    fn create_bat_data(
+        fixed: bool, bat_entries: u64, payload_offset: u64, block_size: u32,
+    ) -> Vec<u8> {
+        if fixed {
+            // For fixed disks, pre-allocate all blocks
+            let mut entries = vec![0u8; usize::try_from(bat_entries).unwrap_or(0) * BAT_ENTRY_SIZE];
+            for i in 0..bat_entries {
+                let offset = usize::try_from(i).unwrap_or(0) * BAT_ENTRY_SIZE;
+                let payload_offset_mb = (payload_offset + i * u64::from(block_size)) / MB;
+                let state_and_offset = (payload_offset_mb << 20) | 6u64; // State = FullyPresent
+                entries[offset..offset + 8].copy_from_slice(&state_and_offset.to_le_bytes());
+            }
+            entries
+        } else {
+            vec![0u8; usize::try_from(bat_entries).unwrap_or(0) * BAT_ENTRY_SIZE] // All zeros = NotPresent
+        }
+    }
 }
 
 /// Open options for VHDX files
@@ -533,7 +637,7 @@ pub struct OpenOptions {
 
 impl OpenOptions {
     /// Enable write access (read-write mode)
-    pub fn write(mut self) -> Self {
+    pub const fn write(mut self) -> Self {
         self.write = true;
         self
     }
@@ -556,25 +660,25 @@ pub struct CreateOptions {
 
 impl CreateOptions {
     /// Set virtual disk size (required)
-    pub fn size(mut self, size: u64) -> Self {
+    pub const fn size(mut self, size: u64) -> Self {
         self.size = Some(size);
         self
     }
 
     /// Set fixed disk flag
-    pub fn fixed(mut self, fixed: bool) -> Self {
+    pub const fn fixed(mut self, fixed: bool) -> Self {
         self.fixed = fixed;
         self
     }
 
-    /// Set has_parent flag (for differencing disks)
-    pub fn has_parent(mut self, has_parent: bool) -> Self {
+    /// Set `has_parent` flag (for differencing disks)
+    pub const fn has_parent(mut self, has_parent: bool) -> Self {
         self.has_parent = has_parent;
         self
     }
 
     /// Set block size
-    pub fn block_size(mut self, block_size: u32) -> Self {
+    pub const fn block_size(mut self, block_size: u32) -> Self {
         self.block_size = block_size;
         self
     }
@@ -598,13 +702,9 @@ impl CreateOptions {
 
 /// Create metadata section data
 fn create_metadata(
-    virtual_size: u64,
-    block_size: u32,
-    logical_sector_size: u32,
-    fixed: bool,
-    has_parent: bool,
+    virtual_size: u64, block_size: u32, logical_sector_size: u32, fixed: bool, has_parent: bool,
     disk_id: Guid,
-) -> Result<Vec<u8>> {
+) -> Vec<u8> {
     use crate::common::metadata_guids;
 
     let mut data = Vec::with_capacity(METADATA_TABLE_SIZE);
@@ -617,10 +717,10 @@ fn create_metadata(
     data.extend_from_slice(&[0u8; 20]); // reserved2 (20 bytes)
 
     // Calculate item offsets (start after table)
-    let mut current_offset: u32 = METADATA_TABLE_SIZE as u32;
+    let mut current_offset: u32 = u32::try_from(METADATA_TABLE_SIZE).unwrap_or(0);
 
     // Entry 1: File Parameters
-    let fp_flags: u32 = (if fixed { 1u32 } else { 0 }) | (if has_parent { 2u32 } else { 0 });
+    let fp_flags: u32 = u32::from(fixed) | (u32::from(has_parent) << 1);
     data.extend_from_slice(metadata_guids::FILE_PARAMETERS.as_bytes()); // item_id (16 bytes)
     data.extend_from_slice(&current_offset.to_le_bytes()); // offset (4 bytes)
     data.extend_from_slice(&8u32.to_le_bytes()); // length (4 bytes)
@@ -691,16 +791,13 @@ fn create_metadata(
     // Physical Sector Size (same as logical for now)
     data.extend_from_slice(&logical_sector_size.to_le_bytes());
 
-    Ok(data)
+    data
 }
 
 /// Create region table data
 fn create_region_table(
-    bat_offset: u64,
-    bat_size: u64,
-    metadata_offset: u64,
-    metadata_size: u64,
-) -> Result<Vec<u8>> {
+    bat_offset: u64, bat_size: u64, metadata_offset: u64, metadata_size: u64,
+) -> Vec<u8> {
     use crate::common::region_guids;
 
     let mut data = vec![0u8; REGION_TABLE_SIZE];
@@ -715,18 +812,18 @@ fn create_region_table(
     // Entry 1: BAT
     data[16..32].copy_from_slice(region_guids::BAT_REGION.as_bytes());
     data[32..40].copy_from_slice(&bat_offset.to_le_bytes());
-    data[40..44].copy_from_slice(&(bat_size as u32).to_le_bytes());
+    data[40..44].copy_from_slice(&(u32::try_from(bat_size).unwrap_or(0_u32)).to_le_bytes());
     data[44..48].copy_from_slice(&1u32.to_le_bytes()); // Required
 
     // Entry 2: Metadata
     data[48..64].copy_from_slice(region_guids::METADATA_REGION.as_bytes());
     data[64..72].copy_from_slice(&metadata_offset.to_le_bytes());
-    data[72..76].copy_from_slice(&(metadata_size as u32).to_le_bytes());
+    data[72..76].copy_from_slice(&(u32::try_from(metadata_size).unwrap_or(0_u32)).to_le_bytes());
     data[76..80].copy_from_slice(&1u32.to_le_bytes()); // Required
 
     // Compute checksum (with checksum field set to 0)
     let checksum = crc32c::crc32c(&data);
     data[4..8].copy_from_slice(&checksum.to_le_bytes());
 
-    Ok(data)
+    data
 }

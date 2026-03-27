@@ -7,7 +7,11 @@
 //! - Region Table 1 (64 KB at offset 192 KB)
 //! - Region Table 2 (64 KB at offset 256 KB)
 
-use crate::common::constants::*;
+use crate::common::constants::{
+    FILE_TYPE_SIGNATURE, FILE_TYPE_SIZE, HEADER_1_OFFSET, HEADER_2_OFFSET, HEADER_SECTION_SIZE,
+    HEADER_SIGNATURE, HEADER_SIZE, LOG_VERSION, REGION_TABLE_1_OFFSET, REGION_TABLE_2_OFFSET,
+    REGION_TABLE_SIZE, VHDX_VERSION,
+};
 use crate::error::{Error, Result};
 use crate::sections::crc32c_with_zero_field;
 use crate::types::Guid;
@@ -19,6 +23,10 @@ pub struct Header {
 
 impl Header {
     /// Create a new Header from raw 1 MB data
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidFile` if the data length is not exactly `HEADER_SECTION_SIZE`.
     pub fn new(data: Vec<u8>) -> Result<Self> {
         if data.len() != HEADER_SECTION_SIZE {
             return Err(Error::InvalidFile(format!(
@@ -31,11 +39,13 @@ impl Header {
     }
 
     /// Return the complete 1 MB Header Section raw bytes
+    #[must_use]
     pub fn raw(&self) -> &[u8] {
         &self.raw_data
     }
 
     /// Get the File Type Identifier
+    #[must_use]
     pub fn file_type(&self) -> FileTypeIdentifier<'_> {
         FileTypeIdentifier::new(&self.raw_data[0..FILE_TYPE_SIZE])
     }
@@ -44,18 +54,17 @@ impl Header {
     /// - index = 0: current header (selected based on sequence number)
     /// - index = 1: header 1 (at offset 64 KB)
     /// - index = 2: header 2 (at offset 128 KB)
+    #[must_use]
     pub fn header(&self, index: usize) -> Option<HeaderStructure<'_>> {
         match index {
             0 => {
                 // Return the current header (one with higher sequence number)
                 let h1 = HeaderStructure::new(
-                    &self.raw_data
-                        [HEADER_1_OFFSET as usize..HEADER_1_OFFSET as usize + HEADER_SIZE],
+                    &self.raw_data[HEADER_1_OFFSET..HEADER_1_OFFSET + HEADER_SIZE],
                 )
                 .ok()?;
                 let h2 = HeaderStructure::new(
-                    &self.raw_data
-                        [HEADER_2_OFFSET as usize..HEADER_2_OFFSET as usize + HEADER_SIZE],
+                    &self.raw_data[HEADER_2_OFFSET..HEADER_2_OFFSET + HEADER_SIZE],
                 )
                 .ok()?;
 
@@ -65,14 +74,14 @@ impl Header {
                     Some(h2)
                 }
             }
-            1 => HeaderStructure::new(
-                &self.raw_data[HEADER_1_OFFSET as usize..HEADER_1_OFFSET as usize + HEADER_SIZE],
-            )
-            .ok(),
-            2 => HeaderStructure::new(
-                &self.raw_data[HEADER_2_OFFSET as usize..HEADER_2_OFFSET as usize + HEADER_SIZE],
-            )
-            .ok(),
+            1 => {
+                HeaderStructure::new(&self.raw_data[HEADER_1_OFFSET..HEADER_1_OFFSET + HEADER_SIZE])
+                    .ok()
+            }
+            2 => {
+                HeaderStructure::new(&self.raw_data[HEADER_2_OFFSET..HEADER_2_OFFSET + HEADER_SIZE])
+                    .ok()
+            }
             _ => None,
         }
     }
@@ -81,10 +90,11 @@ impl Header {
     /// - index = 0: current region table (associated with current header)
     /// - index = 1: region table 1 (at offset 192 KB)
     /// - index = 2: region table 2 (at offset 256 KB)
+    #[must_use]
     pub fn region_table(&self, index: usize) -> Option<RegionTable<'_>> {
         let offset = match index {
-            0 | 1 => REGION_TABLE_1_OFFSET as usize,
-            2 => REGION_TABLE_2_OFFSET as usize,
+            0 | 1 => REGION_TABLE_1_OFFSET,
+            2 => REGION_TABLE_2_OFFSET,
             _ => return None,
         };
         RegionTable::new(&self.raw_data[offset..offset + REGION_TABLE_SIZE]).ok()
@@ -100,21 +110,25 @@ pub struct FileTypeIdentifier<'a> {
 
 impl<'a> FileTypeIdentifier<'a> {
     /// Create from raw data
-    pub fn new(data: &'a [u8]) -> Self {
+    #[must_use]
+    pub const fn new(data: &'a [u8]) -> Self {
         Self { data }
     }
 
     /// Return raw bytes
-    pub fn raw(&self) -> &[u8] {
+    #[must_use]
+    pub const fn raw(&self) -> &[u8] {
         self.data
     }
 
     /// Get the signature
+    #[must_use]
     pub fn signature(&self) -> &[u8] {
         &self.data[0..8]
     }
 
     /// Get the creator string (UTF-16LE, may be empty)
+    #[must_use]
     pub fn creator(&self) -> String {
         // Skip signature (8 bytes), read up to 512 bytes of creator
         let creator_bytes = &self.data[8..8 + 512.min(self.data.len().saturating_sub(8))];
@@ -127,7 +141,8 @@ impl<'a> FileTypeIdentifier<'a> {
         String::from_utf16_lossy(&utf16)
     }
 
-    /// Create new FileTypeIdentifier data with optional creator
+    /// Create new `FileTypeIdentifier` data with optional creator
+    #[must_use]
     pub fn create(creator: Option<&str>) -> Vec<u8> {
         let mut data = vec![0u8; FILE_TYPE_SIZE];
         data[0..8].copy_from_slice(FILE_TYPE_SIGNATURE);
@@ -153,6 +168,10 @@ pub struct HeaderStructure<'a> {
 
 impl<'a> HeaderStructure<'a> {
     /// Create from raw data
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::CorruptedHeader` if the data length is not exactly `HEADER_SIZE`.
     pub fn new(data: &'a [u8]) -> Result<Self> {
         if data.len() != HEADER_SIZE {
             return Err(Error::CorruptedHeader(format!(
@@ -165,21 +184,32 @@ impl<'a> HeaderStructure<'a> {
     }
 
     /// Return raw bytes
-    pub fn raw(&self) -> &[u8] {
+    #[must_use]
+    pub const fn raw(&self) -> &[u8] {
         self.data
     }
 
     /// Get signature (should be "head")
+    #[must_use]
     pub fn signature(&self) -> &[u8] {
         &self.data[0..4]
     }
 
     /// Get checksum (CRC-32C, computed with this field set to 0)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data slice is too short (this should never happen if created via `new`).
+    #[must_use]
     pub fn checksum(&self) -> u32 {
         u32::from_le_bytes(self.data[4..8].try_into().unwrap())
     }
 
     /// Verify the checksum
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidChecksum` if the computed checksum does not match the stored value.
     pub fn verify_checksum(&self) -> Result<()> {
         let expected = self.checksum();
         let actual = crc32c_with_zero_field(self.data, 4, 4);
@@ -190,53 +220,90 @@ impl<'a> HeaderStructure<'a> {
     }
 
     /// Get sequence number (higher is newer)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data slice is too short (this should never happen if created via `new`).
+    #[must_use]
     pub fn sequence_number(&self) -> u64 {
         u64::from_le_bytes(self.data[8..16].try_into().unwrap())
     }
 
     /// Get File Write GUID
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data slice is too short (this should never happen if created via `new`).
+    #[must_use]
     pub fn file_write_guid(&self) -> Guid {
         Guid::from_bytes(self.data[16..32].try_into().unwrap())
     }
 
     /// Get Data Write GUID
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data slice is too short (this should never happen if created via `new`).
+    #[must_use]
     pub fn data_write_guid(&self) -> Guid {
         Guid::from_bytes(self.data[32..48].try_into().unwrap())
     }
 
     /// Get Log GUID
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data slice is too short (this should never happen if created via `new`).
+    #[must_use]
     pub fn log_guid(&self) -> Guid {
         Guid::from_bytes(self.data[48..64].try_into().unwrap())
     }
 
     /// Get Log Version (must be 0)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data slice is too short (this should never happen if created via `new`).
+    #[must_use]
     pub fn log_version(&self) -> u16 {
         u16::from_le_bytes(self.data[64..66].try_into().unwrap())
     }
 
     /// Get Version (must be 1)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data slice is too short (this should never happen if created via `new`).
+    #[must_use]
     pub fn version(&self) -> u16 {
         u16::from_le_bytes(self.data[66..68].try_into().unwrap())
     }
 
     /// Get Log Length
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data slice is too short (this should never happen if created via `new`).
+    #[must_use]
     pub fn log_length(&self) -> u32 {
         u32::from_le_bytes(self.data[68..72].try_into().unwrap())
     }
 
     /// Get Log Offset
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data slice is too short (this should never happen if created via `new`).
+    #[must_use]
     pub fn log_offset(&self) -> u64 {
         u64::from_le_bytes(self.data[72..80].try_into().unwrap())
     }
 
     /// Create a new header
+    #[must_use]
     pub fn create(
-        sequence_number: u64,
-        file_write_guid: Guid,
-        data_write_guid: Guid,
-        log_guid: Guid,
-        log_length: u32,
-        log_offset: u64,
+        sequence_number: u64, file_write_guid: Guid, data_write_guid: Guid, log_guid: Guid,
+        log_length: u32, log_offset: u64,
     ) -> Vec<u8> {
         let mut data = vec![0u8; HEADER_SIZE];
 
@@ -277,6 +344,10 @@ pub struct RegionTable<'a> {
 
 impl<'a> RegionTable<'a> {
     /// Create from raw data
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidRegionTable` if the data length is not exactly `REGION_TABLE_SIZE`.
     pub fn new(data: &'a [u8]) -> Result<Self> {
         if data.len() != REGION_TABLE_SIZE {
             return Err(Error::InvalidRegionTable(format!(
@@ -289,16 +360,19 @@ impl<'a> RegionTable<'a> {
     }
 
     /// Return raw bytes
-    pub fn raw(&self) -> &[u8] {
+    #[must_use]
+    pub const fn raw(&self) -> &[u8] {
         self.data
     }
 
     /// Get the header
+    #[must_use]
     pub fn header(&self) -> RegionTableHeader<'_> {
         RegionTableHeader::new(&self.data[0..16])
     }
 
     /// Get an entry by index
+    #[must_use]
     pub fn entry(&self, index: u32) -> Option<RegionTableEntry<'_>> {
         let header = self.header();
         if index >= header.entry_count() {
@@ -312,12 +386,14 @@ impl<'a> RegionTable<'a> {
     }
 
     /// Get all entries
+    #[must_use]
     pub fn entries(&self) -> Vec<RegionTableEntry<'_>> {
         let count = self.header().entry_count();
         (0..count).filter_map(|i| self.entry(i)).collect()
     }
 
     /// Find entry by GUID
+    #[must_use]
     pub fn find_entry(&self, guid: &Guid) -> Option<RegionTableEntry<'_>> {
         self.entries().into_iter().find(|e| e.guid() == *guid)
     }
@@ -330,26 +406,38 @@ pub struct RegionTableHeader<'a> {
 
 impl<'a> RegionTableHeader<'a> {
     /// Create from raw data
-    pub fn new(data: &'a [u8]) -> Self {
+    #[must_use]
+    pub const fn new(data: &'a [u8]) -> Self {
         Self { data }
     }
 
     /// Return raw bytes
-    pub fn raw(&self) -> &[u8] {
+    #[must_use]
+    pub const fn raw(&self) -> &[u8] {
         self.data
     }
 
     /// Get signature (should be "regi")
+    #[must_use]
     pub fn signature(&self) -> &[u8] {
         &self.data[0..4]
     }
 
     /// Get checksum
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data slice is too short to contain the checksum field.
+    #[must_use]
     pub fn checksum(&self) -> u32 {
         u32::from_le_bytes(self.data[4..8].try_into().unwrap())
     }
 
     /// Verify the checksum
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidChecksum` if the computed checksum does not match the stored value.
     pub fn verify_checksum(&self) -> Result<()> {
         let expected = self.checksum();
         let actual = crc32c_with_zero_field(self.data, 4, 4);
@@ -360,6 +448,11 @@ impl<'a> RegionTableHeader<'a> {
     }
 
     /// Get entry count
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data slice is too short to contain the entry count field.
+    #[must_use]
     pub fn entry_count(&self) -> u32 {
         u32::from_le_bytes(self.data[8..12].try_into().unwrap())
     }
@@ -372,6 +465,10 @@ pub struct RegionTableEntry<'a> {
 
 impl<'a> RegionTableEntry<'a> {
     /// Create from raw data
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidRegionTable` if the data length is not exactly 32 bytes.
     pub fn new(data: &'a [u8]) -> Result<Self> {
         if data.len() != 32 {
             return Err(Error::InvalidRegionTable(
@@ -382,26 +479,47 @@ impl<'a> RegionTableEntry<'a> {
     }
 
     /// Return raw bytes
-    pub fn raw(&self) -> &[u8] {
+    #[must_use]
+    pub const fn raw(&self) -> &[u8] {
         self.data
     }
 
     /// Get GUID
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data slice is too short to contain the GUID field.
+    #[must_use]
     pub fn guid(&self) -> Guid {
         Guid::from_bytes(self.data[0..16].try_into().unwrap())
     }
 
     /// Get file offset (must be 1 MB aligned)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data slice is too short to contain the file offset field.
+    #[must_use]
     pub fn file_offset(&self) -> u64 {
         u64::from_le_bytes(self.data[16..24].try_into().unwrap())
     }
 
     /// Get length (must be 1 MB aligned)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data slice is too short to contain the length field.
+    #[must_use]
     pub fn length(&self) -> u32 {
         u32::from_le_bytes(self.data[24..28].try_into().unwrap())
     }
 
     /// Get required flag
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data slice is too short to contain the required flag field.
+    #[must_use]
     pub fn required(&self) -> bool {
         u32::from_le_bytes(self.data[28..32].try_into().unwrap()) != 0
     }
@@ -437,13 +555,13 @@ mod tests {
             0x4A, 0x08,
         ];
         data[0..16].copy_from_slice(&guid_bytes);
-        data[16..24].copy_from_slice(&0x100000u64.to_le_bytes()); // 1 MB offset
-        data[24..28].copy_from_slice(&0x100000u32.to_le_bytes()); // 1 MB length
+        data[16..24].copy_from_slice(&0x0010_0000_u64.to_le_bytes()); // 1 MB offset
+        data[24..28].copy_from_slice(&0x0010_0000_u32.to_le_bytes()); // 1 MB length
         data[28..32].copy_from_slice(&1u32.to_le_bytes()); // required
 
         let entry = RegionTableEntry::new(&data).unwrap();
-        assert_eq!(entry.file_offset(), 0x100000);
-        assert_eq!(entry.length(), 0x100000);
+        assert_eq!(entry.file_offset(), 0x0010_0000);
+        assert_eq!(entry.length(), 0x0010_0000);
         assert!(entry.required());
     }
 }

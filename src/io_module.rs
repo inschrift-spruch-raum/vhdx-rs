@@ -11,7 +11,7 @@ pub struct IO<'a> {
 
 impl<'a> IO<'a> {
     /// Create a new IO instance
-    pub fn new(file: &'a File) -> Self {
+    pub const fn new(file: &'a File) -> Self {
         Self { file }
     }
 
@@ -21,14 +21,22 @@ impl<'a> IO<'a> {
     /// 1. Calculates which block the sector is in
     /// 2. Looks up the block in BAT
     /// 3. Returns a Sector handle
+    ///
+    /// # Panics
+    ///
+    /// Panics if the sector index within the block cannot fit in a `u32`.
+    /// This should never happen for valid VHDX files with reasonable
+    /// block and sector sizes.
+    #[must_use]
     pub fn sector(&self, sector: u64) -> Option<Sector<'a>> {
-        let sector_size = self.file.logical_sector_size() as u64;
-        let block_size = self.file.block_size() as u64;
+        let sector_size = u64::from(self.file.logical_sector_size());
+        let block_size = u64::from(self.file.block_size());
 
         // Calculate block index and sector index within block
         let sectors_per_block = block_size / sector_size;
         let block_idx = sector / sectors_per_block;
-        let block_sector_idx = (sector % sectors_per_block) as u32;
+        let block_sector_idx = u32::try_from(sector % sectors_per_block)
+            .expect("sector index within block should fit in u32");
 
         // Check if sector is within virtual disk bounds
         let total_sectors = self.file.virtual_disk_size() / sector_size;
@@ -40,11 +48,17 @@ impl<'a> IO<'a> {
             file: self.file,
             block_idx,
             block_sector_idx,
-            sector_size: self.file.logical_sector_size(),
+            size: self.file.logical_sector_size(),
         })
     }
 
     /// Read sectors starting at the given sector number
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The buffer size is not a multiple of the sector size
+    /// - A sector read fails
     pub fn read_sectors(&self, start_sector: u64, buf: &mut [u8]) -> Result<usize> {
         let sector_size = self.file.logical_sector_size() as usize;
         let num_sectors = buf.len() / sector_size;
@@ -76,6 +90,12 @@ impl<'a> IO<'a> {
     }
 
     /// Write sectors starting at the given sector number
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The data size is not a multiple of the sector size
+    /// - The write operation fails (not yet fully implemented)
     pub fn write_sectors(&self, _start_sector: u64, data: &[u8]) -> Result<usize> {
         let sector_size = self.file.logical_sector_size() as usize;
         let _num_sectors = data.len() / sector_size;
@@ -96,49 +116,59 @@ impl<'a> IO<'a> {
 
 /// Sector-level access
 ///
-/// Wraps a PayloadBlock reference and sector index within the block
+/// Wraps a `PayloadBlock` reference and sector index within the block
 pub struct Sector<'a> {
     file: &'a File,
     block_idx: u64,
     block_sector_idx: u32,
-    sector_size: u32,
+    size: u32,
 }
 
-impl<'a> Sector<'a> {
+impl Sector<'_> {
     /// Get the block index
-    pub fn block_idx(&self) -> u64 {
+    #[must_use]
+    pub const fn block_idx(&self) -> u64 {
         self.block_idx
     }
 
     /// Get the sector index within the block
-    pub fn block_sector_idx(&self) -> u32 {
+    #[must_use]
+    pub const fn block_sector_idx(&self) -> u32 {
         self.block_sector_idx
     }
 
     /// Get the global sector number
+    #[must_use]
     pub fn global_sector(&self) -> u64 {
-        let sectors_per_block = (self.file.block_size() / self.sector_size) as u64;
-        self.block_idx * sectors_per_block + self.block_sector_idx as u64
+        let sectors_per_block = u64::from(self.file.block_size() / self.size);
+        self.block_idx * sectors_per_block + u64::from(self.block_sector_idx)
     }
 
     /// Read sector data
     ///
     /// `buf` length must be equal to sector size
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The buffer size does not match the sector size
+    /// - The underlying file read fails
     pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
-        if buf.len() != self.sector_size as usize {
+        if buf.len() != self.size as usize {
             return Err(Error::InvalidParameter(format!(
                 "Buffer size {} does not match sector size {}",
                 buf.len(),
-                self.sector_size
+                self.size
             )));
         }
 
-        let sector_offset = self.global_sector() * self.sector_size as u64;
+        let sector_offset = self.global_sector() * u64::from(self.size);
         self.file.read(sector_offset, buf)
     }
 
-    /// Get the corresponding PayloadBlock
-    pub fn payload(&self) -> PayloadBlock<'_> {
+    /// Get the corresponding `PayloadBlock`
+    #[must_use]
+    pub const fn payload(&self) -> PayloadBlock<'_> {
         PayloadBlock {
             file: self.file,
             block_idx: self.block_idx,
@@ -148,22 +178,27 @@ impl<'a> Sector<'a> {
 
 /// Payload Block
 ///
-/// Internal structure - users access through Sector, not directly
+/// Internal structure - users access through `Sector`, not directly
 pub struct PayloadBlock<'a> {
     file: &'a File,
     block_idx: u64,
 }
 
-impl<'a> PayloadBlock<'a> {
+impl PayloadBlock<'_> {
     /// Get the block index
-    pub fn block_idx(&self) -> u64 {
+    #[must_use]
+    pub const fn block_idx(&self) -> u64 {
         self.block_idx
     }
 
     /// Read data from the block
     /// `offset` is relative to the start of the block
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying file read fails
     pub fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let block_size = self.file.block_size() as u64;
+        let block_size = u64::from(self.file.block_size());
         if offset >= block_size {
             return Ok(0);
         }
@@ -173,15 +208,19 @@ impl<'a> PayloadBlock<'a> {
     }
 
     /// Get the BAT entry for this block
+    #[must_use]
     pub fn bat_entry(&self) -> Option<crate::BatEntry> {
         if let Ok(bat) = self.file.sections().bat() {
-            bat.entry(self.block_idx)
+            usize::try_from(self.block_idx)
+                .ok()
+                .and_then(|idx| bat.entry(idx))
         } else {
             None
         }
     }
 
     /// Check if the block is allocated
+    #[must_use]
     pub fn is_allocated(&self) -> bool {
         if let Some(entry) = self.bat_entry() {
             matches!(

@@ -6,19 +6,29 @@
 //! - Bits 3-19: Reserved (17 bits)
 //! - Bits 20-63: File Offset in MB (44 bits)
 
-use crate::common::constants::*;
+use crate::common::constants::{BAT_ENTRY_SIZE, CHUNK_RATIO_CONSTANT, MB};
 use crate::error::{Error, Result};
 
 /// BAT Section
 pub struct Bat {
     raw_data: Vec<u8>,
-    entry_count: u64,
+    entry_count: usize,
 }
 
 impl Bat {
     /// Create a new BAT from raw data
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidFile` if the provided data is too small for the entry count
+    /// or if `entry_count` exceeds `usize::MAX`
     pub fn new(data: Vec<u8>, entry_count: u64) -> Result<Self> {
-        let expected_size = entry_count as usize * BAT_ENTRY_SIZE;
+        let entry_count: usize = entry_count.try_into().map_err(|_| {
+            Error::InvalidFile(format!("entry_count {entry_count} exceeds usize::MAX"))
+        })?;
+        let expected_size = entry_count
+            .checked_mul(BAT_ENTRY_SIZE)
+            .ok_or_else(|| Error::InvalidFile("BAT size overflow".to_string()))?;
         if data.len() < expected_size {
             return Err(Error::InvalidFile(format!(
                 "BAT data too small: expected at least {} bytes, got {}",
@@ -33,16 +43,18 @@ impl Bat {
     }
 
     /// Return the complete BAT raw bytes
+    #[must_use]
     pub fn raw(&self) -> &[u8] {
         &self.raw_data
     }
 
     /// Get a BAT entry by index
-    pub fn entry(&self, index: u64) -> Option<BatEntry> {
+    #[must_use]
+    pub fn entry(&self, index: usize) -> Option<BatEntry> {
         if index >= self.entry_count {
             return None;
         }
-        let offset = index as usize * BAT_ENTRY_SIZE;
+        let offset = index * BAT_ENTRY_SIZE;
         let raw_value = u64::from_le_bytes([
             self.raw_data[offset],
             self.raw_data[offset + 1],
@@ -58,7 +70,8 @@ impl Bat {
     }
 
     /// Get all BAT entries
-    pub fn entries(&self) -> BatEntryIter<'_> {
+    #[must_use]
+    pub const fn entries(&self) -> BatEntryIter<'_> {
         BatEntryIter {
             bat: self,
             current: 0,
@@ -67,35 +80,41 @@ impl Bat {
     }
 
     /// Get the number of entries
-    pub fn len(&self) -> usize {
-        self.entry_count as usize
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.entry_count
     }
 
     /// Check if BAT is empty
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.entry_count == 0
     }
 
-    /// Calculate chunk ratio: (2^23 * LogicalSectorSize) / BlockSize
+    /// Calculate chunk ratio: (2^23 * `LogicalSectorSize`) / `BlockSize`
+    #[must_use]
     pub fn calculate_chunk_ratio(logical_sector_size: u32, block_size: u32) -> u32 {
-        ((CHUNK_RATIO_CONSTANT * logical_sector_size as u64) / block_size as u64) as u32
+        let result =
+            (CHUNK_RATIO_CONSTANT * u64::from(logical_sector_size)) / u64::from(block_size);
+        result.try_into().unwrap_or(u32::MAX)
     }
 
     /// Calculate the number of payload blocks from virtual disk size
+    #[must_use]
     pub fn calculate_payload_blocks(virtual_disk_size: u64, block_size: u32) -> u64 {
-        virtual_disk_size.div_ceil(block_size as u64)
+        virtual_disk_size.div_ceil(u64::from(block_size))
     }
 
     /// Calculate the number of sector bitmap blocks
+    #[must_use]
     pub fn calculate_sector_bitmap_blocks(payload_blocks: u64, chunk_ratio: u32) -> u64 {
-        payload_blocks.div_ceil(chunk_ratio as u64)
+        payload_blocks.div_ceil(u64::from(chunk_ratio))
     }
 
     /// Calculate total BAT entries (payload + sector bitmap)
+    #[must_use]
     pub fn calculate_total_entries(
-        virtual_disk_size: u64,
-        block_size: u32,
-        logical_sector_size: u32,
+        virtual_disk_size: u64, block_size: u32, logical_sector_size: u32,
     ) -> u64 {
         let payload_blocks = Self::calculate_payload_blocks(virtual_disk_size, block_size);
         let chunk_ratio = Self::calculate_chunk_ratio(logical_sector_size, block_size);
@@ -108,12 +127,12 @@ impl Bat {
 /// Iterator over BAT entries
 pub struct BatEntryIter<'a> {
     bat: &'a Bat,
-    current: u64,
-    end: u64,
+    current: usize,
+    end: usize,
 }
 
-impl<'a> Iterator for BatEntryIter<'a> {
-    type Item = (u64, BatEntry);
+impl Iterator for BatEntryIter<'_> {
+    type Item = (usize, BatEntry);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.current >= self.end {
@@ -137,6 +156,10 @@ pub struct BatEntry {
 
 impl BatEntry {
     /// Create from raw 64-bit value
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidBlockState` if the state bits represent a reserved state (4 or 5)
     pub fn from_raw(raw: u64) -> std::result::Result<Self, Error> {
         let state_bits = (raw & 0x7) as u8;
         let offset_mb = raw >> 20;
@@ -150,18 +173,21 @@ impl BatEntry {
     }
 
     /// Convert to raw 64-bit value
+    #[must_use]
     pub fn raw(&self) -> u64 {
-        let state_bits = self.state.to_bits() as u64;
+        let state_bits = u64::from(self.state.to_bits());
         (self.file_offset_mb << 20) | state_bits
     }
 
     /// Get the file offset in bytes
-    pub fn file_offset(&self) -> u64 {
+    #[must_use]
+    pub const fn file_offset(&self) -> u64 {
         self.file_offset_mb * MB
     }
 
     /// Create a new entry
-    pub fn new(state: BatState, file_offset_mb: u64) -> Self {
+    #[must_use]
+    pub const fn new(state: BatState, file_offset_mb: u64) -> Self {
         Self {
             state,
             file_offset_mb,
@@ -170,7 +196,7 @@ impl BatEntry {
 }
 
 /// BAT State - determines the type and state of the entry
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BatState {
     /// Payload block state
     Payload(PayloadBlockState),
@@ -179,28 +205,32 @@ pub enum BatState {
 }
 
 impl BatState {
-    /// Parse from 3-bit state value
+    /// Parse from 3-bit value
     ///
     /// Per MS-VHDX spec, states 4 and 5 are reserved and should be treated as errors
-    pub fn from_bits(bits: u8) -> std::result::Result<Self, Error> {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidBlockState` if the bits represent a reserved state (4 or 5)
+    pub const fn from_bits(bits: u8) -> std::result::Result<Self, Error> {
         match bits {
-            0 | 1 | 2 | 3 | 6 | 7 => Ok(BatState::Payload(PayloadBlockState::from_bits(bits))),
-            4 | 5 => Err(Error::InvalidBlockState(bits)),
+            0 | 1 | 2 | 3 | 6 | 7 => Ok(Self::Payload(PayloadBlockState::from_bits(bits))),
             _ => Err(Error::InvalidBlockState(bits)),
         }
     }
 
     /// Convert to 3-bit state value
-    pub fn to_bits(&self) -> u8 {
+    #[must_use]
+    pub const fn to_bits(&self) -> u8 {
         match self {
-            BatState::Payload(state) => state.to_bits(),
-            BatState::SectorBitmap(state) => state.to_bits(),
+            Self::Payload(state) => state.to_bits(),
+            Self::SectorBitmap(state) => state.to_bits(),
         }
     }
 }
 
 /// Payload Block State
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PayloadBlockState {
     /// Block is not present (not allocated)
     NotPresent = 0,
@@ -220,21 +250,22 @@ impl PayloadBlockState {
     /// Parse from 3-bit value
     ///
     /// Note: States 4 and 5 are reserved per MS-VHDX spec and should not be used.
-    /// They are handled as errors at the BatState level.
-    pub fn from_bits(bits: u8) -> Self {
+    /// They are handled as errors at the `BatState` level.
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
         match bits {
-            0 => Self::NotPresent,
             1 => Self::Undefined,
             2 => Self::Zero,
             3 => Self::Unmapped,
             6 => Self::FullyPresent,
             7 => Self::PartiallyPresent,
-            _ => Self::NotPresent, // Fallback for invalid states
+            _ => Self::NotPresent, // 0 and invalid states (4, 5, 8+)
         }
     }
 
     /// Convert to 3-bit value
-    pub fn to_bits(&self) -> u8 {
+    #[must_use]
+    pub const fn to_bits(&self) -> u8 {
         match self {
             Self::NotPresent => 0,
             Self::Undefined => 1,
@@ -246,12 +277,14 @@ impl PayloadBlockState {
     }
 
     /// Check if the block is allocated
-    pub fn is_allocated(&self) -> bool {
+    #[must_use]
+    pub const fn is_allocated(&self) -> bool {
         matches!(self, Self::FullyPresent | Self::PartiallyPresent)
     }
 
     /// Check if the block needs to be read from file
-    pub fn needs_read(&self) -> bool {
+    #[must_use]
+    pub const fn needs_read(&self) -> bool {
         matches!(
             self,
             Self::FullyPresent | Self::PartiallyPresent | Self::Undefined
@@ -260,7 +293,7 @@ impl PayloadBlockState {
 }
 
 /// Sector Bitmap Block State (for differencing disks)
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SectorBitmapState {
     /// Sector bitmap block is not present
     NotPresent = 0,
@@ -270,16 +303,17 @@ pub enum SectorBitmapState {
 
 impl SectorBitmapState {
     /// Parse from 3-bit value
-    pub fn from_bits(bits: u8) -> Self {
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
         match bits {
-            0 => Self::NotPresent,
             6 => Self::Present,
-            _ => Self::NotPresent,
+            _ => Self::NotPresent, // 0 and invalid states
         }
     }
 
     /// Convert to 3-bit value
-    pub fn to_bits(&self) -> u8 {
+    #[must_use]
+    pub const fn to_bits(&self) -> u8 {
         match self {
             Self::NotPresent => 0,
             Self::Present => 6,

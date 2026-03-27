@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "vhdx-tool")]
@@ -113,7 +113,7 @@ fn main() {
 
     match cli.command {
         Commands::Info { file, format } => {
-            cmd_info(file, format);
+            cmd_info(&file, format);
         }
         Commands::Create {
             path,
@@ -123,28 +123,28 @@ fn main() {
             parent,
             force,
         } => {
-            cmd_create(path, size, r#type, block_size, parent, force);
+            cmd_create(&path, &size, r#type, &block_size, parent.as_deref(), force);
         }
         Commands::Check {
             file,
             repair,
             log_replay,
         } => {
-            cmd_check(file, repair, log_replay);
+            cmd_check(&file, repair, log_replay);
         }
         Commands::Sections { file, section } => {
-            cmd_sections(file, section);
+            cmd_sections(&file, section);
         }
         Commands::Diff { file, command } => {
-            cmd_diff(file, command);
+            cmd_diff(&file, command);
         }
         Commands::Repair { file, dry_run } => {
-            cmd_repair(file, dry_run);
+            cmd_repair(&file, dry_run);
         }
     }
 }
 
-fn cmd_info(file: PathBuf, format: OutputFormat) {
+fn cmd_info(file: &Path, format: OutputFormat) {
     use vhdx_rs::File;
 
     // Open with read-only access (default)
@@ -186,13 +186,13 @@ fn cmd_info(file: PathBuf, format: OutputFormat) {
                             println!("  Has Parent: {}", fp.has_parent());
                         }
                         if let Some(disk_id) = items.virtual_disk_id() {
-                            println!("\nVirtual Disk ID: {}", disk_id);
+                            println!("\nVirtual Disk ID: {disk_id}");
                         }
                     }
                 }
                 OutputFormat::Json => {
                     println!("{{");
-                    println!("  \"path\": {:?},", file);
+                    println!("  \"path\": \"{}\",", file.display());
                     println!("  \"virtual_size\": {},", vhdx_file.virtual_disk_size());
                     println!("  \"block_size\": {},", vhdx_file.block_size());
                     println!(
@@ -210,7 +210,7 @@ fn cmd_info(file: PathBuf, format: OutputFormat) {
                 eprintln!("Error: File has pending log entries from interrupted write.");
                 eprintln!("Run: vhdx-tool repair <file> to fix the file.");
             } else {
-                eprintln!("Error opening VHDX file: {}", e);
+                eprintln!("Error opening VHDX file: {e}");
             }
             std::process::exit(1);
         }
@@ -218,11 +218,7 @@ fn cmd_info(file: PathBuf, format: OutputFormat) {
 }
 
 fn cmd_create(
-    path: PathBuf,
-    size: String,
-    disk_type: DiskType,
-    block_size: String,
-    parent: Option<PathBuf>,
+    path: &Path, size: &str, disk_type: DiskType, block_size: &str, parent: Option<&Path>,
     force: bool,
 ) {
     use vhdx_rs::File;
@@ -236,14 +232,14 @@ fn cmd_create(
     // Parse size
     let size_bytes = parse_size(&size);
     if size_bytes == 0 {
-        eprintln!("Error: Invalid size format: {}", size);
+        eprintln!("Error: Invalid size format: {size}");
         std::process::exit(1);
     }
 
     // Parse block size
     let block_size_bytes = parse_size(&block_size);
     if block_size_bytes == 0 || !block_size_bytes.is_power_of_two() {
-        eprintln!("Error: Invalid block size: {}", block_size);
+        eprintln!("Error: Invalid block size: {block_size}");
         std::process::exit(1);
     }
 
@@ -260,7 +256,7 @@ fn cmd_create(
         .size(size_bytes)
         .fixed(fixed)
         .has_parent(has_parent)
-        .block_size(block_size_bytes as u32)
+        .block_size(u32::try_from(block_size_bytes).unwrap_or(0))
         .finish()
     {
         Ok(_) => {
@@ -282,13 +278,13 @@ fn cmd_create(
             }
         }
         Err(e) => {
-            eprintln!("Error creating VHDX file: {}", e);
+            eprintln!("Error creating VHDX file: {e}");
             std::process::exit(1);
         }
     }
 }
 
-fn cmd_check(file: PathBuf, repair: bool, log_replay: bool) {
+fn cmd_check(file: &Path, repair: bool, log_replay: bool) {
     use vhdx_rs::File;
 
     println!("Checking VHDX file: {}", file.display());
@@ -315,13 +311,13 @@ fn cmd_check(file: PathBuf, repair: bool, log_replay: bool) {
             println!("\nFile check completed successfully");
         }
         Err(e) => {
-            eprintln!("✗ Error checking VHDX file: {}", e);
+            eprintln!("✗ Error checking VHDX file: {e}");
             std::process::exit(1);
         }
     }
 }
 
-fn cmd_sections(file: PathBuf, section: SectionCommand) {
+fn cmd_sections(file: &Path, section: SectionCommand) {
     use vhdx_rs::File;
 
     match File::open(&file).finish() {
@@ -350,7 +346,7 @@ fn cmd_sections(file: PathBuf, section: SectionCommand) {
                     vhdx_file.block_size(),
                     vhdx_file.logical_sector_size(),
                 );
-                println!("Total BAT Entries: {}", bat_entries);
+                println!("Total BAT Entries: {bat_entries}");
                 println!("\nNote: Full BAT listing not yet implemented");
             }
             SectionCommand::Metadata => {
@@ -364,16 +360,16 @@ fn cmd_sections(file: PathBuf, section: SectionCommand) {
                         println!("Has Parent: {}", fp.has_parent());
                     }
                     if let Some(size) = items.virtual_disk_size() {
-                        println!("Virtual Disk Size: {} bytes", size);
+                        println!("Virtual Disk Size: {size} bytes");
                     }
                     if let Some(id) = items.virtual_disk_id() {
-                        println!("Virtual Disk ID: {}", id);
+                        println!("Virtual Disk ID: {id}");
                     }
                     if let Some(sector_size) = items.logical_sector_size() {
-                        println!("Logical Sector Size: {} bytes", sector_size);
+                        println!("Logical Sector Size: {sector_size} bytes");
                     }
                     if let Some(phys_size) = items.physical_sector_size() {
-                        println!("Physical Sector Size: {} bytes", phys_size);
+                        println!("Physical Sector Size: {phys_size} bytes");
                     }
                 }
             }
@@ -384,13 +380,13 @@ fn cmd_sections(file: PathBuf, section: SectionCommand) {
             }
         },
         Err(e) => {
-            eprintln!("Error opening VHDX file: {}", e);
+            eprintln!("Error opening VHDX file: {e}");
             std::process::exit(1);
         }
     }
 }
 
-fn cmd_diff(file: PathBuf, command: DiffCommand) {
+fn cmd_diff(file: &Path, command: DiffCommand) {
     use vhdx_rs::File;
 
     match File::open(&file).finish() {
@@ -405,7 +401,7 @@ fn cmd_diff(file: PathBuf, command: DiffCommand) {
                             if let Some(key) = entry.key(locator.key_value_data())
                                 && let Some(value) = entry.value(locator.key_value_data())
                             {
-                                println!("  [{}] {}: {}", i, key, value);
+                                println!("  [{i}] {key}: {value}");
                             }
                         }
                     }
@@ -424,13 +420,13 @@ fn cmd_diff(file: PathBuf, command: DiffCommand) {
             }
         },
         Err(e) => {
-            eprintln!("Error opening VHDX file: {}", e);
+            eprintln!("Error opening VHDX file: {e}");
             std::process::exit(1);
         }
     }
 }
 
-fn cmd_repair(file: PathBuf, dry_run: bool) {
+fn cmd_repair(file: &Path, dry_run: bool) {
     use vhdx_rs::Error;
     use vhdx_rs::File;
 
@@ -449,7 +445,7 @@ fn cmd_repair(file: PathBuf, dry_run: bool) {
                 return;
             }
             Err(e) => {
-                eprintln!("Error: {}", e);
+                eprintln!("Error: {e}");
                 std::process::exit(1);
             }
         }
@@ -468,7 +464,7 @@ fn cmd_repair(file: PathBuf, dry_run: bool) {
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("Error repairing VHDX file: {}", e);
+            eprintln!("Error repairing VHDX file: {e}");
             std::process::exit(1);
         }
     }
@@ -476,23 +472,23 @@ fn cmd_repair(file: PathBuf, dry_run: bool) {
 
 fn parse_size(size_str: &str) -> u64 {
     let size_str = size_str.trim().to_uppercase();
-    let multiplier = if size_str.ends_with("T") {
+    let multiplier = if size_str.ends_with('T') {
         1024u64 * 1024 * 1024 * 1024
-    } else if size_str.ends_with("G") {
+    } else if size_str.ends_with('G') {
         1024 * 1024 * 1024
-    } else if size_str.ends_with("M") {
+    } else if size_str.ends_with('M') {
         1024 * 1024
-    } else if size_str.ends_with("K") {
+    } else if size_str.ends_with('K') {
         1024
     } else {
         1
     };
 
-    let number_part = if size_str.ends_with("T")
-        || size_str.ends_with("G")
-        || size_str.ends_with("M")
-        || size_str.ends_with("K")
-        || size_str.ends_with("B")
+    let number_part = if size_str.ends_with('T')
+        || size_str.ends_with('G')
+        || size_str.ends_with('M')
+        || size_str.ends_with('K')
+        || size_str.ends_with('B')
     {
         &size_str[..size_str.len() - 1]
     } else {
@@ -504,6 +500,8 @@ fn parse_size(size_str: &str) -> u64 {
 
 fn human_readable_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    // Note: u64 to f64 cast can lose precision for values > 2^53 (~9 PB).
+    // This is acceptable for human-readable sizes as TB/PB displays don't need byte-level precision.
     let mut size = bytes as f64;
     let mut unit_index = 0;
 

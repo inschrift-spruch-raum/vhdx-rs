@@ -3,8 +3,8 @@
 use std::cell::RefCell;
 use std::io::{Read, Seek, SeekFrom};
 
-use crate::common::constants::*;
-use crate::error::Result;
+use crate::common::constants::HEADER_SECTION_SIZE;
+use crate::error::{Error, Result};
 
 mod bat;
 mod header;
@@ -28,6 +28,10 @@ pub struct Metadata {
 
 impl Metadata {
     /// Create from raw data
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the metadata cannot be parsed from the raw data.
     pub fn new(data: Vec<u8>) -> Result<Self> {
         Ok(Self {
             inner: metadata::Metadata::new(data)?,
@@ -35,16 +39,19 @@ impl Metadata {
     }
 
     /// Return the complete raw bytes
+    #[must_use]
     pub fn raw(&self) -> &[u8] {
         self.inner.raw()
     }
 
     /// Access the Metadata Table
+    #[must_use]
     pub fn table(&self) -> crate::sections::metadata::MetadataTable<'_> {
         self.inner.table()
     }
 
     /// Access the Metadata Items
+    #[must_use]
     pub fn items(&self) -> MetadataItems<'_> {
         self.inner.items()
     }
@@ -57,36 +64,70 @@ pub struct Log {
 
 impl Log {
     /// Create from raw data
-    pub fn new(data: Vec<u8>) -> Self {
+    #[must_use]
+    pub const fn new(data: Vec<u8>) -> Self {
         Self {
             inner: log::Log::new(data),
         }
     }
 
     /// Return the complete raw bytes
+    #[must_use]
     pub fn raw(&self) -> &[u8] {
         self.inner.raw()
     }
 
     /// Get a log entry by index
-    pub fn entry(&self, index: usize) -> Option<LogEntry<'_>> {
+    #[must_use]
+    pub const fn entry(&self, index: usize) -> Option<LogEntry<'_>> {
         self.inner.entry(index)
     }
 
     /// Get all valid log entries
+    #[must_use]
     pub fn entries(&self) -> Vec<LogEntry<'_>> {
         self.inner.entries()
     }
 
     /// Check if log replay is required
+    #[must_use]
     pub fn is_replay_required(&self) -> bool {
         self.inner.is_replay_required()
     }
 
     /// Replay log entries to recover from crash
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The log entries cannot be replayed
+    /// - File write operations fail
     pub fn replay(&self, file: &mut std::fs::File) -> Result<()> {
         self.inner.replay(file)
     }
+}
+
+/// Configuration for creating a new Sections container
+///
+/// This struct groups all parameters needed to initialize a `Sections` container,
+/// avoiding the need for too many individual arguments.
+pub struct SectionsConfig {
+    /// The file handle to read sections from
+    pub file: std::fs::File,
+    /// BAT section offset in bytes
+    pub bat_offset: u64,
+    /// BAT section size in bytes
+    pub bat_size: u64,
+    /// Metadata section offset in bytes
+    pub metadata_offset: u64,
+    /// Metadata section size in bytes
+    pub metadata_size: u64,
+    /// Log section offset in bytes
+    pub log_offset: u64,
+    /// Log section size in bytes
+    pub log_size: u64,
+    /// Number of BAT entries (calculated from metadata)
+    pub entry_count: u64,
 }
 
 /// Sections container with lazy loading
@@ -115,36 +156,41 @@ pub struct Sections {
 
 impl Sections {
     /// Create a new Sections container
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        file: std::fs::File,
-        bat_offset: u64,
-        bat_size: u64,
-        metadata_offset: u64,
-        metadata_size: u64,
-        log_offset: u64,
-        log_size: u64,
-        entry_count: u64,
-    ) -> Self {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the section offsets or sizes are invalid (would cause overflow).
+    #[must_use]
+    pub fn new(config: SectionsConfig) -> Self {
         Self {
-            file,
+            file: config.file,
             header: RefCell::new(None),
             bat: RefCell::new(None),
             metadata: RefCell::new(None),
             log: RefCell::new(None),
-            bat_offset,
-            bat_size,
-            metadata_offset,
-            metadata_size,
-            log_offset,
-            log_size,
-            entry_count,
+            bat_offset: config.bat_offset,
+            bat_size: config.bat_size,
+            metadata_offset: config.metadata_offset,
+            metadata_size: config.metadata_size,
+            log_offset: config.log_offset,
+            log_size: config.log_size,
+            entry_count: config.entry_count,
         }
     }
 
     /// Access Header Section (lazy loading)
     ///
     /// The Header Section is always at offset 0 and is 1 MB in size.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The header section cannot be read
+    /// - The header data is invalid
+    ///
+    /// # Panics
+    ///
+    /// Panics if the header section was not properly initialized.
     pub fn header(&self) -> Result<std::cell::Ref<'_, Header>> {
         if self.header.borrow().is_none() {
             let header_data = self.read_header_section()?;
@@ -156,9 +202,22 @@ impl Sections {
     }
 
     /// Access BAT Section (lazy loading)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The BAT section cannot be read
+    /// - The BAT data is invalid
+    ///
+    /// # Panics
+    ///
+    /// Panics if the BAT section was not properly initialized.
     pub fn bat(&self) -> Result<std::cell::Ref<'_, Bat>> {
         if self.bat.borrow().is_none() {
-            let bat_data = self.read_section(self.bat_offset, self.bat_size as usize)?;
+            let bat_size: usize = self.bat_size.try_into().map_err(|_| {
+                Error::InvalidFile(format!("BAT size {} exceeds usize::MAX", self.bat_size))
+            })?;
+            let bat_data = self.read_section(self.bat_offset, bat_size)?;
             *self.bat.borrow_mut() = Some(Bat::new(bat_data, self.entry_count)?);
         }
         Ok(std::cell::Ref::map(self.bat.borrow(), |b| {
@@ -167,10 +226,25 @@ impl Sections {
     }
 
     /// Access Metadata Section (lazy loading)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The metadata section cannot be read
+    /// - The metadata cannot be parsed
+    ///
+    /// # Panics
+    ///
+    /// Panics if the metadata section was not properly initialized.
     pub fn metadata(&self) -> Result<std::cell::Ref<'_, Metadata>> {
         if self.metadata.borrow().is_none() {
-            let metadata_data =
-                self.read_section(self.metadata_offset, self.metadata_size as usize)?;
+            let metadata_size: usize = self.metadata_size.try_into().map_err(|_| {
+                Error::InvalidFile(format!(
+                    "Metadata size {} exceeds usize::MAX",
+                    self.metadata_size
+                ))
+            })?;
+            let metadata_data = self.read_section(self.metadata_offset, metadata_size)?;
             *self.metadata.borrow_mut() = Some(Metadata::new(metadata_data)?);
         }
         Ok(std::cell::Ref::map(self.metadata.borrow(), |m| {
@@ -179,9 +253,24 @@ impl Sections {
     }
 
     /// Access Log Section (lazy loading)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The log section cannot be read
+    /// - The log data is invalid
+    ///
+    /// # Panics
+    ///
+    /// Panics if the log section was not properly initialized (this should not happen
+    /// under normal circumstances as the lazy initialization ensures the log is loaded
+    /// before access).
     pub fn log(&self) -> Result<std::cell::Ref<'_, Log>> {
         if self.log.borrow().is_none() {
-            let log_data = self.read_section(self.log_offset, self.log_size as usize)?;
+            let log_size: usize = self.log_size.try_into().map_err(|_| {
+                Error::InvalidFile(format!("Log size {} exceeds usize::MAX", self.log_size))
+            })?;
+            let log_data = self.read_section(self.log_offset, log_size)?;
             *self.log.borrow_mut() = Some(Log::new(log_data));
         }
         Ok(std::cell::Ref::map(self.log.borrow(), |l| {
