@@ -468,6 +468,14 @@ impl File {
         // Validate parameters
         Self::validate_create_params(virtual_size, block_size, logical_sector_size)?;
 
+        // Check if file already exists
+        if path.exists() {
+            return Err(Error::InvalidParameter(format!(
+                "File already exists: {}",
+                path.display()
+            )));
+        }
+
         // Create the file
         let mut file = StdOpenOptions::new()
             .read(true)

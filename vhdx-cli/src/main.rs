@@ -29,16 +29,13 @@ enum Commands {
         size: String,
         /// Disk type
         #[arg(short, long, value_enum, default_value = "dynamic")]
-        r#type: DiskType,
+        disk_type: DiskType,
         /// Block size (e.g., 32M)
         #[arg(short, long, default_value = "32M")]
         block_size: String,
         /// Parent disk path (for differencing disks)
         #[arg(short, long)]
         parent: Option<PathBuf>,
-        /// Force overwrite if file exists
-        #[arg(short, long)]
-        force: bool,
     },
     /// Check file integrity
     Check {
@@ -118,12 +115,11 @@ fn main() {
         Commands::Create {
             path,
             size,
-            r#type,
+            disk_type,
             block_size,
             parent,
-            force,
         } => {
-            cmd_create(&path, &size, r#type, &block_size, parent.as_deref(), force);
+            cmd_create(&path, &size, disk_type, &block_size, parent.as_deref());
         }
         Commands::Check {
             file,
@@ -221,15 +217,8 @@ fn cmd_info(file: &Path, format: OutputFormat) {
 
 fn cmd_create(
     path: &Path, size: &str, disk_type: DiskType, block_size: &str, parent: Option<&Path>,
-    force: bool,
 ) {
     use vhdx_rs::File;
-
-    // Check if file exists and --force not specified
-    if path.exists() && !force {
-        eprintln!("Error: File already exists. Use --force to overwrite.");
-        std::process::exit(1);
-    }
 
     // Parse size
     let size_bytes = parse_size(&size);
