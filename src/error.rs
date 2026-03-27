@@ -50,8 +50,13 @@ pub enum Error {
     ParentMismatch { expected: Guid, actual: Guid },
 
     /// Log replay required
+    ///
+    /// This error is returned when attempting write operations on a file
+    /// with pending log entries that was opened in write mode but log replay
+    /// failed or was not performed. For read-only access, use `has_pending_logs()`
+    /// to check for pending logs without triggering this error.
     #[error(
-        "Log replay required: The VHDX file has pending changes from an interrupted write. Open with write access to replay the log and recover the file."
+        "Log replay required: The VHDX file has pending changes from an interrupted write. Run 'vhdx-tool repair <file>' to replay the log and recover the file."
     )]
     LogReplayRequired,
 

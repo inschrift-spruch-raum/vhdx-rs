@@ -32,6 +32,9 @@ pub struct File {
     logical_sector_size: u32,
     is_fixed: bool,
     has_parent: bool,
+    /// Indicates whether there are pending log entries that need replay
+    /// This is set when opening in read-only mode with pending logs
+    has_pending_logs: bool,
 }
 
 impl File {
@@ -99,6 +102,15 @@ impl File {
     /// Returns `true` if this disk has a parent (is a differencing disk).
     pub const fn has_parent(&self) -> bool {
         self.has_parent
+    }
+
+    /// Check if this file has pending log entries that need replay
+    ///
+    /// This returns true when the file was opened in read-only mode and
+    /// there are pending log entries that would normally require log replay.
+    /// Run `vhdx-tool repair <file>` to replay the logs and fix the file.
+    pub const fn has_pending_logs(&self) -> bool {
+        self.has_pending_logs
     }
 
     /// Read data from the virtual disk at the given offset
@@ -291,7 +303,8 @@ impl File {
         });
 
         // Handle log replay if required
-        Self::handle_log_replay(&mut file, &sections, &current_header, writable)?;
+        let has_pending_logs =
+            Self::handle_log_replay(&mut file, &sections, &current_header, writable)?;
 
         Ok(Self {
             inner: file,
@@ -301,6 +314,7 @@ impl File {
             logical_sector_size,
             is_fixed,
             has_parent,
+            has_pending_logs,
         })
     }
 
@@ -395,10 +409,13 @@ impl File {
     }
 
     /// Handle log replay if required
+    ///
+    /// Returns `true` if there are pending logs that need replay but couldn't be replayed
+    /// (because the file is opened read-only), `false` otherwise.
     fn handle_log_replay(
         file: &mut StdFile, sections: &Sections,
         current_header: &crate::sections::HeaderStructure<'_>, writable: bool,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         // Check if log replay is required (per MS-VHDX spec section 2.3.3)
         // Note: Log replay is only needed if the log GUID in the header is not nil
         // and there are pending log entries
@@ -406,9 +423,9 @@ impl File {
             let log = sections.log()?;
             if (*log).is_replay_required() {
                 if !writable {
-                    // Store the pending log status but don't fail immediately
-                    // This allows read-only operations that don't access log to work
-                    // The actual error will be raised when log() is called
+                    // In read-only mode, we can't replay logs, but we allow the file to open
+                    // The caller can check has_pending_logs() to warn the user
+                    return Ok(true);
                 }
                 // Replay the log to recover from crash
                 (*log).replay(file)?;
@@ -433,7 +450,7 @@ impl File {
                 file.sync_all()?;
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     /// Create a new VHDX file with the given options
