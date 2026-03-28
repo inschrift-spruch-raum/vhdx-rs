@@ -110,7 +110,7 @@ fn main() {
 
     match cli.command {
         Commands::Info { file, format } => {
-            cmd_info(&file, format);
+            cmd_info(&file, &format);
         }
         Commands::Create {
             path,
@@ -119,7 +119,7 @@ fn main() {
             block_size,
             parent,
         } => {
-            cmd_create(&path, &size, disk_type, &block_size, parent.as_deref());
+            cmd_create(&path, &size, &disk_type, &block_size, parent.as_deref());
         }
         Commands::Check {
             file,
@@ -129,10 +129,10 @@ fn main() {
             cmd_check(&file, repair, log_replay);
         }
         Commands::Sections { file, section } => {
-            cmd_sections(&file, section);
+            cmd_sections(&file, &section);
         }
         Commands::Diff { file, command } => {
-            cmd_diff(&file, command);
+            cmd_diff(&file, &command);
         }
         Commands::Repair { file, dry_run } => {
             cmd_repair(&file, dry_run);
@@ -140,11 +140,11 @@ fn main() {
     }
 }
 
-fn cmd_info(file: &Path, format: OutputFormat) {
+fn cmd_info(file: &Path, format: &OutputFormat) {
     use vhdx_rs::File;
 
     // Open with read-only access (default)
-    match File::open(&file).finish() {
+    match File::open(file).finish() {
         Ok(vhdx_file) => {
             // Show warning if there are pending log entries
             if vhdx_file.has_pending_logs() {
@@ -216,19 +216,19 @@ fn cmd_info(file: &Path, format: OutputFormat) {
 }
 
 fn cmd_create(
-    path: &Path, size: &str, disk_type: DiskType, block_size: &str, parent: Option<&Path>,
+    path: &Path, size: &str, disk_type: &DiskType, block_size: &str, parent: Option<&Path>,
 ) {
     use vhdx_rs::File;
 
     // Parse size
-    let size_bytes = parse_size(&size);
+    let size_bytes = parse_size(size);
     if size_bytes == 0 {
         eprintln!("Error: Invalid size format: {size}");
         std::process::exit(1);
     }
 
     // Parse block size
-    let block_size_bytes = parse_size(&block_size);
+    let block_size_bytes = parse_size(block_size);
     if block_size_bytes == 0 || !block_size_bytes.is_power_of_two() {
         eprintln!("Error: Invalid block size: {block_size}");
         std::process::exit(1);
@@ -243,7 +243,7 @@ fn cmd_create(
         std::process::exit(1);
     }
 
-    match File::create(&path)
+    match File::create(path)
         .size(size_bytes)
         .fixed(fixed)
         .has_parent(has_parent)
@@ -280,7 +280,7 @@ fn cmd_check(file: &Path, repair: bool, log_replay: bool) {
 
     println!("Checking VHDX file: {}", file.display());
 
-    match File::open(&file).finish() {
+    match File::open(file).finish() {
         Ok(vhdx_file) => {
             // Show warning if there are pending log entries
             if vhdx_file.has_pending_logs() {
@@ -315,10 +315,10 @@ fn cmd_check(file: &Path, repair: bool, log_replay: bool) {
     }
 }
 
-fn cmd_sections(file: &Path, section: SectionCommand) {
+fn cmd_sections(file: &Path, section: &SectionCommand) {
     use vhdx_rs::File;
 
-    match File::open(&file).finish() {
+    match File::open(file).finish() {
         Ok(vhdx_file) => {
             // Show warning if there are pending log entries
             if vhdx_file.has_pending_logs() {
@@ -393,10 +393,10 @@ fn cmd_sections(file: &Path, section: SectionCommand) {
     }
 }
 
-fn cmd_diff(file: &Path, command: DiffCommand) {
+fn cmd_diff(file: &Path, command: &DiffCommand) {
     use vhdx_rs::File;
 
-    match File::open(&file).finish() {
+    match File::open(file).finish() {
         Ok(vhdx_file) => {
             // Show warning if there are pending log entries
             if vhdx_file.has_pending_logs() {
@@ -451,7 +451,7 @@ fn cmd_repair(file: &Path, dry_run: bool) {
     if dry_run {
         println!("Dry run mode - no changes will be made");
         // Check if log replay would be needed by opening read-only
-        match File::open(&file).finish() {
+        match File::open(file).finish() {
             Ok(vhdx_file) => {
                 if vhdx_file.has_pending_logs() {
                     println!("✓ File has pending log entries that would be replayed");
@@ -468,7 +468,7 @@ fn cmd_repair(file: &Path, dry_run: bool) {
     }
 
     // Open with write access to allow log replay
-    match File::open(&file).write().finish() {
+    match File::open(file).write().finish() {
         Ok(_) => {
             println!("✓ File repaired successfully");
             println!("✓ Log entries replayed");
@@ -516,15 +516,22 @@ fn parse_size(size_str: &str) -> u64 {
 
 fn human_readable_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    // Note: u64 to f64 cast can lose precision for values > 2^53 (~9 PB).
-    // This is acceptable for human-readable sizes as TB/PB displays don't need byte-level precision.
-    let mut size = bytes as f64;
-    let mut unit_index = 0;
 
-    while size >= 1024.0 && unit_index < UNITS.len() - 1 {
-        size /= 1024.0;
+    let mut unit_index = 0;
+    let mut whole = bytes;
+    let mut remainder: u64 = 0;
+
+    // Iteratively divide to find the appropriate unit and track remainder for precision
+    while whole >= 1024 && unit_index < UNITS.len() - 1 {
+        remainder = whole % 1024;
+        whole /= 1024;
         unit_index += 1;
     }
 
-    format!("{:.2} {}", size, UNITS[unit_index])
+    // Calculate the fractional part (remainder / 1024) as a value 0.0 to 0.999
+    // This is safe because remainder is always < 1024, which is well within f64 precision
+    let fractional = f64::from(u32::try_from(remainder).unwrap_or(0)) / 1024.0;
+    let size_f64 = f64::from(u32::try_from(whole).unwrap_or(u32::MAX)) + fractional;
+
+    format!("{:.2} {}", size_f64, UNITS[unit_index])
 }
