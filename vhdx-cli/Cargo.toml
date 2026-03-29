@@ -8,5 +8,10 @@ description = "VHDX (Virtual Hard Disk v2) CLI tool"
 vhdx-rs = { path = ".." }
 clap = { version = "4.6", features = ["derive"] }
 
+[dev-dependencies]
+assert_cmd = "2"
+tempfile = "3"
+predicates = "3"
+
 [lints]
 workspace = true
