@@ -1,10 +1,12 @@
 //! Constants for VHDX format
 
 /// Size constants
-pub const KB: u64 = 1024;
-pub const MB: u64 = 1024 * KB;
+#[allow(non_upper_case_globals)]
+pub const KiB: u64 = 1024;
+#[allow(non_upper_case_globals)]
+pub const MiB: u64 = 1024 * KiB;
 
-/// Header section size (1 MB)
+/// Header section size (1 MiB)
 pub const HEADER_SECTION_SIZE: usize = 1024 * 1024;
 
 /// File Type Identifier offset and size
@@ -134,9 +136,9 @@ pub const fn align_up(value: u64, alignment: u64) -> u64 {
     (value + alignment - 1) & !(alignment - 1)
 }
 
-/// Align to 1 MB boundary
-pub const fn align_1mb(value: u64) -> u64 {
-    align_up(value, MB)
+/// Align to 1 MiB boundary
+pub const fn align_1mib(value: u64) -> u64 {
+    align_up(value, MiB)
 }
 
 #[cfg(test)]
@@ -145,10 +147,10 @@ mod tests {
 
     #[test]
     fn test_align_up() {
-        assert_eq!(align_up(0, MB), 0);
-        assert_eq!(align_up(1, MB), MB);
-        assert_eq!(align_up(MB, MB), MB);
-        assert_eq!(align_up(MB + 1, MB), 2 * MB);
+        assert_eq!(align_up(0, MiB), 0);
+        assert_eq!(align_up(1, MiB), MiB);
+        assert_eq!(align_up(MiB, MiB), MiB);
+        assert_eq!(align_up(MiB + 1, MiB), 2 * MiB);
     }
 
     #[test]

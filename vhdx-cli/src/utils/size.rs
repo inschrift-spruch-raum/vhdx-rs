@@ -1,4 +1,4 @@
-/// Parse a human-readable size string (e.g., "10G", "100M", "1GiB") into bytes.
+/// Parse a human-readable size string (e.g., "10GiB", "100MiB", "1GiB") into bytes.
 /// Uses byte-unit crate to support various units (KB, KiB, MB, MiB, etc.).
 pub fn parse_size(size_str: &str) -> Result<u64, String> {
     use byte_unit::Byte;
@@ -9,7 +9,7 @@ pub fn parse_size(size_str: &str) -> Result<u64, String> {
 }
 
 /// Parse block size and validate it's a power of two.
-/// Supports all byte-unit formats (1M, 1MiB, 1MB, etc.).
+/// Supports all byte-unit formats (1MiB, 2MiB, 4MiB, etc.).
 pub fn parse_block_size(size_str: &str) -> Result<u32, String> {
     use byte_unit::Byte;
 
@@ -24,14 +24,14 @@ pub fn parse_block_size(size_str: &str) -> Result<u32, String> {
 
     if !size.is_power_of_two() {
         return Err(format!(
-            "Block size '{}' ({}) must be a power of 2 (e.g., 1M, 2M, 4M, 8M, 16M, 32M, 64M)",
+            "Block size '{}' ({}) must be a power of 2 (e.g., 1MiB, 2MiB, 4MiB, 8MiB, 16MiB, 32MiB, 64MiB)",
             size_str, byte
         ));
     }
 
     u32::try_from(size).map_err(|_| {
         format!(
-            "Block size '{}' ({}) exceeds maximum allowed (4GB)",
+            "Block size '{}' ({}) exceeds maximum allowed (4 GiB)",
             size_str, byte
         )
     })

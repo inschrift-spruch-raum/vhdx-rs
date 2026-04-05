@@ -9,9 +9,9 @@ use std::os::windows::fs::OpenOptionsExt;
 
 use crate::common::constants::{
     BAT_ENTRY_SIZE, DEFAULT_BLOCK_SIZE, FILE_TYPE_SIGNATURE, FILE_TYPE_SIZE, HEADER_1_OFFSET,
-    HEADER_2_OFFSET, HEADER_SECTION_SIZE, LOGICAL_SECTOR_SIZE_512, MAX_BLOCK_SIZE, MB,
-    METADATA_SIGNATURE, METADATA_TABLE_SIZE, MIN_BLOCK_SIZE, REGION_TABLE_1_OFFSET,
-    REGION_TABLE_2_OFFSET, REGION_TABLE_SIGNATURE, REGION_TABLE_SIZE, align_1mb,
+    HEADER_2_OFFSET, HEADER_SECTION_SIZE, LOGICAL_SECTOR_SIZE_512, MAX_BLOCK_SIZE,
+    METADATA_SIGNATURE, METADATA_TABLE_SIZE, MIN_BLOCK_SIZE, MiB, REGION_TABLE_1_OFFSET,
+    REGION_TABLE_2_OFFSET, REGION_TABLE_SIGNATURE, REGION_TABLE_SIZE, align_1mib,
 };
 use crate::common::region_guids;
 use crate::error::{Error, Result};
@@ -262,7 +262,7 @@ impl File {
         // Seek back to beginning to read full header section
         file.seek(SeekFrom::Start(0))?;
 
-        // Read header section (1 MB)
+        // Read header section (1 MiB)
         let mut header_data = vec![0u8; HEADER_SECTION_SIZE];
         file.read_exact(&mut header_data)?;
         let header = Header::new(header_data)?;
@@ -606,21 +606,21 @@ impl File {
         // Calculate BAT size
         let bat_entries =
             Bat::calculate_total_entries(virtual_size, block_size, logical_sector_size);
-        let bat_size = align_1mb(bat_entries * BAT_ENTRY_SIZE as u64);
+        let bat_size = align_1mib(bat_entries * BAT_ENTRY_SIZE as u64);
 
         // Calculate Metadata size
-        let metadata_size = align_1mb(METADATA_TABLE_SIZE as u64 + 256);
+        let metadata_size = align_1mib(METADATA_TABLE_SIZE as u64 + 256);
 
         // Calculate Log size
-        let log_size = MB; // 1 MB default
+        let log_size = MiB; // 1 MiB default
 
         // Calculate offsets
-        // Windows expects: Metadata (2MB) -> BAT (3MB), not BAT -> Metadata
-        // Metadata must be at 2MB (after 1MB header section), not 1MB
-        let metadata_offset = HEADER_SECTION_SIZE as u64 * 2; // 2MB
+        // Windows expects: Metadata (2MiB) -> BAT (3MiB), not BAT -> Metadata
+        // Metadata must be at 2MiB (after 1MiB header section), not 1MiB
+        let metadata_offset = HEADER_SECTION_SIZE as u64 * 2; // 2MiB
         let bat_offset = metadata_offset + metadata_size;
         let log_offset = bat_offset + bat_size;
-        let payload_offset = align_1mb(log_offset + log_size); // Must be 1MB aligned
+        let payload_offset = align_1mib(log_offset + log_size); // Must be 1MB aligned
 
         (
             bat_offset,
@@ -643,7 +643,7 @@ impl File {
             let mut entries = vec![0u8; usize::try_from(bat_entries).unwrap_or(0) * BAT_ENTRY_SIZE];
             for i in 0..bat_entries {
                 let offset = usize::try_from(i).unwrap_or(0) * BAT_ENTRY_SIZE;
-                let payload_offset_mb = (payload_offset + i * u64::from(block_size)) / MB;
+                let payload_offset_mb = (payload_offset + i * u64::from(block_size)) / MiB;
                 let state_and_offset = (payload_offset_mb << 20) | 6u64; // State = FullyPresent
                 entries[offset..offset + 8].copy_from_slice(&state_and_offset.to_le_bytes());
             }

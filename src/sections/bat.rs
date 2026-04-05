@@ -4,9 +4,9 @@
 //! Each entry is 64 bits containing:
 //! - Bits 0-2: State (3 bits)
 //! - Bits 3-19: Reserved (17 bits)
-//! - Bits 20-63: File Offset in MB (44 bits)
+//! - Bits 20-63: File Offset in MiB (44 bits)
 
-use crate::common::constants::{BAT_ENTRY_SIZE, CHUNK_RATIO_CONSTANT, MB};
+use crate::common::constants::{BAT_ENTRY_SIZE, CHUNK_RATIO_CONSTANT, MiB};
 use crate::error::{Error, Result};
 
 /// BAT Section
@@ -182,7 +182,7 @@ impl BatEntry {
     /// Get the file offset in bytes
     #[must_use]
     pub const fn file_offset(&self) -> u64 {
-        self.file_offset_mb * MB
+        self.file_offset_mb * MiB
     }
 
     /// Create a new entry
@@ -332,7 +332,7 @@ mod tests {
         let entry = BatEntry::from_raw(raw).unwrap();
 
         assert_eq!(entry.file_offset_mb, 1);
-        assert_eq!(entry.file_offset(), MB);
+        assert_eq!(entry.file_offset(), MiB);
         assert!(matches!(
             entry.state,
             BatState::Payload(PayloadBlockState::FullyPresent)
@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn test_calculate_payload_blocks() {
         // 10 GB disk with 32 MB blocks
-        let blocks = Bat::calculate_payload_blocks(10 * 1024 * MB, 32 * 1024 * 1024);
+        let blocks = Bat::calculate_payload_blocks(10 * 1024 * MiB, 32 * 1024 * 1024);
         assert_eq!(blocks, 320);
     }
 }

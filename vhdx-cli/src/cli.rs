@@ -26,7 +26,7 @@ pub enum Commands {
     Create {
         /// Path to create VHDX file
         path: PathBuf,
-        /// Virtual disk size (e.g., 10G, 100M, 1GiB)
+        /// Virtual disk size (e.g., 10GiB, 100MiB, 1GiB)
         #[arg(short, long, value_parser = parse_size)]
         size: u64,
         /// Disk type
