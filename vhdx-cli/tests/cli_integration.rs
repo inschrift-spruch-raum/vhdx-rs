@@ -116,14 +116,14 @@ fn create_with_explicit_block_size() {
             "--size",
             "1M",
             "--block-size",
-            "1M",
+            "1MiB",
             "--disk-type",
             "dynamic",
         ])
         .assert()
         .success()
         .stdout(predicate::str::contains("Created VHDX file"))
-        .stdout(predicate::str::contains("1.00 MB"));
+        .stdout(predicate::str::contains("1.00 MiB"));
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn create_invalid_size_fails() {
         .args(["create", path.to_str().unwrap(), "--size", "abc"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Invalid size format"));
+        .stderr(predicate::str::contains("Invalid size"));
 }
 
 #[test]

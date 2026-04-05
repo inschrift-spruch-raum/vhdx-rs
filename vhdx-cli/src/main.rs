@@ -20,7 +20,7 @@ fn main() {
             block_size,
             parent,
         } => {
-            commands::cmd_create(&path, &size, &disk_type, &block_size, parent.as_deref());
+            commands::cmd_create(&path, size, &disk_type, block_size, parent.as_deref());
         }
         Commands::Check {
             file,

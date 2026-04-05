@@ -1,51 +1,38 @@
-/// Parse a human-readable size string (e.g., "10G", "100M", "512K") into bytes.
-pub fn parse_size(size_str: &str) -> u64 {
-    let size_str = size_str.trim().to_uppercase();
-    let multiplier = if size_str.ends_with('T') {
-        1024u64 * 1024 * 1024 * 1024
-    } else if size_str.ends_with('G') {
-        1024 * 1024 * 1024
-    } else if size_str.ends_with('M') {
-        1024 * 1024
-    } else if size_str.ends_with('K') {
-        1024
-    } else {
-        1
-    };
+/// Parse a human-readable size string (e.g., "10G", "100M", "1GiB") into bytes.
+/// Uses byte-unit crate to support various units (KB, KiB, MB, MiB, etc.).
+pub fn parse_size(size_str: &str) -> Result<u64, String> {
+    use byte_unit::Byte;
 
-    let number_part = if size_str.ends_with('T')
-        || size_str.ends_with('G')
-        || size_str.ends_with('M')
-        || size_str.ends_with('K')
-        || size_str.ends_with('B')
-    {
-        &size_str[..size_str.len() - 1]
-    } else {
-        &size_str
-    };
-
-    number_part.parse::<u64>().unwrap_or(0) * multiplier
+    Byte::parse_str(size_str, true)
+        .map(|b| b.as_u64())
+        .map_err(|e| format!("Invalid size '{}': {e}", size_str))
 }
 
-/// Convert bytes into a human-readable size string (e.g., "1.50 GB").
-pub fn human_readable_size(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+/// Parse block size and validate it's a power of two.
+/// Supports all byte-unit formats (1M, 1MiB, 1MB, etc.).
+pub fn parse_block_size(size_str: &str) -> Result<u32, String> {
+    use byte_unit::Byte;
 
-    let mut unit_index = 0;
-    let mut whole = bytes;
-    let mut remainder: u64 = 0;
+    let byte = Byte::parse_str(size_str, true)
+        .map_err(|e| format!("Invalid block size '{}': {e}", size_str))?;
 
-    // Iteratively divide to find the appropriate unit and track remainder for precision
-    while whole >= 1024 && unit_index < UNITS.len() - 1 {
-        remainder = whole % 1024;
-        whole /= 1024;
-        unit_index += 1;
+    let size = byte.as_u64();
+
+    if size == 0 {
+        return Err("Block size cannot be zero".to_string());
     }
 
-    // Calculate the fractional part (remainder / 1024) as a value 0.0 to 0.999
-    // This is safe because remainder is always < 1024, which is well within f64 precision
-    let fractional = f64::from(u32::try_from(remainder).unwrap_or(0)) / 1024.0;
-    let size_f64 = f64::from(u32::try_from(whole).unwrap_or(u32::MAX)) + fractional;
+    if !size.is_power_of_two() {
+        return Err(format!(
+            "Block size '{}' ({}) must be a power of 2 (e.g., 1M, 2M, 4M, 8M, 16M, 32M, 64M)",
+            size_str, byte
+        ));
+    }
 
-    format!("{:.2} {}", size_f64, UNITS[unit_index])
+    u32::try_from(size).map_err(|_| {
+        format!(
+            "Block size '{}' ({}) exceeds maximum allowed (4GB)",
+            size_str, byte
+        )
+    })
 }

@@ -1,7 +1,8 @@
 use std::path::Path;
 
+use byte_unit::{Byte, UnitType};
+
 use crate::cli::OutputFormat;
-use crate::utils::human_readable_size;
 
 pub fn cmd_info(file: &Path, format: &OutputFormat) {
     use vhdx_rs::File;
@@ -23,8 +24,9 @@ pub fn cmd_info(file: &Path, format: &OutputFormat) {
                     println!("Path: {}", file.display());
                     println!("Virtual Size: {} bytes", vhdx_file.virtual_disk_size());
                     println!(
-                        "Virtual Size (human): {}",
-                        human_readable_size(vhdx_file.virtual_disk_size())
+                        "Virtual Size (human): {:.2}",
+                        Byte::from_u64(vhdx_file.virtual_disk_size())
+                            .get_appropriate_unit(UnitType::Binary)
                     );
                     println!("Block Size: {} bytes", vhdx_file.block_size());
                     println!(

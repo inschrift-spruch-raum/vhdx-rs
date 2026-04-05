@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
+use crate::utils::{parse_block_size, parse_size};
+
 #[derive(Parser)]
 #[command(name = "vhdx-tool")]
 #[command(about = "VHDX (Virtual Hard Disk v2) CLI tool")]
@@ -24,15 +26,15 @@ pub enum Commands {
     Create {
         /// Path to create VHDX file
         path: PathBuf,
-        /// Virtual disk size (e.g., 10G, 100M)
-        #[arg(short, long)]
-        size: String,
+        /// Virtual disk size (e.g., 10G, 100M, 1GiB)
+        #[arg(short, long, value_parser = parse_size)]
+        size: u64,
         /// Disk type
         #[arg(short, long, value_enum, default_value = "dynamic")]
         disk_type: DiskType,
-        /// Block size (e.g., 32M)
-        #[arg(short, long, default_value = "32M")]
-        block_size: String,
+        /// Block size (e.g., 32MiB, 1MiB)
+        #[arg(short, long, default_value = "32MiB", value_parser = parse_block_size)]
+        block_size: u32,
         /// Parent disk path (for differencing disks)
         #[arg(short, long)]
         parent: Option<PathBuf>,
