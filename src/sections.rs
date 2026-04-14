@@ -1,5 +1,3 @@
-//! Sections module - manages all VHDX sections with lazy loading
-
 use std::cell::RefCell;
 use std::io::{Read, Seek, SeekFrom};
 
@@ -21,49 +19,38 @@ pub use metadata::{
     ParentLocator, TableEntry, TableHeader,
 };
 
-/// Metadata Section wrapper
 pub struct Metadata {
     inner: metadata::Metadata,
 }
 
 impl Metadata {
-    /// Create from raw data
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the metadata cannot be parsed from the raw data.
     pub fn new(data: Vec<u8>) -> Result<Self> {
         Ok(Self {
             inner: metadata::Metadata::new(data)?,
         })
     }
 
-    /// Return the complete raw bytes
     #[must_use]
     pub fn raw(&self) -> &[u8] {
         self.inner.raw()
     }
 
-    /// Access the Metadata Table
     #[must_use]
     pub fn table(&self) -> crate::sections::metadata::MetadataTable<'_> {
         self.inner.table()
     }
 
-    /// Access the Metadata Items
     #[must_use]
     pub fn items(&self) -> MetadataItems<'_> {
         self.inner.items()
     }
 }
 
-/// Log Section wrapper
 pub struct Log {
     inner: log::Log,
 }
 
 impl Log {
-    /// Create from raw data
     #[must_use]
     pub const fn new(data: Vec<u8>) -> Self {
         Self {
@@ -71,78 +58,50 @@ impl Log {
         }
     }
 
-    /// Return the complete raw bytes
     #[must_use]
     pub fn raw(&self) -> &[u8] {
         self.inner.raw()
     }
 
-    /// Get a log entry by index
     #[must_use]
     pub const fn entry(&self, index: usize) -> Option<LogEntry<'_>> {
         self.inner.entry(index)
     }
 
-    /// Get all valid log entries
     #[must_use]
     pub fn entries(&self) -> Vec<LogEntry<'_>> {
         self.inner.entries()
     }
 
-    /// Check if log replay is required
     #[must_use]
     pub fn is_replay_required(&self) -> bool {
         self.inner.is_replay_required()
     }
 
-    /// Replay log entries to recover from crash
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The log entries cannot be replayed
-    /// - File write operations fail
     pub fn replay(&self, file: &mut std::fs::File) -> Result<()> {
         self.inner.replay(file)
     }
 }
 
-/// Configuration for creating a new Sections container
-///
-/// This struct groups all parameters needed to initialize a `Sections` container,
-/// avoiding the need for too many individual arguments.
 pub struct SectionsConfig {
-    /// The file handle to read sections from
     pub file: std::fs::File,
-    /// BAT section offset in bytes
     pub bat_offset: u64,
-    /// BAT section size in bytes
     pub bat_size: u64,
-    /// Metadata section offset in bytes
     pub metadata_offset: u64,
-    /// Metadata section size in bytes
     pub metadata_size: u64,
-    /// Log section offset in bytes
     pub log_offset: u64,
-    /// Log section size in bytes
     pub log_size: u64,
-    /// Number of BAT entries (calculated from metadata)
     pub entry_count: u64,
 }
 
-/// Sections container with lazy loading
-///
-/// Each section is loaded from file only when first accessed.
 pub struct Sections {
     file: std::fs::File,
 
-    // Cached sections
     header: RefCell<Option<Header>>,
     bat: RefCell<Option<Bat>>,
     metadata: RefCell<Option<Metadata>>,
     log: RefCell<Option<Log>>,
 
-    // Section locations
     bat_offset: u64,
     bat_size: u64,
     metadata_offset: u64,
@@ -150,16 +109,10 @@ pub struct Sections {
     log_offset: u64,
     log_size: u64,
 
-    // Calculated from metadata
     entry_count: u64,
 }
 
 impl Sections {
-    /// Create a new Sections container
-    ///
-    /// # Panics
-    ///
-    /// Panics if the section offsets or sizes are invalid (would cause overflow).
     #[must_use]
     pub fn new(config: SectionsConfig) -> Self {
         Self {
@@ -178,19 +131,6 @@ impl Sections {
         }
     }
 
-    /// Access Header Section (lazy loading)
-    ///
-    /// The Header Section is always at offset 0 and is 1 MB in size.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The header section cannot be read
-    /// - The header data is invalid
-    ///
-    /// # Panics
-    ///
-    /// Panics if the header section was not properly initialized.
     pub fn header(&self) -> Result<std::cell::Ref<'_, Header>> {
         if self.header.borrow().is_none() {
             let header_data = self.read_header_section()?;
@@ -201,17 +141,6 @@ impl Sections {
         }))
     }
 
-    /// Access BAT Section (lazy loading)
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The BAT section cannot be read
-    /// - The BAT data is invalid
-    ///
-    /// # Panics
-    ///
-    /// Panics if the BAT section was not properly initialized.
     pub fn bat(&self) -> Result<std::cell::Ref<'_, Bat>> {
         if self.bat.borrow().is_none() {
             let bat_size: usize = self.bat_size.try_into().map_err(|_| {
@@ -225,17 +154,6 @@ impl Sections {
         }))
     }
 
-    /// Access Metadata Section (lazy loading)
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The metadata section cannot be read
-    /// - The metadata cannot be parsed
-    ///
-    /// # Panics
-    ///
-    /// Panics if the metadata section was not properly initialized.
     pub fn metadata(&self) -> Result<std::cell::Ref<'_, Metadata>> {
         if self.metadata.borrow().is_none() {
             let metadata_size: usize = self.metadata_size.try_into().map_err(|_| {
@@ -252,19 +170,6 @@ impl Sections {
         }))
     }
 
-    /// Access Log Section (lazy loading)
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The log section cannot be read
-    /// - The log data is invalid
-    ///
-    /// # Panics
-    ///
-    /// Panics if the log section was not properly initialized (this should not happen
-    /// under normal circumstances as the lazy initialization ensures the log is loaded
-    /// before access).
     pub fn log(&self) -> Result<std::cell::Ref<'_, Log>> {
         if self.log.borrow().is_none() {
             let log_size: usize = self.log_size.try_into().map_err(|_| {
@@ -278,12 +183,10 @@ impl Sections {
         }))
     }
 
-    /// Read the header section (1 MB at offset 0)
     fn read_header_section(&self) -> Result<Vec<u8>> {
         self.read_section(0, HEADER_SECTION_SIZE)
     }
 
-    /// Read a section from file
     fn read_section(&self, offset: u64, size: usize) -> Result<Vec<u8>> {
         let mut file = self.file.try_clone()?;
         file.seek(SeekFrom::Start(offset))?;
@@ -293,10 +196,7 @@ impl Sections {
     }
 }
 
-/// Compute CRC-32C with a field zeroed out
-/// Used when verifying checksums where the checksum field itself is part of the data
 pub fn crc32c_with_zero_field(data: &[u8], zero_offset: usize, zero_len: usize) -> u32 {
-    // Manually compute CRC with a zeroed-out section
     let mut data_copy = data.to_vec();
     for i in zero_offset..(zero_offset + zero_len).min(data_copy.len()) {
         data_copy[i] = 0;

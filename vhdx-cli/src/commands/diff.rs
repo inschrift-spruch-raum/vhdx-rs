@@ -7,7 +7,6 @@ pub fn cmd_diff(file: &Path, command: &DiffCommand) {
 
     match File::open(file).finish() {
         Ok(vhdx_file) => {
-            // Show warning if there are pending log entries
             if vhdx_file.has_pending_logs() {
                 eprintln!("Warning: File has pending log entries from an interrupted write.");
                 eprintln!("         Run 'vhdx-tool repair <file>' to fix the file.");

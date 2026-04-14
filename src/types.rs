@@ -1,35 +1,26 @@
-//! Type definitions for VHDX
-
 use std::fmt;
 
-/// GUID (Globally Unique Identifier) type
-///
-/// VHDX uses GUIDs extensively for identifying regions, metadata items, etc.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Guid {
     data: [u8; 16],
 }
 
 impl Guid {
-    /// Create a new GUID from raw bytes
     #[must_use]
     pub const fn from_bytes(data: [u8; 16]) -> Self {
         Self { data }
     }
 
-    /// Get the raw bytes of the GUID
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 16] {
         &self.data
     }
 
-    /// Create a nil GUID (all zeros)
     #[must_use]
     pub const fn nil() -> Self {
         Self { data: [0; 16] }
     }
 
-    /// Check if this is a nil GUID
     #[must_use]
     pub fn is_nil(&self) -> bool {
         self.data == [0; 16]
@@ -38,7 +29,6 @@ impl Guid {
 
 impl fmt::Debug for Guid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Format as standard GUID string: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
         write!(
             f,
             "{:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
@@ -115,14 +105,12 @@ mod tests {
 
     #[test]
     fn test_guid_debug_format() {
-        // Test that GUID formats correctly
         let bytes = [
             0x37, 0x67, 0xA1, 0xCA, 0x36, 0xFA, 0x43, 0x4D, 0xB3, 0xB6, 0x33, 0xF0, 0xAA, 0x44,
             0xE7, 0x6B,
         ];
         let guid = Guid::from_bytes(bytes);
         let debug_str = format!("{guid:?}");
-        // Just verify it contains hyphens (standard GUID format)
         assert!(debug_str.contains('-'));
     }
 }

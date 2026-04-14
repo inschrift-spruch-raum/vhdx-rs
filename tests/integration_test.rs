@@ -1,15 +1,8 @@
-//! Integration tests for vhdx-rs
-
 use std::path::PathBuf;
 
-/// Helper: create a temp directory and return a non-existent file path inside it.
-/// `File::create` requires the path to NOT already exist, so we use a temp dir
-/// instead of NamedTempFile (which creates the file on disk immediately).
 fn temp_vhdx_path() -> PathBuf {
     let dir = tempfile::tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("test.vhdx");
-    // Leak the TempDir so the path stays valid for the duration of the test.
-    // This is acceptable for tests.
     std::mem::forget(dir);
     path
 }
@@ -20,22 +13,18 @@ fn test_create_and_read_fixed_disk() {
 
     let path = temp_vhdx_path();
 
-    // Create a fixed disk
     let mut file = File::create(&path)
-        .size(1024 * 1024) // 1 MB
+        .size(1024 * 1024)
         .fixed(true)
         .finish()
         .expect("Failed to create fixed disk");
 
-    // Write data
     let test_data = b"Hello, VHDX!";
     let bytes_written = file.write(0, test_data).expect("Failed to write");
     assert_eq!(bytes_written, test_data.len());
 
-    // Flush
     file.flush().expect("Failed to flush");
 
-    // Read back
     let mut buf = vec![0u8; test_data.len()];
     let bytes_read = file.read(0, &mut buf).expect("Failed to read");
     assert_eq!(bytes_read, test_data.len());
@@ -48,9 +37,8 @@ fn test_create_dynamic_disk() {
 
     let path = temp_vhdx_path();
 
-    // Create a dynamic disk
     let file = File::create(&path)
-        .size(1024 * 1024) // 1 MB
+        .size(1024 * 1024)
         .fixed(false)
         .finish()
         .expect("Failed to create dynamic disk");
@@ -65,18 +53,16 @@ fn test_read_unallocated_dynamic_block() {
 
     let path = temp_vhdx_path();
 
-    // Create a dynamic disk
     let file = File::create(&path)
-        .size(1024 * 1024) // 1 MB
+        .size(1024 * 1024)
         .fixed(false)
         .finish()
         .expect("Failed to create dynamic disk");
 
-    // Read from unallocated area should return zeros
     let mut buf = vec![0u8; 512];
     let bytes_read = file.read(0, &mut buf).expect("Failed to read");
     assert_eq!(bytes_read, 512);
-    assert_eq!(buf, vec![0u8; 512]); // Should be all zeros
+    assert_eq!(buf, vec![0u8; 512]);
 }
 
 #[test]
@@ -85,21 +71,15 @@ fn test_write_dynamic_disk_fails() {
 
     let path = temp_vhdx_path();
 
-    // Create a dynamic disk
     let mut file = File::create(&path)
-        .size(1024 * 1024) // 1 MB
+        .size(1024 * 1024)
         .fixed(false)
         .finish()
         .expect("Failed to create dynamic disk");
 
-    // Write should fail with a clear error
     let result = file.write(0, b"test");
     assert!(result.is_err());
 }
-
-// ---------------------------------------------------------------------------
-// File Creation — various parameters
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_create_fixed_disk_with_custom_block_size() {
@@ -108,9 +88,9 @@ fn test_create_fixed_disk_with_custom_block_size() {
     let path = temp_vhdx_path();
 
     let file = File::create(&path)
-        .size(1024 * 1024) // 1 MB
+        .size(1024 * 1024)
         .fixed(true)
-        .block_size(1024 * 1024) // 1 MB blocks
+        .block_size(1024 * 1024)
         .finish()
         .expect("Failed to create fixed disk with custom block size");
 
@@ -126,9 +106,9 @@ fn test_create_dynamic_disk_with_custom_block_size() {
     let path = temp_vhdx_path();
 
     let file = File::create(&path)
-        .size(4 * 1024 * 1024) // 4 MB
+        .size(4 * 1024 * 1024)
         .fixed(false)
-        .block_size(1024 * 1024) // 1 MB blocks
+        .block_size(1024 * 1024)
         .finish()
         .expect("Failed to create dynamic disk with custom block size");
 
@@ -155,7 +135,7 @@ fn test_create_non_power_of_two_block_size_fails() {
     let result = File::create(&path)
         .size(1024 * 1024)
         .fixed(true)
-        .block_size(3 * 1024 * 1024) // 3 MB — not a power of 2
+        .block_size(3 * 1024 * 1024)
         .finish();
     assert!(result.is_err(), "Non-power-of-2 block size should fail");
 }
@@ -166,14 +146,12 @@ fn test_create_file_already_exists_fails() {
 
     let path = temp_vhdx_path();
 
-    // Create the first file
     File::create(&path)
         .size(1024 * 1024)
         .fixed(true)
         .finish()
         .expect("First creation should succeed");
 
-    // Creating at the same path should fail
     let result = File::create(&path).size(1024 * 1024).fixed(true).finish();
     assert!(result.is_err(), "Creating over existing file should fail");
 }
@@ -185,7 +163,7 @@ fn test_create_fixed_disk_10mb() {
     let path = temp_vhdx_path();
 
     let file = File::create(&path)
-        .size(10 * 1024 * 1024) // 10 MB
+        .size(10 * 1024 * 1024)
         .fixed(true)
         .finish()
         .expect("Failed to create 10 MB fixed disk");
@@ -194,24 +172,18 @@ fn test_create_fixed_disk_10mb() {
     assert!(file.is_fixed());
 }
 
-// ---------------------------------------------------------------------------
-// File Opening — read existing files
-// ---------------------------------------------------------------------------
-
 #[test]
 fn test_open_fixed_disk_read_only() {
     use vhdx_rs::File;
 
     let path = temp_vhdx_path();
 
-    // Create first
     File::create(&path)
         .size(1024 * 1024)
         .fixed(true)
         .finish()
         .expect("Failed to create fixed disk");
 
-    // Open read-only
     let file = File::open(&path)
         .finish()
         .expect("Failed to open existing file");
@@ -225,14 +197,12 @@ fn test_open_dynamic_disk_read_only() {
 
     let path = temp_vhdx_path();
 
-    // Create first
     File::create(&path)
         .size(1024 * 1024)
         .fixed(false)
         .finish()
         .expect("Failed to create dynamic disk");
 
-    // Open read-only
     let file = File::open(&path)
         .finish()
         .expect("Failed to open existing file");
@@ -245,7 +215,6 @@ fn test_open_nonexistent_file_fails() {
     use vhdx_rs::File;
 
     let path = temp_vhdx_path();
-    // Path doesn't exist — should fail
     let result = File::open(&path).finish();
     assert!(result.is_err(), "Opening non-existent file should fail");
 }
@@ -256,27 +225,20 @@ fn test_open_with_write_access() {
 
     let path = temp_vhdx_path();
 
-    // Create first
     File::create(&path)
         .size(1024 * 1024)
         .fixed(true)
         .finish()
         .expect("Failed to create fixed disk");
 
-    // Open with write access
     let mut file = File::open(&path)
         .write()
         .finish()
         .expect("Failed to open with write access");
 
-    // Should be able to write
     let written = file.write(0, b"test data").expect("Failed to write");
     assert_eq!(written, 9);
 }
-
-// ---------------------------------------------------------------------------
-// Read/Write operations
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_write_and_read_at_offset() {
@@ -310,10 +272,8 @@ fn test_read_unwritten_area_returns_zeros() {
         .finish()
         .expect("Failed to create fixed disk");
 
-    // Write some data at offset 0
     file.write(0, b"some data").expect("Failed to write");
 
-    // Read from an area we never wrote to
     let mut buf = vec![0u8; 512];
     file.read(4096, &mut buf).expect("Failed to read");
     assert_eq!(buf, vec![0u8; 512], "Unwritten area should be zeros");
@@ -331,12 +291,10 @@ fn test_multiple_writes_and_reads() {
         .finish()
         .expect("Failed to create fixed disk");
 
-    // Write at multiple offsets
     file.write(0, b"block0").expect("Failed to write block0");
     file.write(1024, b"block1").expect("Failed to write block1");
     file.write(2048, b"block2").expect("Failed to write block2");
 
-    // Read back each
     let mut buf0 = vec![0u8; 6];
     let mut buf1 = vec![0u8; 6];
     let mut buf2 = vec![0u8; 6];
@@ -365,17 +323,12 @@ fn test_flush_after_write() {
     file.write(0, b"flush test").expect("Failed to write");
     file.flush().expect("Failed to flush");
 
-    // Re-open and verify data persisted
     let file = File::open(&path).finish().expect("Failed to reopen");
 
     let mut buf = vec![0u8; 10];
     file.read(0, &mut buf).expect("Failed to read");
     assert_eq!(&buf, b"flush test");
 }
-
-// ---------------------------------------------------------------------------
-// Section Access
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_header_section_after_create() {
@@ -391,7 +344,6 @@ fn test_header_section_after_create() {
 
     let header = file.sections().header().expect("Failed to read header");
 
-    // Verify we can access header structure
     let hdr = header.header(0).expect("No header structure found");
     assert_eq!(hdr.version(), 1, "VHDX version should be 1");
     assert_eq!(hdr.log_version(), 0, "Log version should be 0");
@@ -406,13 +358,12 @@ fn test_bat_section_after_create() {
     let file = File::create(&path)
         .size(1024 * 1024)
         .fixed(true)
-        .block_size(1024 * 1024) // 1 MB blocks
+        .block_size(1024 * 1024)
         .finish()
         .expect("Failed to create fixed disk");
 
     let bat = file.sections().bat().expect("Failed to read BAT");
 
-    // For a 1 MB disk with 1 MB blocks, there should be 1 payload block
     let expected = vhdx_rs::Bat::calculate_total_entries(
         file.virtual_disk_size(),
         file.block_size(),
@@ -428,7 +379,7 @@ fn test_metadata_section_after_create() {
     let path = temp_vhdx_path();
 
     let file = File::create(&path)
-        .size(10 * 1024 * 1024) // 10 MB
+        .size(10 * 1024 * 1024)
         .fixed(true)
         .finish()
         .expect("Failed to create fixed disk");
@@ -436,14 +387,12 @@ fn test_metadata_section_after_create() {
     let metadata = file.sections().metadata().expect("Failed to read metadata");
     let items = metadata.items();
 
-    // Verify virtual disk size
     assert_eq!(
         items.virtual_disk_size(),
         Some(10 * 1024 * 1024),
         "Virtual disk size should match"
     );
 
-    // Verify file parameters
     let fp = items.file_parameters().expect("Missing file parameters");
     assert!(!fp.has_parent(), "Should not have parent");
 }
@@ -457,7 +406,7 @@ fn test_metadata_block_size_matches() {
     let file = File::create(&path)
         .size(1024 * 1024)
         .fixed(true)
-        .block_size(1024 * 1024) // 1 MB blocks
+        .block_size(1024 * 1024)
         .finish()
         .expect("Failed to create fixed disk");
 
@@ -515,7 +464,6 @@ fn test_log_section_after_create() {
         .expect("Failed to create fixed disk");
 
     let log = file.sections().log().expect("Failed to read log");
-    // New file should not require log replay
     assert!(
         !log.is_replay_required(),
         "New file should not require log replay"
@@ -539,10 +487,6 @@ fn test_has_pending_logs_false_for_new_file() {
         "New file should not have pending logs"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Property Verification
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_default_block_size_is_32mb() {
@@ -621,10 +565,6 @@ fn test_metadata_virtual_disk_id_present() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Test Fixture Files
-// ---------------------------------------------------------------------------
-
 #[test]
 fn test_open_test_void_vhdx() {
     use vhdx_rs::File;
@@ -639,14 +579,12 @@ fn test_open_test_void_vhdx() {
         .finish()
         .expect("Failed to open test-void.vhdx");
 
-    // Verify it's a valid VHDX (void = no filesystem, but may have non-zero virtual size)
     assert!(!file.is_fixed(), "test-void.vhdx should be dynamic");
     assert!(
         file.virtual_disk_size() > 0,
         "test-void.vhdx should have a virtual size"
     );
 
-    // Sections should be accessible
     let _header = file.sections().header().expect("Header should be readable");
     let _metadata = file
         .sections()
@@ -668,13 +606,11 @@ fn test_open_test_fs_vhdx() {
         .finish()
         .expect("Failed to open test-fs.vhdx");
 
-    // Verify it's a valid VHDX with some content
     assert!(
         file.virtual_disk_size() > 0,
         "test-fs.vhdx should have non-zero size"
     );
 
-    // Sections should be accessible
     let _header = file.sections().header().expect("Header should be readable");
     let _bat = file.sections().bat().expect("BAT should be readable");
     let _metadata = file

@@ -7,10 +7,8 @@ use crate::cli::OutputFormat;
 pub fn cmd_info(file: &Path, format: &OutputFormat) {
     use vhdx_rs::File;
 
-    // Open with read-only access (default)
     match File::open(file).finish() {
         Ok(vhdx_file) => {
-            // Show warning if there are pending log entries
             if vhdx_file.has_pending_logs() {
                 eprintln!("Warning: File has pending log entries from an interrupted write.");
                 eprintln!("         Run 'vhdx-tool repair <file>' to fix the file.");
@@ -45,7 +43,6 @@ pub fn cmd_info(file: &Path, format: &OutputFormat) {
                         println!("Type: Differencing (has parent)");
                     }
 
-                    // Show metadata
                     if let Ok(metadata) = vhdx_file.sections().metadata() {
                         let items = metadata.items();
                         if let Some(fp) = items.file_parameters() {

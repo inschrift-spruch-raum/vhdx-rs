@@ -7,7 +7,6 @@ pub fn cmd_check(file: &Path, repair: bool, log_replay: bool) {
 
     match File::open(file).finish() {
         Ok(vhdx_file) => {
-            // Show warning if there are pending log entries
             if vhdx_file.has_pending_logs() {
                 println!("⚠ File has pending log entries from an interrupted write.");
                 println!("  Run 'vhdx-tool repair <file>' to fix the file.");

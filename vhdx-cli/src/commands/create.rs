@@ -13,7 +13,6 @@ pub fn cmd_create(
     let fixed = matches!(disk_type, DiskType::Fixed);
     let has_parent = matches!(disk_type, DiskType::Differencing) || parent.is_some();
 
-    // Validate parent path for differencing disks
     if has_parent && parent.is_none() {
         eprintln!("Error: Differencing disk requires --parent option");
         std::process::exit(1);

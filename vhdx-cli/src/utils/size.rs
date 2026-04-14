@@ -1,5 +1,3 @@
-/// Parse a human-readable size string (e.g., "10GiB", "100MiB", "1GiB") into bytes.
-/// Uses byte-unit crate to support various units (KB, KiB, MB, MiB, etc.).
 pub fn parse_size(size_str: &str) -> Result<u64, String> {
     use byte_unit::Byte;
 
@@ -8,8 +6,6 @@ pub fn parse_size(size_str: &str) -> Result<u64, String> {
         .map_err(|e| format!("Invalid size '{}': {e}", size_str))
 }
 
-/// Parse block size and validate it's a power of two.
-/// Supports all byte-unit formats (1MiB, 2MiB, 4MiB, etc.).
 pub fn parse_block_size(size_str: &str) -> Result<u32, String> {
     use byte_unit::Byte;
 

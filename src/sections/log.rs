@@ -1,11 +1,3 @@
-//! Log Section implementation
-//!
-//! The Log is a circular buffer for crash recovery.
-//! Each log entry contains:
-//! - Entry Header (64 bytes)
-//! - Zero or more Descriptors
-//! - Data sectors (for [`DataDescriptor`](crate::sections::log::DataDescriptor))
-
 use crate::common::constants::{
     DATA_DESCRIPTOR_SIGNATURE, DATA_SECTOR_SIZE, DESCRIPTOR_SIZE, LOG_ENTRY_HEADER_SIZE,
     LOG_ENTRY_SIGNATURE, ZERO_DESCRIPTOR_SIGNATURE,
@@ -13,46 +5,35 @@ use crate::common::constants::{
 use crate::error::{Error, Result};
 use crate::types::Guid;
 
-/// Log Section
 pub struct Log {
     raw_data: Vec<u8>,
 }
 
 impl Log {
-    /// Create from raw data
     #[must_use]
     pub const fn new(data: Vec<u8>) -> Self {
         Self { raw_data: data }
     }
 
-    /// Return the complete raw bytes
     #[must_use]
     pub fn raw(&self) -> &[u8] {
         &self.raw_data
     }
 
-    /// Get a log entry by index
-    ///
-    /// Note: This is currently a stub implementation that always returns `None`.
     #[must_use]
     pub const fn entry(&self, _index: usize) -> Option<LogEntry<'_>> {
-        // Log entries are complex to parse as they have variable sizes
-        // This is a simplified implementation
-        let _ = self; // Silence unused_self warning for stub
+        let _ = self;
         None
     }
 
-    /// Get all valid log entries
     #[must_use]
     pub fn entries(&self) -> Vec<LogEntry<'_>> {
-        // Parse the log buffer to find all valid entries
         let mut entries = Vec::new();
         let mut offset = 0;
 
         while offset + LOG_ENTRY_HEADER_SIZE <= self.raw_data.len() {
             if let Ok(entry) = self.try_parse_entry_at(offset) {
                 let entry_len = usize::try_from(entry.header().entry_length()).unwrap_or(0);
-                // Prevent infinite loop if entry_length is 0 or malformed (less than header size)
                 if entry_len < LOG_ENTRY_HEADER_SIZE {
                     offset += DATA_SECTOR_SIZE;
                     continue;
@@ -60,7 +41,6 @@ impl Log {
                 entries.push(entry);
                 offset += entry_len;
             } else {
-                // Move to next 4KB boundary
                 offset += DATA_SECTOR_SIZE;
             }
         }
@@ -68,7 +48,6 @@ impl Log {
         entries
     }
 
-    /// Try to parse an entry at the given offset
     fn try_parse_entry_at(&self, offset: usize) -> Result<LogEntry<'_>> {
         if offset + LOG_ENTRY_HEADER_SIZE > self.raw_data.len() {
             return Err(Error::LogEntryCorrupted("Not enough data".to_string()));
@@ -76,38 +55,28 @@ impl Log {
         LogEntry::new(&self.raw_data[offset..])
     }
 
-    /// Check if log replay is required (log is non-empty)
     #[must_use]
     pub fn is_replay_required(&self) -> bool {
         !self.entries().is_empty()
     }
 
-    /// Replay log entries to recover from crash
-    ///
-    /// Per MS-VHDX spec section 2.3.3: "If the log is non-empty when the VHDX file is opened,
-    /// the implementation MUST replay the log before performing any I/O"
-    ///
-    /// # Arguments
-    /// * `file` - The underlying file to apply log entries to
     pub fn replay(&self, file: &mut std::fs::File) -> Result<()> {
         use std::io::{Seek, SeekFrom, Write};
 
         let entries = self.entries();
         if entries.is_empty() {
-            return Ok(()); // Nothing to replay
+            return Ok(());
         }
 
         for entry in entries {
             let header = entry.header();
 
-            // Validate signature
             if header.signature() != LOG_ENTRY_SIGNATURE {
                 return Err(Error::LogEntryCorrupted(
                     "Invalid log entry signature".to_string(),
                 ));
             }
 
-            // Process descriptors
             let descriptors = entry.descriptors();
             let data_sectors = entry.data();
             let mut data_sector_index = 0;
@@ -115,13 +84,11 @@ impl Log {
             for desc in descriptors {
                 match desc {
                     Descriptor::Data(data_desc) => {
-                        // Write data from data sector to file
                         if data_sector_index < data_sectors.len() {
                             let sector = &data_sectors[data_sector_index];
                             let file_offset = data_desc.file_offset();
 
                             file.seek(SeekFrom::Start(file_offset))?;
-                            // Write leading bytes (zeros), data, trailing bytes (zeros)
                             let leading = data_desc.leading_bytes();
                             let trailing = data_desc.trailing_bytes();
 
@@ -137,7 +104,6 @@ impl Log {
                         }
                     }
                     Descriptor::Zero(zero_desc) => {
-                        // Write zeros to file
                         let file_offset = zero_desc.file_offset();
                         let length = zero_desc.zero_length();
 
@@ -152,17 +118,11 @@ impl Log {
     }
 }
 
-/// Log Entry
 pub struct LogEntry<'a> {
     data: &'a [u8],
 }
 
 impl<'a> LogEntry<'a> {
-    /// Create from raw data
-    ///
-    /// # Errors
-    ///
-    /// Returns `Error::LogEntryCorrupted` if the data is too small to contain a log entry header.
     pub fn new(data: &'a [u8]) -> Result<Self> {
         if data.len() < LOG_ENTRY_HEADER_SIZE {
             return Err(Error::LogEntryCorrupted("Entry too small".to_string()));
@@ -170,19 +130,16 @@ impl<'a> LogEntry<'a> {
         Ok(Self { data })
     }
 
-    /// Return raw bytes
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
         self.data
     }
 
-    /// Get the entry header
     #[must_use]
     pub fn header(&self) -> LogEntryHeader<'_> {
         LogEntryHeader::new(&self.data[0..LOG_ENTRY_HEADER_SIZE])
     }
 
-    /// Get a descriptor by index
     #[must_use]
     pub fn descriptor(&self, index: usize) -> Option<Descriptor<'_>> {
         let header = self.header();
@@ -190,8 +147,6 @@ impl<'a> LogEntry<'a> {
             return None;
         }
 
-        // Calculate offset to descriptor
-        // Descriptors start after the header, aligned to 32 bytes
         let desc_offset = LOG_ENTRY_HEADER_SIZE + index * DESCRIPTOR_SIZE;
         if desc_offset + DESCRIPTOR_SIZE > self.data.len() {
             return None;
@@ -200,22 +155,18 @@ impl<'a> LogEntry<'a> {
         Descriptor::parse(&self.data[desc_offset..desc_offset + DESCRIPTOR_SIZE]).ok()
     }
 
-    /// Get all descriptors
     #[must_use]
     pub fn descriptors(&self) -> Vec<Descriptor<'_>> {
         let count = usize::try_from(self.header().descriptor_count()).unwrap_or(0);
         (0..count).filter_map(|i| self.descriptor(i)).collect()
     }
 
-    /// Get data sectors
     #[must_use]
     pub fn data(&self) -> Vec<DataSector<'_>> {
-        // Data sectors follow descriptors
         let header = self.header();
         let desc_count = usize::try_from(header.descriptor_count()).unwrap_or(0);
         let data_start = LOG_ENTRY_HEADER_SIZE + desc_count * DESCRIPTOR_SIZE;
 
-        // Calculate how many data sectors we expect
         let data_sectors_needed: usize = self
             .descriptors()
             .iter()
@@ -240,112 +191,67 @@ impl<'a> LogEntry<'a> {
     }
 }
 
-/// Log Entry Header (64 bytes)
 pub struct LogEntryHeader<'a> {
     data: &'a [u8],
 }
 
 impl<'a> LogEntryHeader<'a> {
-    /// Create from raw data
     #[must_use]
     pub const fn new(data: &'a [u8]) -> Self {
         Self { data }
     }
 
-    /// Return raw bytes
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
         self.data
     }
 
-    /// Get signature (should be "loge")
     #[must_use]
     pub fn signature(&self) -> &[u8] {
         &self.data[0..4]
     }
 
-    /// Get checksum
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data slice is too short (this should never happen if created via `LogEntry::new`).
     #[must_use]
     pub fn checksum(&self) -> u32 {
         u32::from_le_bytes(self.data[4..8].try_into().unwrap())
     }
 
-    /// Get entry length (including header, descriptors, and data)
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data slice is too short (this should never happen if created via `LogEntry::new`).
     #[must_use]
     pub fn entry_length(&self) -> u32 {
         u32::from_le_bytes(self.data[8..12].try_into().unwrap())
     }
 
-    /// Get tail (offset to next entry)
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data slice is too short (this should never happen if created via `LogEntry::new`).
     #[must_use]
     pub fn tail(&self) -> u32 {
         u32::from_le_bytes(self.data[12..16].try_into().unwrap())
     }
 
-    /// Get sequence number
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data slice is too short (this should never happen if created via `LogEntry::new`).
     #[must_use]
     pub fn sequence_number(&self) -> u64 {
         u64::from_le_bytes(self.data[16..24].try_into().unwrap())
     }
 
-    /// Get descriptor count
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data slice is too short (this should never happen if created via `LogEntry::new`).
     #[must_use]
     pub fn descriptor_count(&self) -> u32 {
         u32::from_le_bytes(self.data[24..28].try_into().unwrap())
     }
 
-    /// Get Log GUID
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data slice is too short (this should never happen if created via `LogEntry::new`).
     #[must_use]
     pub fn log_guid(&self) -> Guid {
         Guid::from_bytes(self.data[32..48].try_into().unwrap())
     }
 
-    /// Get flushed file offset
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data slice is too short (this should never happen if created via `LogEntry::new`).
     #[must_use]
     pub fn flushed_file_offset(&self) -> u64 {
         u64::from_le_bytes(self.data[48..56].try_into().unwrap())
     }
 
-    /// Get last file offset
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data slice is too short (this should never happen if created via `LogEntry::new`).
     #[must_use]
     pub fn last_file_offset(&self) -> u64 {
         u64::from_le_bytes(self.data[56..64].try_into().unwrap())
     }
 }
 
-/// Descriptor - either Data or Zero
 #[derive(Debug)]
 pub enum Descriptor<'a> {
     Data(DataDescriptor<'a>),
@@ -353,14 +259,6 @@ pub enum Descriptor<'a> {
 }
 
 impl<'a> Descriptor<'a> {
-    /// Parse a descriptor from raw data
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The data is too small to contain a descriptor
-    /// - The signature is not "desc" or "zero"
-    /// - The descriptor-specific parsing fails
     pub fn parse(data: &'a [u8]) -> Result<Self> {
         if data.len() < 32 {
             return Err(Error::LogEntryCorrupted("Descriptor too small".to_string()));
@@ -379,7 +277,6 @@ impl<'a> Descriptor<'a> {
         }
     }
 
-    /// Return raw bytes
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
         match self {
@@ -389,18 +286,12 @@ impl<'a> Descriptor<'a> {
     }
 }
 
-/// Data Descriptor (32 bytes)
 #[derive(Debug)]
 pub struct DataDescriptor<'a> {
     data: &'a [u8],
 }
 
 impl<'a> DataDescriptor<'a> {
-    /// Create from raw data
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the data is less than 32 bytes.
     pub fn new(data: &'a [u8]) -> Result<Self> {
         if data.len() < 32 {
             return Err(Error::LogEntryCorrupted(
@@ -410,65 +301,38 @@ impl<'a> DataDescriptor<'a> {
         Ok(Self { data })
     }
 
-    /// Return raw bytes
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
         self.data
     }
 
-    /// Get trailing bytes
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data slice is not at least 8 bytes.
     #[must_use]
     pub fn trailing_bytes(&self) -> u32 {
         u32::from_le_bytes(self.data[4..8].try_into().unwrap())
     }
 
-    /// Get leading bytes
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data slice is not at least 16 bytes.
     #[must_use]
     pub fn leading_bytes(&self) -> u64 {
         u64::from_le_bytes(self.data[8..16].try_into().unwrap())
     }
 
-    /// Get file offset
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data slice is not at least 24 bytes.
     #[must_use]
     pub fn file_offset(&self) -> u64 {
         u64::from_le_bytes(self.data[16..24].try_into().unwrap())
     }
 
-    /// Get sequence number
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data slice is not at least 32 bytes.
     #[must_use]
     pub fn sequence_number(&self) -> u64 {
         u64::from_le_bytes(self.data[24..32].try_into().unwrap())
     }
 }
 
-/// Zero Descriptor (32 bytes)
 #[derive(Debug)]
 pub struct ZeroDescriptor<'a> {
     data: &'a [u8],
 }
 
 impl<'a> ZeroDescriptor<'a> {
-    /// Create from raw data
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the data is less than 32 bytes.
     pub fn new(data: &'a [u8]) -> Result<Self> {
         if data.len() < 32 {
             return Err(Error::LogEntryCorrupted(
@@ -478,54 +342,32 @@ impl<'a> ZeroDescriptor<'a> {
         Ok(Self { data })
     }
 
-    /// Return raw bytes
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
         self.data
     }
 
-    /// Get zero length
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data slice is not at least 16 bytes.
     #[must_use]
     pub fn zero_length(&self) -> u64 {
         u64::from_le_bytes(self.data[8..16].try_into().unwrap())
     }
 
-    /// Get file offset
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data slice is not at least 24 bytes.
     #[must_use]
     pub fn file_offset(&self) -> u64 {
         u64::from_le_bytes(self.data[16..24].try_into().unwrap())
     }
 
-    /// Get sequence number
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data slice is not at least 32 bytes.
     #[must_use]
     pub fn sequence_number(&self) -> u64 {
         u64::from_le_bytes(self.data[24..32].try_into().unwrap())
     }
 }
 
-/// Data Sector (4 KB)
 pub struct DataSector<'a> {
     data: &'a [u8],
 }
 
 impl<'a> DataSector<'a> {
-    /// Create from raw data
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the data is not exactly `DATA_SECTOR_SIZE` bytes.
     pub fn new(data: &'a [u8]) -> Result<Self> {
         if data.len() != DATA_SECTOR_SIZE {
             return Err(Error::InvalidFile(format!(
@@ -537,39 +379,26 @@ impl<'a> DataSector<'a> {
         Ok(Self { data })
     }
 
-    /// Return raw bytes
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
         self.data
     }
 
-    /// Get sequence high (bits 32-63)
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data slice is not at least 8 bytes.
     #[must_use]
     pub fn sequence_high(&self) -> u32 {
         u32::from_le_bytes(self.data[4..8].try_into().unwrap())
     }
 
-    /// Get data portion (4084 bytes)
     #[must_use]
     pub fn data(&self) -> &[u8] {
         &self.data[8..4092]
     }
 
-    /// Get sequence low (bits 0-31)
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data slice is not at least 4096 bytes.
     #[must_use]
     pub fn sequence_low(&self) -> u32 {
         u32::from_le_bytes(self.data[4092..4096].try_into().unwrap())
     }
 
-    /// Get full sequence number
     #[must_use]
     pub fn sequence_number(&self) -> u64 {
         (u64::from(self.sequence_high()) << 32) | u64::from(self.sequence_low())
@@ -585,9 +414,9 @@ mod tests {
         let mut data = [0u8; 64];
         data[0..4].copy_from_slice(LOG_ENTRY_SIGNATURE);
         data[4..8].copy_from_slice(&0x1234_5678_u32.to_le_bytes());
-        data[8..12].copy_from_slice(&0x1000_u32.to_le_bytes()); // 4KB entry
-        data[16..24].copy_from_slice(&0x1_u64.to_le_bytes()); // sequence
-        data[24..28].copy_from_slice(&2_u32.to_le_bytes()); // 2 descriptors
+        data[8..12].copy_from_slice(&0x1000_u32.to_le_bytes());
+        data[16..24].copy_from_slice(&0x1_u64.to_le_bytes());
+        data[24..28].copy_from_slice(&2_u32.to_le_bytes());
 
         let header = LogEntryHeader::new(&data);
         assert_eq!(header.signature(), LOG_ENTRY_SIGNATURE);
@@ -601,10 +430,10 @@ mod tests {
     fn test_data_descriptor() {
         let mut data = [0u8; 32];
         data[0..4].copy_from_slice(DATA_DESCRIPTOR_SIGNATURE);
-        data[4..8].copy_from_slice(&0x100_u32.to_le_bytes()); // trailing
-        data[8..16].copy_from_slice(&0x200_u64.to_le_bytes()); // leading
-        data[16..24].copy_from_slice(&0x0010_0000_u64.to_le_bytes()); // offset
-        data[24..32].copy_from_slice(&0x1_u64.to_le_bytes()); // sequence
+        data[4..8].copy_from_slice(&0x100_u32.to_le_bytes());
+        data[8..16].copy_from_slice(&0x200_u64.to_le_bytes());
+        data[16..24].copy_from_slice(&0x0010_0000_u64.to_le_bytes());
+        data[24..32].copy_from_slice(&0x1_u64.to_le_bytes());
 
         let desc = DataDescriptor::new(&data).unwrap();
         assert_eq!(desc.trailing_bytes(), 0x100);
@@ -617,8 +446,8 @@ mod tests {
     fn test_zero_descriptor() {
         let mut data = [0u8; 32];
         data[0..4].copy_from_slice(ZERO_DESCRIPTOR_SIGNATURE);
-        data[8..16].copy_from_slice(&0x1000_u64.to_le_bytes()); // length
-        data[16..24].copy_from_slice(&0x0020_0000_u64.to_le_bytes()); // offset
+        data[8..16].copy_from_slice(&0x1000_u64.to_le_bytes());
+        data[16..24].copy_from_slice(&0x0020_0000_u64.to_le_bytes());
 
         let desc = ZeroDescriptor::new(&data).unwrap();
         assert_eq!(desc.zero_length(), 0x1000);

@@ -2,17 +2,10 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::Path;
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Get a `Command` that invokes the `vhdx-tool` binary built by cargo.
 fn vhdx_tool() -> Command {
     Command::cargo_bin("vhdx-tool").unwrap()
 }
 
-/// Create a temp directory containing a small fixed VHDX file and return the
-/// temp dir (dropping it would delete the directory & file).
 fn create_fixed_vhdx() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.vhdx");
@@ -30,7 +23,6 @@ fn create_fixed_vhdx() -> tempfile::TempDir {
     dir
 }
 
-/// Create a temp directory containing a small dynamic VHDX file.
 fn create_dynamic_vhdx() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dynamic.vhdx");
@@ -48,10 +40,7 @@ fn create_dynamic_vhdx() -> tempfile::TempDir {
     dir
 }
 
-/// Resolve the path to a test fixture shipped in `misc/`.
-/// Returns `None` when the fixture does not exist.
 fn fixture_path(relative: &str) -> Option<String> {
-    // When running via `cargo test`, CWD is the package root (vhdx-cli/).
     let p = Path::new(relative);
     if p.exists() {
         Some(relative.to_string())
@@ -59,10 +48,6 @@ fn fixture_path(relative: &str) -> Option<String> {
         None
     }
 }
-
-// ===========================================================================
-// CREATE tests
-// ===========================================================================
 
 #[test]
 fn create_fixed_disk_success() {
@@ -143,7 +128,6 @@ fn create_missing_size_argument_fails() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("nope.vhdx");
 
-    // clap should reject the invocation because --size is required
     vhdx_tool()
         .args(["create", path.to_str().unwrap()])
         .assert()
@@ -156,7 +140,6 @@ fn create_file_already_exists_fails() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("exists.vhdx");
 
-    // First creation succeeds
     vhdx_tool()
         .args([
             "create",
@@ -169,7 +152,6 @@ fn create_file_already_exists_fails() {
         .assert()
         .success();
 
-    // Second creation at same path should fail
     vhdx_tool()
         .args([
             "create",
@@ -183,10 +165,6 @@ fn create_file_already_exists_fails() {
         .failure()
         .stderr(predicate::str::contains("Error creating VHDX file"));
 }
-
-// ===========================================================================
-// INFO tests
-// ===========================================================================
 
 #[test]
 fn info_text_format_shows_fields() {
@@ -250,10 +228,6 @@ fn info_shows_dynamic_type() {
         .stdout(predicate::str::contains("Disk Type: Dynamic"));
 }
 
-// ===========================================================================
-// CHECK tests
-// ===========================================================================
-
 #[test]
 fn check_valid_file_success() {
     let dir = create_fixed_vhdx();
@@ -288,10 +262,6 @@ fn check_log_replay_flag() {
         .success()
         .stdout(predicate::str::contains("Log replay requested"));
 }
-
-// ===========================================================================
-// SECTIONS tests
-// ===========================================================================
 
 #[test]
 fn sections_header_shows_header_section() {
@@ -351,10 +321,6 @@ fn sections_nonexistent_file_fails() {
         .stderr(predicate::str::contains("Error opening VHDX file"));
 }
 
-// ===========================================================================
-// DIFF tests
-// ===========================================================================
-
 #[test]
 fn diff_parent_on_non_differencing_disk() {
     let dir = create_fixed_vhdx();
@@ -388,10 +354,6 @@ fn diff_nonexistent_file_fails() {
         .stderr(predicate::str::contains("Error opening VHDX file"));
 }
 
-// ===========================================================================
-// REPAIR tests
-// ===========================================================================
-
 #[test]
 fn repair_dry_run_on_valid_file() {
     let dir = create_fixed_vhdx();
@@ -413,10 +375,6 @@ fn repair_nonexistent_file_fails() {
         .stderr(predicate::str::contains("Error"));
 }
 
-// ===========================================================================
-// HELP / VERSION tests
-// ===========================================================================
-
 #[test]
 fn help_flag_shows_vhdx() {
     vhdx_tool()
@@ -430,10 +388,6 @@ fn help_flag_shows_vhdx() {
 fn version_flag() {
     vhdx_tool().arg("--version").assert().success();
 }
-
-// ===========================================================================
-// Fixture tests (guarded — only run when the fixture files exist)
-// ===========================================================================
 
 #[test]
 fn info_on_test_void_vhdx() {
