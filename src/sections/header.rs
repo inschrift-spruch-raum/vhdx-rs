@@ -1,3 +1,12 @@
+//! VHDX 头部区域解析模块
+//!
+//! 本模块实现了 VHDX 文件头部区域（Header Section）的解析，对应 MS-VHDX §2.2。
+//!
+//! 头部区域总大小为 1MB，包含以下结构：
+//! - **文件类型标识符**（[`FileTypeIdentifier`]）— 固定 64KB，包含签名和创建者信息（§2.2.1）
+//! - **头部结构**（[`HeaderStructure`]）— 两个冗余副本，各 4KB，包含序列号、GUID 和日志位置（§2.2.2）
+//! - **区域表**（[`RegionTable`]）— 两个冗余副本，各 64KB，描述 BAT 和元数据区域的位置（§2.2.3）
+
 use crate::common::constants::{
     FILE_TYPE_SIGNATURE, FILE_TYPE_SIZE, HEADER_1_OFFSET, HEADER_2_OFFSET, HEADER_SECTION_SIZE,
     HEADER_SIGNATURE, HEADER_SIZE, LOG_VERSION, REGION_TABLE_1_OFFSET, REGION_TABLE_2_OFFSET,
@@ -7,11 +16,23 @@ use crate::error::{Error, Result};
 use crate::sections::crc32c_with_zero_field;
 use crate::types::Guid;
 
+/// VHDX 头部区域的统一访问接口
+///
+/// 包装 1MB 头部区域的原始数据，提供对文件类型标识符、
+/// 头部结构和区域表的类型化访问。
+///
+/// 头部区域布局（MS-VHDX §2.2）：
+/// - `[0, 64KB)` — 文件类型标识符
+/// - `[64KB, 68KB)` — 头部结构 1
+/// - `[128KB, 132KB)` — 头部结构 2
+/// - `[192KB, 256KB)` — 区域表 1
+/// - `[256KB, 320KB)` — 区域表 2
 pub struct Header {
     raw_data: Vec<u8>,
 }
 
 impl Header {
+    /// 从原始数据创建头部区域实例，验证数据长度必须为 1MB
     pub fn new(data: Vec<u8>) -> Result<Self> {
         if data.len() != HEADER_SECTION_SIZE {
             return Err(Error::InvalidFile(format!(
@@ -23,16 +44,25 @@ impl Header {
         Ok(Self { raw_data: data })
     }
 
+    /// 返回头部区域的原始字节数据
     #[must_use]
     pub fn raw(&self) -> &[u8] {
         &self.raw_data
     }
 
+    /// 获取文件类型标识符（MS-VHDX §2.2.1）
     #[must_use]
     pub fn file_type(&self) -> FileTypeIdentifier<'_> {
         FileTypeIdentifier::new(&self.raw_data[0..FILE_TYPE_SIZE])
     }
 
+    /// 获取指定索引的头部结构（MS-VHDX §2.2.2）
+    ///
+    /// - `index = 0`：返回两个头部中序列号较大的一个（活动头部），
+    ///   根据 MS-VHDX §2.2.2.1，头部更新时会交替写入两个副本，
+    ///   序列号较大的代表最新的有效头部
+    /// - `index = 1`：强制返回头部 1（偏移 64KB）
+    /// - `index = 2`：强制返回头部 2（偏移 128KB）
     #[must_use]
     pub fn header(&self, index: usize) -> Option<HeaderStructure<'_>> {
         match index {
@@ -64,6 +94,7 @@ impl Header {
         }
     }
 
+    /// 获取指定索引的区域表（MS-VHDX §2.2.3），index=0 或 1 返回表 1，index=2 返回表 2
     #[must_use]
     pub fn region_table(&self, index: usize) -> Option<RegionTable<'_>> {
         let offset = match index {
@@ -75,26 +106,36 @@ impl Header {
     }
 }
 
+/// 文件类型标识符（MS-VHDX §2.2.1）
+///
+/// 固定大小 64KB，位于文件开头。
+/// 前 8 字节为签名 "vhdxfile"，随后 512 字节为 UTF-16 LE 编码的创建者字符串。
 pub struct FileTypeIdentifier<'a> {
     data: &'a [u8],
 }
 
 impl<'a> FileTypeIdentifier<'a> {
+    /// 从原始字节数据创建文件类型标识符实例
     #[must_use]
     pub const fn new(data: &'a [u8]) -> Self {
         Self { data }
     }
 
+    /// 返回文件类型标识符的原始字节数据
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
         self.data
     }
 
+    /// 返回 8 字节签名（MS-VHDX §2.2.1），应为 "vhdxfile"
     #[must_use]
     pub fn signature(&self) -> &[u8] {
         &self.data[0..8]
     }
 
+    /// 返回 UTF-16 LE 编码的创建者字符串（MS-VHDX §2.2.1）
+    ///
+    /// 从偏移 8 开始读取最多 512 字节，以空字符结尾。
     #[must_use]
     pub fn creator(&self) -> String {
         let creator_bytes = &self.data[8..8 + 512.min(self.data.len().saturating_sub(8))];
@@ -106,6 +147,10 @@ impl<'a> FileTypeIdentifier<'a> {
         String::from_utf16_lossy(&utf16)
     }
 
+    /// 构造新的文件类型标识符字节数据（MS-VHDX §2.2.1）
+    ///
+    /// 写入 "vhdxfile" 签名和可选的创建者字符串（UTF-16 LE 编码），
+    /// 返回固定 64KB 大小的数据。
     #[must_use]
     pub fn create(creator: Option<&str>) -> Vec<u8> {
         let mut data = vec![0u8; FILE_TYPE_SIZE];
@@ -125,11 +170,30 @@ impl<'a> FileTypeIdentifier<'a> {
     }
 }
 
+/// VHDX 头部结构（MS-VHDX §2.2.2）
+///
+/// 每个头部结构固定 4KB，VHDX 文件包含两个冗余副本。
+/// 包含序列号、多个 GUID、日志版本和位置等信息。
+///
+/// 字段布局（偏移量相对于结构起始）：
+/// | 偏移 | 大小 | 字段 |
+/// |------|------|------|
+/// | 0 | 4 | 签名 "head" |
+/// | 4 | 4 | 校验和（CRC32C） |
+/// | 8 | 8 | 序列号 |
+/// | 16 | 16 | 文件写入 GUID |
+/// | 32 | 16 | 数据写入 GUID |
+/// | 48 | 16 | 日志 GUID |
+/// | 64 | 2 | 日志版本 |
+/// | 66 | 2 | VHDX 版本 |
+/// | 68 | 4 | 日志长度 |
+/// | 72 | 8 | 日志偏移量 |
 pub struct HeaderStructure<'a> {
     data: &'a [u8],
 }
 
 impl<'a> HeaderStructure<'a> {
+    /// 从原始字节数据创建头部结构实例，验证数据长度必须为 4KB
     pub fn new(data: &'a [u8]) -> Result<Self> {
         if data.len() != HEADER_SIZE {
             return Err(Error::CorruptedHeader(format!(
@@ -141,16 +205,19 @@ impl<'a> HeaderStructure<'a> {
         Ok(Self { data })
     }
 
+    /// 返回头部结构的原始字节数据
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
         self.data
     }
 
+    /// 头部签名 "head"（MS-VHDX §2.2.2）
     #[must_use]
     pub fn signature(&self) -> &[u8] {
         &self.data[0..4]
     }
 
+    /// CRC32C 校验和（MS-VHDX §2.2.2），计算时校验和字段本身置零
     #[must_use]
     pub fn checksum(&self) -> u32 {
         u32::from_le_bytes(self.data[4..8].try_into().unwrap())
@@ -165,46 +232,55 @@ impl<'a> HeaderStructure<'a> {
         Ok(())
     }
 
+    /// 序列号（MS-VHDX §2.2.2），用于确定两个头部副本中哪个是活动的
     #[must_use]
     pub fn sequence_number(&self) -> u64 {
         u64::from_le_bytes(self.data[8..16].try_into().unwrap())
     }
 
+    /// 文件写入 GUID（MS-VHDX §2.2.2），每次文件打开并写入时更新
     #[must_use]
     pub fn file_write_guid(&self) -> Guid {
         Guid::from_bytes(self.data[16..32].try_into().unwrap())
     }
 
+    /// 数据写入 GUID（MS-VHDX §2.2.2），每次虚拟磁盘数据写入时更新
     #[must_use]
     pub fn data_write_guid(&self) -> Guid {
         Guid::from_bytes(self.data[32..48].try_into().unwrap())
     }
 
+    /// 日志 GUID（MS-VHDX §2.2.2），标识当前活跃的日志
     #[must_use]
     pub fn log_guid(&self) -> Guid {
         Guid::from_bytes(self.data[48..64].try_into().unwrap())
     }
 
+    /// 日志版本号（MS-VHDX §2.3.1.1），当前为 0
     #[must_use]
     pub fn log_version(&self) -> u16 {
         u16::from_le_bytes(self.data[64..66].try_into().unwrap())
     }
 
+    /// VHDX 格式版本号（MS-VHDX §2.2.2），当前为 1
     #[must_use]
     pub fn version(&self) -> u16 {
         u16::from_le_bytes(self.data[66..68].try_into().unwrap())
     }
 
+    /// 日志区域长度（MS-VHDX §2.2.2），单位字节
     #[must_use]
     pub fn log_length(&self) -> u32 {
         u32::from_le_bytes(self.data[68..72].try_into().unwrap())
     }
 
+    /// 日志区域在文件中的偏移量（MS-VHDX §2.2.2）
     #[must_use]
     pub fn log_offset(&self) -> u64 {
         u64::from_le_bytes(self.data[72..80].try_into().unwrap())
     }
 
+    /// 构造新的头部结构字节数据，自动计算 CRC32C 校验和
     #[must_use]
     pub fn create(
         sequence_number: u64, file_write_guid: Guid, data_write_guid: Guid, log_guid: Guid,
@@ -230,11 +306,16 @@ impl<'a> HeaderStructure<'a> {
     }
 }
 
+/// 区域表（MS-VHDX §2.2.3）
+///
+/// 描述 VHDX 文件中各区域（如 BAT、元数据）的位置和大小。
+/// VHDX 文件包含两个冗余的区域表副本。
 pub struct RegionTable<'a> {
     data: &'a [u8],
 }
 
 impl<'a> RegionTable<'a> {
+    /// 从原始字节数据创建区域表实例，验证数据长度必须为 64KB
     pub fn new(data: &'a [u8]) -> Result<Self> {
         if data.len() != REGION_TABLE_SIZE {
             return Err(Error::InvalidRegionTable(format!(
@@ -246,16 +327,19 @@ impl<'a> RegionTable<'a> {
         Ok(Self { data })
     }
 
+    /// 返回区域表的原始字节数据
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
         self.data
     }
 
+    /// 获取区域表头部（MS-VHDX §2.2.3.1）
     #[must_use]
     pub fn header(&self) -> RegionTableHeader<'_> {
         RegionTableHeader::new(&self.data[0..16])
     }
 
+    /// 按索引获取区域表条目（MS-VHDX §2.2.3.2），每个条目 32 字节
     #[must_use]
     pub fn entry(&self, index: u32) -> Option<RegionTableEntry<'_>> {
         let header = self.header();
@@ -269,43 +353,53 @@ impl<'a> RegionTable<'a> {
         RegionTableEntry::new(&self.data[offset..offset + 32]).ok()
     }
 
+    /// 返回所有区域表条目的列表
     #[must_use]
     pub fn entries(&self) -> Vec<RegionTableEntry<'_>> {
         let count = self.header().entry_count();
         (0..count).filter_map(|i| self.entry(i)).collect()
     }
 
+    /// 按 GUID 查找区域表条目
     #[must_use]
     pub fn find_entry(&self, guid: &Guid) -> Option<RegionTableEntry<'_>> {
         self.entries().into_iter().find(|e| e.guid() == *guid)
     }
 }
 
+/// 区域表头部（MS-VHDX §2.2.3.1）
+///
+/// 包含区域表的签名、校验和和条目数量。
 pub struct RegionTableHeader<'a> {
     data: &'a [u8],
 }
 
 impl<'a> RegionTableHeader<'a> {
+    /// 从原始字节数据创建区域表头部实例
     #[must_use]
     pub const fn new(data: &'a [u8]) -> Self {
         Self { data }
     }
 
+    /// 返回区域表头部的原始字节数据
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
         self.data
     }
 
+    /// 返回 4 字节签名（MS-VHDX §2.2.3.1），应为 "regi"
     #[must_use]
     pub fn signature(&self) -> &[u8] {
         &self.data[0..4]
     }
 
+    /// CRC32C 校验和（MS-VHDX §2.2.3.1），计算时校验和字段本身置零
     #[must_use]
     pub fn checksum(&self) -> u32 {
         u32::from_le_bytes(self.data[4..8].try_into().unwrap())
     }
 
+    /// 验证 CRC32C 校验和的正确性
     pub fn verify_checksum(&self) -> Result<()> {
         let expected = self.checksum();
         let actual = crc32c_with_zero_field(self.data, 4, 4);
@@ -315,17 +409,26 @@ impl<'a> RegionTableHeader<'a> {
         Ok(())
     }
 
+    /// 区域表中的条目数量（MS-VHDX §2.2.3.1）
     #[must_use]
     pub fn entry_count(&self) -> u32 {
         u32::from_le_bytes(self.data[8..12].try_into().unwrap())
     }
 }
 
+/// 区域表条目（MS-VHDX §2.2.3.2）
+///
+/// 每个条目描述一个区域，包含：
+/// - 区域 GUID（16 字节）— 标识区域类型
+/// - 文件偏移量（8 字节）— 区域在文件中的起始位置
+/// - 长度（4 字节）— 区域大小
+/// - 必需标志（4 字节）— 是否为 VHDX 文件必需的区域
 pub struct RegionTableEntry<'a> {
     data: &'a [u8],
 }
 
 impl<'a> RegionTableEntry<'a> {
+    /// 从原始字节数据创建区域表条目实例，验证数据长度必须为 32 字节
     pub fn new(data: &'a [u8]) -> Result<Self> {
         if data.len() != 32 {
             return Err(Error::InvalidRegionTable(
@@ -335,26 +438,31 @@ impl<'a> RegionTableEntry<'a> {
         Ok(Self { data })
     }
 
+    /// 返回区域表条目的原始字节数据
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
         self.data
     }
 
+    /// 区域 GUID（MS-VHDX §2.2.3.2），标识区域类型（如 BAT、元数据区域）
     #[must_use]
     pub fn guid(&self) -> Guid {
         Guid::from_bytes(self.data[0..16].try_into().unwrap())
     }
 
+    /// 区域在文件中的偏移量（MS-VHDX §2.2.3.2），单位字节
     #[must_use]
     pub fn file_offset(&self) -> u64 {
         u64::from_le_bytes(self.data[16..24].try_into().unwrap())
     }
 
+    /// 区域长度（MS-VHDX §2.2.3.2），单位字节
     #[must_use]
     pub fn length(&self) -> u32 {
         u32::from_le_bytes(self.data[24..28].try_into().unwrap())
     }
 
+    /// 区域是否为 VHDX 文件必需（MS-VHDX §2.2.3.2），非零值表示必需
     #[must_use]
     pub fn required(&self) -> bool {
         u32::from_le_bytes(self.data[28..32].try_into().unwrap()) != 0

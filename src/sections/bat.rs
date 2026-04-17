@@ -1,12 +1,33 @@
+//! 块分配表（BAT）解析模块
+//!
+//! 本模块实现了 VHDX 块分配表（Block Allocation Table）的解析，对应 MS-VHDX §2.5。
+//!
+//! BAT 将虚拟磁盘的逻辑块地址映射到 VHDX 文件中的物理偏移量。
+//! 每个 BAT 条目为 8 字节（64 位），采用位字段编码：
+//! - 低 3 位：块状态（Payload 或 SectorBitmap）
+//! - 中间 17 位：保留
+//! - 高 44 位：文件偏移量（以 MB 为单位）
+//!
+//! BAT 中的条目按 Payload Block 和 Sector Bitmap Block 交错排列，
+//! 交错间隔由块比率（Chunk ratio）决定（MS-VHDX §2.5）。
+
 use crate::common::constants::{BAT_ENTRY_SIZE, CHUNK_RATIO_CONSTANT, MiB};
 use crate::error::{Error, Result};
 
+/// 块分配表（BAT）（MS-VHDX §2.5）
+///
+/// 包装 BAT 的原始数据和条目计数。
+/// BAT 条目按 Payload Block 和 Sector Bitmap Block 交错排列，
+/// 总条目数 = Payload Block 数 + Sector Bitmap Block 数。
 pub struct Bat {
+    /// BAT 的原始字节数据
     raw_data: Vec<u8>,
+    /// BAT 条目总数（Payload + Sector Bitmap）
     entry_count: usize,
 }
 
 impl Bat {
+    /// 从原始数据创建 BAT 实例，验证数据长度是否足够容纳指定数量的条目
     pub fn new(data: Vec<u8>, entry_count: u64) -> Result<Self> {
         let entry_count: usize = entry_count.try_into().map_err(|_| {
             Error::InvalidFile(format!("entry_count {entry_count} exceeds usize::MAX"))
@@ -27,17 +48,20 @@ impl Bat {
         })
     }
 
+    /// 返回 BAT 的原始字节数据
     #[must_use]
     pub fn raw(&self) -> &[u8] {
         &self.raw_data
     }
 
+    /// 获取指定索引处的 BAT 条目，解析 64 位位字段
     #[must_use]
     pub fn entry(&self, index: usize) -> Option<BatEntry> {
         if index >= self.entry_count {
             return None;
         }
         let offset = index * BAT_ENTRY_SIZE;
+        // 从原始数据中读取 8 字节小端序 64 位整数
         let raw_value = u64::from_le_bytes([
             self.raw_data[offset],
             self.raw_data[offset + 1],
@@ -51,6 +75,7 @@ impl Bat {
         BatEntry::from_raw(raw_value).ok()
     }
 
+    /// 返回 BAT 条目迭代器
     #[must_use]
     pub const fn entries(&self) -> BatEntryIter<'_> {
         BatEntryIter {
@@ -60,16 +85,19 @@ impl Bat {
         }
     }
 
+    /// 返回 BAT 中的条目总数
     #[must_use]
     pub const fn len(&self) -> usize {
         self.entry_count
     }
 
+    /// 检查 BAT 是否为空（无条目）
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.entry_count == 0
     }
 
+    /// 计算块比率（MS-VHDX §2.5），公式: (2^23 × 逻辑扇区大小) / 块大小
     #[must_use]
     pub fn calculate_chunk_ratio(logical_sector_size: u32, block_size: u32) -> u32 {
         let result =
@@ -77,16 +105,19 @@ impl Bat {
         result.try_into().unwrap_or(u32::MAX)
     }
 
+    /// 计算虚拟磁盘所需的 Payload Block 数量，公式: ceil(虚拟磁盘大小 / 块大小)
     #[must_use]
     pub fn calculate_payload_blocks(virtual_disk_size: u64, block_size: u32) -> u64 {
         virtual_disk_size.div_ceil(u64::from(block_size))
     }
 
+    /// 计算所需的 Sector Bitmap Block 数量，公式: ceil(Payload Block 数 / 块比率)
     #[must_use]
     pub fn calculate_sector_bitmap_blocks(payload_blocks: u64, chunk_ratio: u32) -> u64 {
         payload_blocks.div_ceil(u64::from(chunk_ratio))
     }
 
+    /// 计算 BAT 总条目数 = Payload Block 数 + Sector Bitmap Block 数
     #[must_use]
     pub fn calculate_total_entries(
         virtual_disk_size: u64, block_size: u32, logical_sector_size: u32,
@@ -99,9 +130,15 @@ impl Bat {
     }
 }
 
+/// BAT 条目迭代器
+///
+/// 按索引顺序遍历所有 BAT 条目，返回 (索引, 条目) 对。
 pub struct BatEntryIter<'a> {
+    /// 被迭代的 BAT 引用
     bat: &'a Bat,
+    /// 当前迭代位置
     current: usize,
+    /// 迭代终止位置（不含）
     end: usize,
 }
 
@@ -119,15 +156,32 @@ impl Iterator for BatEntryIter<'_> {
     }
 }
 
+/// BAT 条目（MS-VHDX §2.5.1）
+///
+/// 每个条目为 64 位，位字段布局如下：
+/// ```text
+/// | 位范围  | 大小   | 含义                      |
+/// |---------|--------|---------------------------|
+/// | [0:2]   | 3 位   | 块状态（BatState）        |
+/// | [3:19]  | 17 位  | 保留（必须为零）          |
+/// | [20:63] | 44 位  | 文件偏移量（以 MB 为单位）|
+/// ```
+///
+/// 文件偏移量为 0 时，表示该块没有分配文件空间。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BatEntry {
+    /// 块状态（Payload 或 Sector Bitmap）
     pub state: BatState,
+    /// 文件偏移量（以 MB 为单位）
     pub file_offset_mb: u64,
 }
 
 impl BatEntry {
+    /// 从原始 64 位值解析 BAT 条目，提取低 3 位状态和高 44 位偏移量
     pub fn from_raw(raw: u64) -> std::result::Result<Self, Error> {
+        // 低 3 位为块状态
         let state_bits = (raw & 0x7) as u8;
+        // 高 44 位为文件偏移量（以 MB 为单位）
         let offset_mb = raw >> 20;
 
         let state = BatState::from_bits(state_bits)?;
@@ -138,17 +192,20 @@ impl BatEntry {
         })
     }
 
+    /// 将 BAT 条目编码回 64 位原始值
     #[must_use]
     pub fn raw(&self) -> u64 {
         let state_bits = u64::from(self.state.to_bits());
         (self.file_offset_mb << 20) | state_bits
     }
 
+    /// 返回文件偏移量（以字节为单位），将 MB 值转换为字节数
     #[must_use]
     pub const fn file_offset(&self) -> u64 {
         self.file_offset_mb * MiB
     }
 
+    /// 使用指定的状态和偏移量创建新的 BAT 条目
     #[must_use]
     pub const fn new(state: BatState, file_offset_mb: u64) -> Self {
         Self {
@@ -158,13 +215,22 @@ impl BatEntry {
     }
 }
 
+/// BAT 条目的块状态（MS-VHDX §2.5.1）
+///
+/// 根据状态值的不同，BAT 条目可能代表 Payload Block 或 Sector Bitmap Block。
+/// 有效的 Payload 块状态值为 0-3、6、7，无效值（4、5）会触发错误。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BatState {
+    /// Payload Block 状态
     Payload(PayloadBlockState),
+    /// Sector Bitmap Block 状态
     SectorBitmap(SectorBitmapState),
 }
 
 impl BatState {
+    /// 从 3 位状态值解析块状态
+    ///
+    /// 值 0-3、6、7 映射为 Payload Block 状态，值 4、5 为无效状态。
     pub const fn from_bits(bits: u8) -> std::result::Result<Self, Error> {
         match bits {
             0 | 1 | 2 | 3 | 6 | 7 => Ok(Self::Payload(PayloadBlockState::from_bits(bits))),
@@ -172,6 +238,7 @@ impl BatState {
         }
     }
 
+    /// 将块状态编码回 3 位状态值
     #[must_use]
     pub const fn to_bits(&self) -> u8 {
         match self {
@@ -181,17 +248,27 @@ impl BatState {
     }
 }
 
+/// Payload Block 状态枚举（MS-VHDX §2.5.1.1）
+///
+/// 定义了 Payload Block 的 6 种有效状态，每种状态有不同的读写语义。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PayloadBlockState {
+    /// 块不存在（状态值 0）— 默认状态，块内容未定义，读取时返回零
     NotPresent = 0,
+    /// 块未定义（状态值 1）— 块可能包含历史数据，不应依赖其内容
     Undefined = 1,
+    /// 块内容为零（状态值 2）— 块的所有字节为零，无对应文件数据
     Zero = 2,
+    /// 块已 UNMAP（状态值 3）— 已被 TRIM/UNMAP 操作释放，内容为零或历史数据
     Unmapped = 3,
+    /// 块数据完全存在（状态值 6）— 块的全部数据存储在 VHDX 文件中
     FullyPresent = 6,
+    /// 块数据部分存在（状态值 7）— 仅用于差分 VHDX，需检查扇区位图确定哪些扇区有效
     PartiallyPresent = 7,
 }
 
 impl PayloadBlockState {
+    /// 从状态值解析 Payload Block 状态，未知值回退为 NotPresent
     #[must_use]
     pub const fn from_bits(bits: u8) -> Self {
         match bits {
@@ -204,6 +281,7 @@ impl PayloadBlockState {
         }
     }
 
+    /// 将 Payload Block 状态转换为状态值
     #[must_use]
     pub const fn to_bits(&self) -> u8 {
         match self {
@@ -216,11 +294,15 @@ impl PayloadBlockState {
         }
     }
 
+    /// 检查块是否已分配文件空间（FullyPresent 或 PartiallyPresent）
     #[must_use]
     pub const fn is_allocated(&self) -> bool {
         matches!(self, Self::FullyPresent | Self::PartiallyPresent)
     }
 
+    /// 检查读取该块时是否需要从 VHDX 文件中读取数据
+    ///
+    /// FullyPresent、PartiallyPresent 和 Undefined 状态需要实际 I/O 操作。
     #[must_use]
     pub const fn needs_read(&self) -> bool {
         matches!(
@@ -230,13 +312,19 @@ impl PayloadBlockState {
     }
 }
 
+/// Sector Bitmap Block 状态枚举（MS-VHDX §2.5.1.2）
+///
+/// Sector Bitmap 用于差分 VHDX 中跟踪每个扇区是否存在于差分文件。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SectorBitmapState {
+    /// 扇区位图不存在（状态值 0）— 所有扇区均不存在于差分文件
     NotPresent = 0,
+    /// 扇区位图存在（状态值 6）— 位图数据存储在 VHDX 文件中
     Present = 6,
 }
 
 impl SectorBitmapState {
+    /// 从状态值解析 Sector Bitmap Block 状态，值 6 为 Present，其余为 NotPresent
     #[must_use]
     pub const fn from_bits(bits: u8) -> Self {
         match bits {
@@ -245,6 +333,7 @@ impl SectorBitmapState {
         }
     }
 
+    /// 将 Sector Bitmap Block 状态转换为状态值
     #[must_use]
     pub const fn to_bits(&self) -> u8 {
         match self {
