@@ -13,18 +13,36 @@ vhdx::
 │   ├── create(path) -> File::CreateOptions # 链式创建
 │   ├── sections(&self) -> &Sections        # 获取所有sections
 │   ├── io(&self) -> IO                    # 获取IO模块
+│   ├── validator(&self) -> validation::SpecValidator  # 获取规范校验器
 │   └── inner(&self) -> &std::fs::File
 │
 │   └── OpenOptions                         # 关联类型：打开选项
 │       ├── write(self) -> Self             # 启用写权限（RW）
+│       ├── strict(self, bool) -> Self      # 是否严格校验 required unknown（默认 true）
+│       ├── log_replay(self, LogReplayPolicy) -> Self # 日志回放策略
 │       └── finish(self) -> Result<File>    # 完成打开
 │
 │   └── CreateOptions                          # 关联类型：创建选项
 │       ├── size(self, u64) -> Self            # 必需：虚拟磁盘大小
 │       ├── fixed(self, bool) -> Self          # 可选：固定磁盘
-│       ├── has_parent(self, bool) -> Self     # 可选：差分磁盘
 │       ├── block_size(self, u32) -> Self      # 可选：块大小
+│       ├── logical_sector_size(self, u32) -> Self   # 可选：逻辑扇区大小(512/4096)
+│       ├── physical_sector_size(self, u32) -> Self  # 可选：物理扇区大小(512/4096)
+│       ├── parent_path(self, impl AsRef<Path>) -> Self # 差分盘父路径
 │       └── finish(self) -> Result<File>       # 完成创建
+│
+├── validation::                             # 规范一致性校验模块（只读）
+│   ├── SpecValidator                        # 规范校验器
+│   │   ├── validate_file(&self) -> Result<()> # 总入口（Header/Region/BAT/Metadata/Log）
+│   │   ├── validate_header(&self) -> Result<()>
+│   │   ├── validate_region_table(&self) -> Result<()>
+│   │   ├── validate_bat(&self) -> Result<()>
+│   │   ├── validate_metadata(&self) -> Result<()>
+│   │   ├── validate_required_metadata_items(&self) -> Result<()>
+│   │   ├── validate_log(&self) -> Result<()>
+│   │   ├── validate_parent_locator(&self) -> Result<()>
+│   │   └── validate_parent_chain(&self) -> Result<ParentChainInfo> # 差分链校验
+│   └── ValidationIssue                      # 可选：结构化校验问题（用于报告）
 │
 ├── section::                               # Section模块 - 物理文件结构映射
 │   ├── Sections                            # 容器，管理所有sections (懒加载)
@@ -34,32 +52,46 @@ vhdx::
 │   │   └── log(&self) -> &Log
 │   │
 │   ├── Header                              # Header Section (1 MB)
-│   │   ├── raw(&self) -> &[u8]
 │   │   ├── file_type(&self) -> &FileTypeIdentifier
 │   │   ├── header(&self, index: usize) -> Option<&HeaderStructure>  # 0=current, 1=header1, 2=header2
 │   │   └── region_table(&self, index: usize) -> Option<&RegionTable>  # 0=current, 1=rt1, 2=rt2
 │   │
 │   │   └── FileTypeIdentifier              # 文件类型标识符
-│   │       └── raw(&self) -> &[u8]
+│   │       ├── signature: [u8; 8]
+│   │       └── creator: [u8; 512]
 │   │
 │   │   └── HeaderStructure                 # VHDX Header
-│   │       └── raw(&self) -> &[u8]
+│   │       ├── signature: [u8; 4]
+│   │       ├── checksum: u32
+│   │       ├── sequence_number: u64
+│   │       ├── file_write_guid: Guid
+│   │       ├── data_write_guid: Guid
+│   │       ├── log_guid: Guid
+│   │       ├── log_version: u16
+│   │       ├── version: u16
+│   │       ├── log_length: u32
+│   │       └── log_offset: u64
 │   │
 │   │   └── RegionTable                     # Region Table
-│   │       ├── raw(&self) -> &[u8]
 │   │       └── RegionTableHeader           # Region Table Header
-│   │           └── raw(&self) -> &[u8]
+│   │           ├── signature: [u8; 4]
+│   │           ├── checksum: u32
+│   │           ├── entry_count: u32
+│   │           └── reserved: u32
 │   │       └── RegionTableEntry            # Region Table Entry
-│   │           └── raw(&self) -> &[u8]
+│   │           ├── guid: Guid
+│   │           ├── file_offset: u64
+│   │           ├── length: u32
+│   │           └── required: u32
 │   │
 │   ├── Bat                                 # BAT Section
-│   │   ├── raw(&self) -> &[u8]
 │   │   ├── entry(&self, index: u64) -> Option<&BatEntry>
 │   │   ├── entries(&self) -> &[BatEntry]
 │   │   └── len(&self) -> usize
 │   │
 │   │   └── BatEntry                        # BAT Entry 结构体
-│   │       └── raw(&self) -> u64
+│   │       ├── state: BatState
+│   │       ├── file_offset_mb: u64
 │   │
 │   │       └──BatState 枚举:                  # Entry 类型枚举
 │   │          ├── Payload(PayloadBlockState)
@@ -78,21 +110,26 @@ vhdx::
 │   │              └── Present
 │   │
 │   ├── Metadata                            # Metadata Section
-│   │   ├── raw(&self) -> &[u8]
 │   │   ├── table(&self) -> &MetadataTable
 │   │   └── items(&self) -> &MetadataItems
 │   │
 │   │   └── MetadataTable
-│   │       ├── raw(&self) -> &[u8]
 │   │       ├── header(&self) -> &TableHeader
 │   │       ├── entry(&self, item_id: &Guid) -> Option<&TableEntry>
 │   │       └── entries(&self) -> &[TableEntry]
 │   │
 │   │       └── TableHeader
-│   │           └── raw(&self) -> &[u8]
+│   │           ├── signature: [u8; 8]
+│   │           ├── reserved: [u8; 2]
+│   │           ├── entry_count: u16
+│   │           └── reserved2: [u8; 20]
 │   │
 │   │       └── TableEntry
-│   │           ├── raw(&self) -> &[u8]
+│   │           ├── item_id: Guid
+│   │           ├── offset: u32
+│   │           ├── length: u32
+│   │           ├── flags: u32
+│   │           └── reserved: u32
 │   │           └── flags(&self) -> &EntryFlags
 │   │
 │   │           └── EntryFlags
@@ -109,55 +146,76 @@ vhdx::
 │   │       └── parent_locator(&self) -> Option<&ParentLocator>
 │   │
 │   │       └── FileParameters
-│   │           ├── raw(&self) -> &[u8]
 │   │           ├── block_size(&self) -> u32
 │   │           ├── leave_block_allocated(&self) -> bool
 │   │           └── has_parent(&self) -> bool
 │   │
 │   │       └── ParentLocator
-│   │           ├── raw(&self) -> &[u8]
 │   │           ├── header(&self) -> &LocatorHeader
 │   │           ├── entry(&self, index: usize) -> Option<&KeyValueEntry>
 │   │           ├── entries(&self) -> &[KeyValueEntry]
 │   │           └── key_value_data(&self) -> &[u8]
+│   │           └── resolve_parent_path(&self) -> Option<PathBuf> # 按 relative_path->volume_path->absolute_win32_path 顺序解析
 │   │
 │   │           └── LocatorHeader
-│   │               └── raw(&self) -> &[u8]
+│   │               ├── locator_type: Guid
+│   │               ├── reserved: u16
+│   │               └── key_value_count: u16
 │   │
 │   │           └── KeyValueEntry
-│   │               ├── raw(&self) -> &[u8]
+│   │               ├── key_offset: u32
+│   │               ├── value_offset: u32
+│   │               ├── key_length: u16
+│   │               ├── value_length: u16
 │   │               ├── key(&self, data: &[u8]) -> Option<String>
 │   │               └── value(&self, data: &[u8]) -> Option<String>
 │   │
 │   └── Log                                 # Log Section
-│       ├── raw(&self) -> &[u8]
 │       ├── entry(&self, index: usize) -> Option<&Entry>
 │       └── entries(&self) -> &[Entry]
 │    
 │       └── Entry                           # Log Entry
-│           ├── raw(&self) -> &[u8]
 │           ├── header(&self) -> &LogEntryHeader
 │           ├── descriptor(&self, index: usize) -> Option<&Descriptor>
 │           ├── descriptors(&self) -> &[Descriptor]
 │           └── data(&self) -> &[DataSector]
 │    
 │           └── Descriptor                  # Descriptor 枚举
-│               ├── raw(&self) -> &[u8]
 │               ├── Data(DataDescriptor)    # Data Descriptor 变体
 │               │
 │               └── Zero(ZeroDescriptor)    # Zero Descriptor 变体
 │    
 │               └── DataDescriptor          # Data Descriptor
-│                   └── raw(&self) -> &[u8]
+│                   ├── signature: [u8; 4]
+│                   ├── trailing_bytes: u32
+│                   ├── leading_bytes: u64
+│                   ├── file_offset: u64
+│                   └── sequence_number: u64
 │    
 │               └── ZeroDescriptor          # Zero Descriptor
-│                   └── raw(&self) -> &[u8]
+│                   ├── signature: [u8; 4]
+│                   ├── reserved: u32
+│                   ├── zero_length: u64
+│                   ├── file_offset: u64
+│                   └── sequence_number: u64
 │    
 │           └── LogEntryHeader              # Log Entry Header
-│               └── raw(&self) -> &[u8]
+│               ├── signature: [u8; 4]
+│               ├── checksum: u32
+│               ├── entry_length: u32
+│               ├── tail: u32
+│               ├── sequence_number: u64
+│               ├── descriptor_count: u32
+│               ├── reserved: u32
+│               ├── log_guid: Guid
+│               ├── flushed_file_offset: u64
+│               └── last_file_offset: u64
 │    
 │           └── DataSector                  # Data Sector
-│               └── raw(&self) -> &[u8]
+│               ├── signature: [u8; 4]
+│               ├── sequence_high: u32
+│               ├── data: [u8; 4084]
+│               └── sequence_low: u32
 │    
 ├── IO                                      # IO模块 (扇区级操作)
 │   └── sector(&self, sector: u64) -> Option<Sector>  # 输入: 全局扇区号
@@ -168,6 +226,15 @@ vhdx::
 │       └── write(&self, data: &[u8]) -> Result<()>
 │
 ├── Guid                                    # GUID 类型
+├── LogReplayPolicy                         # 日志回放策略
+│   ├── Require                             # 若存在日志则返回 LogReplayRequired
+│   ├── Auto                                # 打开阶段自动回放日志
+│   ├── InMemoryOnReadOnly                  # 只读场景以内存方式回放
+│   └── ReadOnlyNoReplay                    # 只读打开且不回放日志（允许带未回放日志读取元数据）
+├── ParentChainInfo                         # 差分链校验结果
+│   ├── child: PathBuf                      # 当前子盘路径
+│   ├── parent: PathBuf                     # 解析出的父盘路径
+│   └── linkage_matched: bool               # 是否匹配 parent_linkage / parent_linkage2
 │
 └── Error                                   # 错误类型
     ├── Io(std::io::Error)
@@ -236,10 +303,16 @@ impl File {
     
     /// 获取IO模块（用于扇区级读写）
     /// 懒加载：内部Sector缓存按需从文件读取
+    /// 前置条件：文件无待回放日志，或已按策略完成日志回放
     pub fn io(&self) -> IO;
+
+    /// 获取规范校验器（只读）
+    ///
+    /// 说明：校验逻辑被独立到 validation 模块，避免与 File 的打开/创建职责耦合。
+    pub fn validator(&self) -> validation::SpecValidator;
     
     /// 获取底层文件句柄（std::fs::File）
-    /// 用户可通过此句柄直接进行底层 IO 操作
+    /// 可用于诊断或结构导出；不得用于虚拟磁盘 payload 数据面读写。
     pub fn inner(&self) -> &std::fs::File;
 }
 ```
@@ -254,9 +327,49 @@ impl File {
 impl File::OpenOptions {
     /// 启用写权限（默认为只读）
     pub fn write(self) -> Self;
+
+    /// 设置严格模式
+    ///
+    /// strict=true 时，遇到 required 但无法识别的 region / metadata item 必须失败。
+    pub fn strict(self, strict: bool) -> Self;
+
+    /// 设置日志回放策略
+    pub fn log_replay(self, policy: LogReplayPolicy) -> Self;
     
     /// 完成打开操作
+    ///
+    /// 规范约束：
+    /// - 若日志非空且策略为 `Require`，必须先完成 replay，否则返回 `Error::LogReplayRequired`。
+    /// - 若策略为 `ReadOnlyNoReplay`，允许只读打开但不回放日志；
+    ///   此时仅保证结构读取（Header/Region/Metadata 等），不保证 payload 数据面一致性。
     pub fn finish(self) -> Result<File>;
+}
+```
+
+```rust
+/// 日志回放策略
+pub enum LogReplayPolicy {
+    /// 若存在日志则返回 LogReplayRequired
+    Require,
+    /// 打开阶段自动回放日志
+    Auto,
+    /// 只读场景允许以内存方式回放
+    InMemoryOnReadOnly,
+    /// 只读打开且不回放日志
+    ///
+    /// 约束：仅允许结构读取（Header/Region/Metadata 等），
+    /// 不保证 payload 数据面的一致性读取。
+    ReadOnlyNoReplay,
+}
+
+/// 差分链校验结果
+pub struct ParentChainInfo {
+    /// 当前子盘路径
+    pub child: PathBuf,
+    /// 解析出的父盘路径
+    pub parent: PathBuf,
+    /// 是否匹配 parent_linkage / parent_linkage2
+    pub linkage_matched: bool,
 }
 ```
 
@@ -269,19 +382,104 @@ impl File {
 
 impl File::CreateOptions {
     /// 设置虚拟磁盘大小（必需）
+    ///
+    /// 约束：必须是 logical_sector_size 的整数倍，且 <= 64TB。
     pub fn size(self, virtual_size: u64) -> Self;
     
     /// 设置是否为固定磁盘（可选，默认 Dynamic）
     pub fn fixed(self, fixed: bool) -> Self;
     
-    /// 设置是否为差分磁盘（可选，默认 false）
-    pub fn has_parent(self, has_parent: bool) -> Self;
-    
     /// 设置块大小（可选，默认 32MB）
+    ///
+    /// 约束：必须在 [1MB, 256MB] 且为 2 的幂。
     pub fn block_size(self, size: u32) -> Self;
+
+    /// 设置逻辑扇区大小（可选，默认 4096）
+    ///
+    /// 约束：只能为 512 或 4096。
+    pub fn logical_sector_size(self, size: u32) -> Self;
+
+    /// 设置物理扇区大小（可选，默认 4096）
+    ///
+    /// 约束：只能为 512 或 4096，且必须 >= logical_sector_size。
+    pub fn physical_sector_size(self, size: u32) -> Self;
+
+    /// 设置父磁盘路径（设置后即创建差分盘）
+    pub fn parent_path(self, path: impl AsRef<Path>) -> Self;
     
     /// 完成创建操作
+    ///
+    /// 失败条件示例：
+    /// - 参数违反规范约束 -> Error::InvalidParameter
+    /// - 指定 parent_path 但 Parent Locator 约束不满足 -> Error::ParentNotFound / Error::InvalidFile
     pub fn finish(self) -> Result<File>;
+}
+```
+
+---
+
+### 3a. validation - 规范一致性校验模块（独立）
+
+```rust
+pub mod validation {
+    use crate::error::Result;
+
+    /// 规范一致性校验器（只读）
+    ///
+    /// 职责：将 `validate_spec_compliance` 的规则独立在单一模块中，
+    /// 便于按 MS-VHDX 章节维护与测试。
+    pub struct SpecValidator;
+
+    impl SpecValidator {
+        /// 总入口：执行全部结构校验
+        ///
+        /// 对应 MS-VHDX 规范章节：
+        /// - Layout: §2.1（对齐/非重叠）
+        /// - Header/Region: §2.2
+        /// - Log: §2.3
+        /// - BAT: §2.5
+        /// - Metadata: §2.6
+        pub fn validate_file(&self) -> Result<()>;
+
+        /// Header Section 校验（签名/CRC/current header/version/log 对齐）
+        pub fn validate_header(&self) -> Result<()>;
+
+        /// Region Table 校验（regi/CRC/entry 约束/required unknown 拒绝加载）
+        pub fn validate_region_table(&self) -> Result<()>;
+
+        /// BAT 校验（entry 状态合法性与磁盘类型匹配）
+        pub fn validate_bat(&self) -> Result<()>;
+
+        /// Metadata 校验（table/entry/已知项约束，不含 required 完整性）
+        pub fn validate_metadata(&self) -> Result<()>;
+
+        /// 仅校验 Metadata required item 约束
+        ///
+        /// 对于 IsRequired=true 但未知/缺失的项，返回错误。
+        pub fn validate_required_metadata_items(&self) -> Result<()>;
+
+        /// Log 校验（entry/descriptor/data sector/active sequence/replay 前置）
+        pub fn validate_log(&self) -> Result<()>;
+
+        /// 校验 Parent Locator 键约束
+        ///
+        /// - parent_linkage 必须存在；parent_linkage2 的处理遵循 MS-VHDX §2.6.2.6.3
+        /// - relative_path / volume_path / absolute_win32_path 至少存在一个
+        pub fn validate_parent_locator(&self) -> Result<()>;
+
+        /// 差分链校验
+        ///
+        /// 校验 parent_linkage / parent_linkage2 与父盘 DataWriteGuid 的一致性。
+        pub fn validate_parent_chain(&self) -> Result<ParentChainInfo>;
+    }
+
+    /// 可选：结构化校验问题（用于诊断/报告）
+    pub struct ValidationIssue {
+        pub section: &'static str,
+        pub code: &'static str,
+        pub message: String,
+        pub spec_ref: &'static str,
+    }
 }
 ```
 
@@ -326,10 +524,6 @@ impl Sections {
 pub struct Header;
 
 impl Header {
-    /// 返回完整的1MB Header Section原始字节
-    /// 段序：FileType(64KB) | Header1(4KB) | Header2(4KB) | RegionTable1(64KB) | RegionTable2(64KB) | Reserved
-    pub fn raw(&self) -> &[u8];
-    
     /// 文件类型标识符
     pub fn file_type(&self) -> &FileTypeIdentifier;
     
@@ -403,11 +597,8 @@ pub struct RegionTableEntry {
 pub struct Bat;
 
 impl Bat {
-    /// 返回完整的BAT区域原始字节
-    pub fn raw(&self) -> &[u8];
-    
     /// 获取指定索引的BAT Entry
-    pub fn entry(&self, index: u64) -> Option<BatEntry>;
+    pub fn entry(&self, index: u64) -> Option<&BatEntry>;
     
     /// 获取所有BAT Entries
     pub fn entries(&self) -> &[BatEntry];
@@ -427,11 +618,6 @@ pub struct BatEntry {
     pub state: BatState,
     /// 文件偏移（MB为单位）
     pub file_offset_mb: u64,
-}
-
-impl BatEntry {
-    /// 计算原始64位值（现场计算：(file_offset_mb << 20) | state_bits）
-    pub fn raw(&self) -> u64;
 }
 
 /// BAT Entry 类型枚举
@@ -471,9 +657,6 @@ pub enum SectorBitmapState {
 pub struct Metadata;
 
 impl Metadata {
-    /// 返回完整的Metadata Section原始字节
-    pub fn raw(&self) -> &[u8];
-    
     /// 访问Metadata Table
     pub fn table(&self) -> &MetadataTable;
     
@@ -554,6 +737,7 @@ impl MetadataItems {
     
     /// 获取父定位器（差分磁盘）
     pub fn parent_locator(&self) -> Option<&ParentLocator>;
+
 }
 
 /// File Parameters (8字节)
@@ -589,6 +773,11 @@ impl ParentLocator {
     
     /// 获取Key-Value数据区域
     pub fn key_value_data(&self) -> &[u8];
+
+    /// 解析父路径
+    ///
+    /// 按规范顺序尝试：relative_path -> volume_path -> absolute_win32_path。
+    pub fn resolve_parent_path(&self) -> Option<PathBuf>;
 }
 
 /// Locator Header (20字节)
@@ -665,9 +854,6 @@ pub mod StandardItems {
 pub struct Log;
 
 impl Log {
-    /// 返回完整的Log区域原始字节
-    pub fn raw(&self) -> &[u8];
-    
     /// 根据索引获取Entry
     pub fn entry(&self, index: usize) -> Option<&Entry>;
     
@@ -749,6 +935,11 @@ pub struct DataSector {
 /// IO模块
 /// 
 /// 扇区级读写操作
+///
+/// 【设计约束（强制）】唯一数据平面入口：
+/// - File 层不提供 read/write/flush
+/// - 所有虚拟磁盘读写必须经由 IO::sector -> Sector::read/write
+/// - 禁止在 File 层新增等价的数据读写接口
 /// 输入: 全局扇区号 -> 内部自动计算块索引和块内扇区偏移
 pub struct IO;
 
@@ -797,13 +988,18 @@ pub struct PayloadBlock;
 // 核心类型
 pub use error::{Error, Result};
 pub use types::Guid;
+pub use file::{LogReplayPolicy, ParentChainInfo};
+pub use validation::{SpecValidator, ValidationIssue};
+
+// 规范校验模块
+pub mod validation;
 
 // Section 模块
 pub mod section {
     pub use sections::Sections;
     pub use header::{Header, FileTypeIdentifier, HeaderStructure, RegionTable, RegionTableHeader, RegionTableEntry};
     pub use bat::{Bat, BatEntry, BatState, PayloadBlockState, SectorBitmapState};
-    pub use metadata::Metadata;
+    pub use metadata::{Metadata, MetadataTable, TableHeader, TableEntry, EntryFlags, MetadataItems, FileParameters, ParentLocator, LocatorHeader, KeyValueEntry};
     pub use log::{Log, Entry, LogEntryHeader, DataDescriptor, ZeroDescriptor, DataSector};
 }
 
@@ -819,13 +1015,11 @@ mod types;
 mod common;
 mod file;
 mod io;
-mod section {
-    mod sections;
-    mod header;
-    mod bat;
-    mod metadata;
-    mod log;
-}
+mod sections;
+mod header;
+mod bat;
+mod metadata;
+mod log;
 ```
 
 ---
@@ -835,11 +1029,16 @@ mod section {
 ### 1. 只读打开
 
 ```rust
-use vhdx::File;
+use vhdx::{File, LogReplayPolicy};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 只读打开（默认）
-    let file = File::open("disk.vhdx")?.finish()?;
+    let file = File::open("disk.vhdx")
+        .log_replay(LogReplayPolicy::Require)
+        .finish()?;
+
+    // 使用独立校验器（推荐）
+    file.validator().validate_file()?;
     
     // 获取sections容器
     let sections = file.sections();
@@ -849,7 +1048,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("File Type: {:?}", header.file_type().signature);
     println!("Current Header Seq: {}", header.header(0).unwrap().sequence_number);
     
-    // 访问Metadata Section（同时提供raw和parsed访问）
+    // 访问Metadata Section（结构化访问）
     let metadata = sections.metadata();
     
     // 从 FileParameters 获取磁盘类型和块大小
@@ -858,14 +1057,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Has Parent: {}", fp.has_parent());
         println!("Leave Blocks Allocated: {}", fp.leave_block_allocated());
     }
-    println!("Virtual Size: {} bytes", metadata.virtual_size());
+    println!(
+        "Virtual Size: {} bytes",
+        metadata.items().virtual_disk_size().unwrap_or_default()
+    );
     
-    // Raw访问：原始字节
-    let raw_metadata = metadata.raw();
-    println!("Metadata Section size: {} bytes", raw_metadata.len());
-    
-    // Raw访问：具体结构
-    println!("Metadata Entry count: {}", metadata.table().entry_count);
+    // 结构化访问：具体结构
+    println!("Metadata Entry count: {}", metadata.table().header().entry_count);
     
     Ok(())
 }
@@ -875,9 +1073,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use vhdx::File;
+use vhdx::section::BatState;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let file = File::open("disk.vhdx")?.finish()?;
+    let file = File::open("disk.vhdx").finish()?;
     let bat = file.sections().bat();
     
     // 遍历前10个BAT Entries
@@ -896,10 +1095,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     
-    // 获取原始BAT字节
-    let raw_bat = bat.raw();
-    println!("BAT Region size: {} bytes", raw_bat.len());
-    
+    Ok(())
+}
+```
+
+### 2a. 使用独立校验器（分项校验）
+
+```rust
+use vhdx::File;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let file = File::open("disk.vhdx").finish()?;
+    let validator = file.validator();
+
+    // 按需分项校验
+    validator.validate_header()?;
+    validator.validate_region_table()?;
+    validator.validate_bat()?;
+    validator.validate_metadata()?;
+    validator.validate_required_metadata_items()?;
+    validator.validate_log()?;
+
     Ok(())
 }
 ```
@@ -911,14 +1127,19 @@ use vhdx::File;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 创建 10GB 动态磁盘（默认：非固定、无父磁盘）
-    let mut file = File::create("disk.vhdx")?
+    let file = File::create("disk.vhdx")
         .size(10 * 1024 * 1024 * 1024)
+        .logical_sector_size(4096)
+        .physical_sector_size(4096)
         .block_size(32 * 1024 * 1024)  // 32MB块
         .finish()?;
     
-    // 写入数据（通过File::write，不是直接操作Sections）
-    file.write(0, b"Hello, VHDX!")?;
-    file.flush()?;
+    // 写入数据（通过 IO/Sector 执行扇区写）
+    let io = file.io();
+    if let Some(sector0) = io.sector(0) {
+        let data = vec![0u8; 4096];
+        sector0.write(&data)?;
+    }
     
     // 验证创建的Metadata
     let metadata = file.sections().metadata();
@@ -939,9 +1160,11 @@ use vhdx::File;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 创建 10GB 固定磁盘
-    let mut file = File::create("disk.vhdx")?
+    let file = File::create("disk.vhdx")
         .size(10 * 1024 * 1024 * 1024)
         .fixed(true)  // 固定磁盘
+        .logical_sector_size(4096)
+        .physical_sector_size(4096)
         .block_size(32 * 1024 * 1024)
         .finish()?;
     
@@ -956,7 +1179,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### 4. 读取原始 Section 数据
+### 4. 导出结构化 Section 信息
 
 ```rust
 use vhdx::File;
@@ -964,21 +1187,24 @@ use std::fs::File as StdFile;
 use std::io::Write;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let file = File::open("disk.vhdx")?.finish()?;
+    let file = File::open("disk.vhdx").finish()?;
     let sections = file.sections();
-    
-    // 导出Header Section原始数据
-    let header_raw = sections.header().raw();
-    let mut header_file = StdFile::create("header_section.bin")?;
-    header_file.write_all(header_raw)?;
-    
-    // 导出Metadata Section原始数据
-    let metadata_raw = sections.metadata().raw();
-    let mut metadata_file = StdFile::create("metadata_section.bin")?;
-    metadata_file.write_all(metadata_raw)?;
-    
-    println!("Header Section: {} bytes", header_raw.len());      // 1 MB
-    println!("Metadata Section: {} bytes", metadata_raw.len());  // 可变
+
+    // 导出 Header/Metadata 的结构化摘要
+    let current_header = sections.header().header(0).unwrap();
+    let metadata = sections.metadata();
+
+    let summary = format!(
+        "seq={}\nlog_length={}\nmetadata_entries={}\n",
+        current_header.sequence_number,
+        current_header.log_length,
+        metadata.table().header().entry_count,
+    );
+
+    let mut summary_file = StdFile::create("section_summary.txt")?;
+    summary_file.write_all(summary.as_bytes())?;
+
+    println!("Exported structured summary to section_summary.txt");
     
     Ok(())
 }
@@ -990,7 +1216,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 use vhdx::File;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let file = File::open("diff.vhdx")?.finish()?;
+    let file = File::open("diff.vhdx")
+        .strict(true)
+        .finish()?;
     let sections = file.sections();
     let metadata = sections.metadata();
     
@@ -1000,12 +1228,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Block size: {}", fp.block_size());
             
             if let Some(locator) = metadata.items().parent_locator() {
+                file.validator().validate_parent_locator()?;
                 println!("Parent Locator Entries: {}", locator.header().key_value_count);
                 for (i, entry) in locator.entries().iter().enumerate() {
                     let key = entry.key(locator.key_value_data()).unwrap_or_default();
                     let value = entry.value(locator.key_value_data()).unwrap_or_default();
                     println!("  [{}] {}: {}", i, key, value);
                 }
+                println!("Resolved parent path: {:?}", locator.resolve_parent_path());
             }
         } else if fp.leave_block_allocated() {
             println!("This is a fixed disk");
