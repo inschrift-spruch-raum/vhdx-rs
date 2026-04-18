@@ -33,20 +33,29 @@ pub use error::{Error, Result};
 // GUID 类型
 pub use types::Guid;
 
-// 区域和结构解析类型
-pub use sections::{
-    Bat, BatEntry, BatState, DataDescriptor, DataSector, Descriptor, EntryFlags, FileParameters,
-    FileTypeIdentifier, Header, HeaderStructure, KeyValueEntry, LocatorHeader, Log, LogEntry,
-    LogEntryHeader, Metadata, MetadataItems, MetadataTable, ParentLocator, PayloadBlockState,
-    RegionTable, RegionTableEntry, RegionTableHeader, Sections, SectorBitmapState, TableEntry,
-    TableHeader, ZeroDescriptor,
-};
+/// Section 模块命名空间
+///
+/// 所有 VHDX 区域类型均在此模块下可访问：
+/// - [`Bat`] / [`BatEntry`] — 块分配表
+/// - [`Header`] / [`HeaderStructure`] — 头部结构
+/// - [`Metadata`] / [`MetadataTable`] / [`FileParameters`] — 元数据
+/// - [`Log`] / [`Entry`] / [`LogEntryHeader`] — 日志
+/// - 以及所有关联的描述符、标志位和辅助类型
+pub mod section {
+    pub use crate::sections::{
+        Bat, BatEntry, BatState, DataDescriptor, DataSector, Descriptor, Entry, EntryFlags,
+        FileParameters, FileTypeIdentifier, Header, HeaderStructure, KeyValueEntry, LocatorHeader,
+        Log, LogEntryHeader, Metadata, MetadataItems, MetadataTable, ParentLocator,
+        PayloadBlockState, RegionTable, RegionTableEntry, RegionTableHeader, Sections,
+        SectorBitmapState, TableEntry, TableHeader, ZeroDescriptor,
+    };
+}
 
 // IO 抽象类型
 pub use io_module::{IO, PayloadBlock, Sector};
 
 // 文件操作类型
-pub use file::File;
+pub use file::{CreateOptions, File, OpenOptions};
 
 // 内部模块
 mod common;

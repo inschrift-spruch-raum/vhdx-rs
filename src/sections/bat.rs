@@ -24,6 +24,8 @@ pub struct Bat {
     raw_data: Vec<u8>,
     /// BAT 条目总数（Payload + Sector Bitmap）
     entry_count: usize,
+    /// 预解析的 BAT 条目列表
+    entries: Vec<BatEntry>,
 }
 
 impl Bat {
@@ -42,9 +44,28 @@ impl Bat {
                 data.len()
             )));
         }
+        // 预解析所有 BAT 条目
+        let entries: Vec<BatEntry> = (0..entry_count)
+            .filter_map(|i| {
+                let offset = i * BAT_ENTRY_SIZE;
+                let raw_value = u64::from_le_bytes([
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                    data[offset + 4],
+                    data[offset + 5],
+                    data[offset + 6],
+                    data[offset + 7],
+                ]);
+                BatEntry::from_raw(raw_value).ok()
+            })
+            .collect();
+
         Ok(Self {
             raw_data: data,
             entry_count,
+            entries,
         })
     }
 
@@ -54,35 +75,18 @@ impl Bat {
         &self.raw_data
     }
 
-    /// 获取指定索引处的 BAT 条目，解析 64 位位字段
+    /// 获取指定索引处的 BAT 条目
     #[must_use]
-    pub fn entry(&self, index: usize) -> Option<BatEntry> {
-        if index >= self.entry_count {
-            return None;
-        }
-        let offset = index * BAT_ENTRY_SIZE;
-        // 从原始数据中读取 8 字节小端序 64 位整数
-        let raw_value = u64::from_le_bytes([
-            self.raw_data[offset],
-            self.raw_data[offset + 1],
-            self.raw_data[offset + 2],
-            self.raw_data[offset + 3],
-            self.raw_data[offset + 4],
-            self.raw_data[offset + 5],
-            self.raw_data[offset + 6],
-            self.raw_data[offset + 7],
-        ]);
-        BatEntry::from_raw(raw_value).ok()
+    pub fn entry(&self, index: u64) -> Option<BatEntry> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|i| self.entries.get(i).copied())
     }
 
-    /// 返回 BAT 条目迭代器
+    /// 返回所有预解析的 BAT 条目切片
     #[must_use]
-    pub const fn entries(&self) -> BatEntryIter<'_> {
-        BatEntryIter {
-            bat: self,
-            current: 0,
-            end: self.entry_count,
-        }
+    pub fn entries(&self) -> &[BatEntry] {
+        &self.entries
     }
 
     /// 返回 BAT 中的条目总数
@@ -99,7 +103,7 @@ impl Bat {
 
     /// 计算块比率（MS-VHDX §2.5），公式: (2^23 × 逻辑扇区大小) / 块大小
     #[must_use]
-    pub fn calculate_chunk_ratio(logical_sector_size: u32, block_size: u32) -> u32 {
+    pub(crate) fn calculate_chunk_ratio(logical_sector_size: u32, block_size: u32) -> u32 {
         let result =
             (CHUNK_RATIO_CONSTANT * u64::from(logical_sector_size)) / u64::from(block_size);
         result.try_into().unwrap_or(u32::MAX)
@@ -107,19 +111,19 @@ impl Bat {
 
     /// 计算虚拟磁盘所需的 Payload Block 数量，公式: ceil(虚拟磁盘大小 / 块大小)
     #[must_use]
-    pub fn calculate_payload_blocks(virtual_disk_size: u64, block_size: u32) -> u64 {
+    pub(crate) fn calculate_payload_blocks(virtual_disk_size: u64, block_size: u32) -> u64 {
         virtual_disk_size.div_ceil(u64::from(block_size))
     }
 
     /// 计算所需的 Sector Bitmap Block 数量，公式: ceil(Payload Block 数 / 块比率)
     #[must_use]
-    pub fn calculate_sector_bitmap_blocks(payload_blocks: u64, chunk_ratio: u32) -> u64 {
+    pub(crate) fn calculate_sector_bitmap_blocks(payload_blocks: u64, chunk_ratio: u32) -> u64 {
         payload_blocks.div_ceil(u64::from(chunk_ratio))
     }
 
     /// 计算 BAT 总条目数 = Payload Block 数 + Sector Bitmap Block 数
     #[must_use]
-    pub fn calculate_total_entries(
+    pub(crate) fn calculate_total_entries(
         virtual_disk_size: u64, block_size: u32, logical_sector_size: u32,
     ) -> u64 {
         let payload_blocks = Self::calculate_payload_blocks(virtual_disk_size, block_size);
@@ -127,32 +131,6 @@ impl Bat {
         let sector_bitmap_blocks =
             Self::calculate_sector_bitmap_blocks(payload_blocks, chunk_ratio);
         payload_blocks + sector_bitmap_blocks
-    }
-}
-
-/// BAT 条目迭代器
-///
-/// 按索引顺序遍历所有 BAT 条目，返回 (索引, 条目) 对。
-pub struct BatEntryIter<'a> {
-    /// 被迭代的 BAT 引用
-    bat: &'a Bat,
-    /// 当前迭代位置
-    current: usize,
-    /// 迭代终止位置（不含）
-    end: usize,
-}
-
-impl Iterator for BatEntryIter<'_> {
-    type Item = (usize, BatEntry);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.current >= self.end {
-            return None;
-        }
-        let entry = self.bat.entry(self.current)?;
-        let index = self.current;
-        self.current += 1;
-        Some((index, entry))
     }
 }
 
@@ -178,7 +156,7 @@ pub struct BatEntry {
 
 impl BatEntry {
     /// 从原始 64 位值解析 BAT 条目，提取低 3 位状态和高 44 位偏移量
-    pub fn from_raw(raw: u64) -> std::result::Result<Self, Error> {
+    pub(crate) fn from_raw(raw: u64) -> std::result::Result<Self, Error> {
         // 低 3 位为块状态
         let state_bits = (raw & 0x7) as u8;
         // 高 44 位为文件偏移量（以 MB 为单位）
@@ -207,7 +185,7 @@ impl BatEntry {
 
     /// 使用指定的状态和偏移量创建新的 BAT 条目
     #[must_use]
-    pub const fn new(state: BatState, file_offset_mb: u64) -> Self {
+    pub(crate) const fn new(state: BatState, file_offset_mb: u64) -> Self {
         Self {
             state,
             file_offset_mb,

@@ -23,7 +23,11 @@ pub fn cmd_info(file: &Path, format: &OutputFormat) {
     match File::open(file).finish() {
         Ok(vhdx_file) => {
             // 检查是否存在未完成写入留下的日志条目
-            if vhdx_file.has_pending_logs() {
+            if vhdx_file
+                .sections()
+                .log()
+                .is_ok_and(|l| l.is_replay_required())
+            {
                 eprintln!("Warning: File has pending log entries from an interrupted write.");
                 eprintln!("         Run 'vhdx-tool repair <file>' to fix the file.");
                 eprintln!();
@@ -34,29 +38,52 @@ pub fn cmd_info(file: &Path, format: &OutputFormat) {
                 OutputFormat::Text => {
                     println!("VHDX File Information");
                     println!("=====================");
+                    let virtual_size = vhdx_file
+                        .sections()
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.items().virtual_disk_size())
+                        .unwrap_or(0);
+                    let block_sz = vhdx_file
+                        .sections()
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.items().file_parameters().map(|fp| fp.block_size()))
+                        .unwrap_or(0);
+                    let logical_sector_sz = vhdx_file
+                        .sections()
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.items().logical_sector_size())
+                        .unwrap_or(0);
+                    let is_fixed = vhdx_file
+                        .sections()
+                        .metadata()
+                        .ok()
+                        .and_then(|m| {
+                            m.items()
+                                .file_parameters()
+                                .map(|fp| fp.leave_block_allocated())
+                        })
+                        .unwrap_or(false);
+                    let has_parent = vhdx_file
+                        .sections()
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.items().file_parameters().map(|fp| fp.has_parent()))
+                        .unwrap_or(false);
                     println!("Path: {}", file.display());
-                    println!("Virtual Size: {} bytes", vhdx_file.virtual_disk_size());
+                    println!("Virtual Size: {virtual_size} bytes");
                     println!(
                         "Virtual Size (human): {:.2}",
-                        Byte::from_u64(vhdx_file.virtual_disk_size())
-                            .get_appropriate_unit(UnitType::Binary)
+                        Byte::from_u64(virtual_size).get_appropriate_unit(UnitType::Binary)
                     );
-                    println!("Block Size: {} bytes", vhdx_file.block_size());
-                    println!(
-                        "Logical Sector Size: {} bytes",
-                        vhdx_file.logical_sector_size()
-                    );
+                    println!("Block Size: {block_sz} bytes");
+                    println!("Logical Sector Size: {logical_sector_sz} bytes",);
                     // 根据是否固定大小判断磁盘类型
-                    println!(
-                        "Disk Type: {}",
-                        if vhdx_file.is_fixed() {
-                            "Fixed"
-                        } else {
-                            "Dynamic"
-                        }
-                    );
+                    println!("Disk Type: {}", if is_fixed { "Fixed" } else { "Dynamic" });
                     // 如果是差分磁盘，显示父磁盘信息
-                    if vhdx_file.has_parent() {
+                    if has_parent {
                         println!("Type: Differencing (has parent)");
                     }
 
@@ -75,16 +102,47 @@ pub fn cmd_info(file: &Path, format: &OutputFormat) {
                 }
                 // JSON 格式：以结构化 JSON 输出
                 OutputFormat::Json => {
+                    let virtual_size = vhdx_file
+                        .sections()
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.items().virtual_disk_size())
+                        .unwrap_or(0);
+                    let block_sz = vhdx_file
+                        .sections()
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.items().file_parameters().map(|fp| fp.block_size()))
+                        .unwrap_or(0);
+                    let logical_sector_sz = vhdx_file
+                        .sections()
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.items().logical_sector_size())
+                        .unwrap_or(0);
+                    let is_fixed = vhdx_file
+                        .sections()
+                        .metadata()
+                        .ok()
+                        .and_then(|m| {
+                            m.items()
+                                .file_parameters()
+                                .map(|fp| fp.leave_block_allocated())
+                        })
+                        .unwrap_or(false);
+                    let has_parent = vhdx_file
+                        .sections()
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.items().file_parameters().map(|fp| fp.has_parent()))
+                        .unwrap_or(false);
                     println!("{{");
                     println!("  \"path\": \"{}\",", file.display());
-                    println!("  \"virtual_size\": {},", vhdx_file.virtual_disk_size());
-                    println!("  \"block_size\": {},", vhdx_file.block_size());
-                    println!(
-                        "  \"logical_sector_size\": {},",
-                        vhdx_file.logical_sector_size()
-                    );
-                    println!("  \"is_fixed\": {},", vhdx_file.is_fixed());
-                    println!("  \"has_parent\": {}", vhdx_file.has_parent());
+                    println!("  \"virtual_size\": {virtual_size},");
+                    println!("  \"block_size\": {block_sz},");
+                    println!("  \"logical_sector_size\": {logical_sector_sz},");
+                    println!("  \"is_fixed\": {is_fixed},");
+                    println!("  \"has_parent\": {has_parent}");
                     println!("}}");
                 }
             }

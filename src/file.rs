@@ -3,8 +3,8 @@
 //! 本模块提供 VHDX 虚拟硬盘文件的顶层操作接口，包括：
 //! - **打开**（[`File::open`]）— 验证签名、解析头部、读取元数据、处理日志回放
 //! - **创建**（[`File::create`]）— 计算布局、写入所有结构、返回可操作的文件句柄
-//! - **读取**（[`File::read`]）— 支持 Fixed 和 Dynamic 两种类型
-//! - **写入**（[`File::write`]）— 支持 Fixed 直接写入和 Dynamic 块级写入
+//! - **读取**（[`File::read_raw`]）— 支持 Fixed 和 Dynamic 两种类型
+//! - **写入**（[`File::write_raw`]）— 支持 Fixed 直接写入和 Dynamic 块级写入
 //!
 //! # VHDX 文件类型（MS-VHDX §1.3）
 //!
@@ -121,36 +121,36 @@ impl File {
     }
 
     /// 获取虚拟磁盘大小（字节）
-    pub const fn virtual_disk_size(&self) -> u64 {
+    pub(crate) const fn virtual_disk_size(&self) -> u64 {
         self.virtual_disk_size
     }
 
     /// 获取块大小（字节）
-    pub const fn block_size(&self) -> u32 {
+    pub(crate) const fn block_size(&self) -> u32 {
         self.block_size
     }
 
     /// 获取逻辑扇区大小（字节）
-    pub const fn logical_sector_size(&self) -> u32 {
+    pub(crate) const fn logical_sector_size(&self) -> u32 {
         self.logical_sector_size
     }
 
     /// 检查是否为 Fixed 类型
-    pub const fn is_fixed(&self) -> bool {
+    pub(crate) const fn is_fixed(&self) -> bool {
         self.is_fixed
     }
 
     /// 检查是否为差分磁盘
-    pub const fn has_parent(&self) -> bool {
+    pub(crate) const fn has_parent(&self) -> bool {
         self.has_parent
     }
 
     /// 检查是否存在未回放的日志条目
-    pub const fn has_pending_logs(&self) -> bool {
+    pub(crate) const fn has_pending_logs(&self) -> bool {
         self.has_pending_logs
     }
 
-    /// 从虚拟磁盘读取数据
+    /// 内部使用的原始读取方法
     ///
     /// 对于 **Fixed** 类型：直接从文件的数据区域读取（跳过 1MB 头部）
     /// 对于 **Dynamic** 类型：返回零填充（当前未实现按块读取）
@@ -161,7 +161,7 @@ impl File {
     ///
     /// # 返回值
     /// 实际读取的字节数
-    pub fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
+    pub(crate) fn read_raw(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
         if offset >= self.virtual_disk_size {
             return Ok(0);
         }
@@ -191,8 +191,10 @@ impl File {
         }
     }
 
-    /// 向虚拟磁盘写入数据，Fixed 类型直接写入，Dynamic 类型按块写入
-    pub fn write(&mut self, offset: u64, data: &[u8]) -> Result<usize> {
+    /// 内部使用的原始写入方法（通过克隆文件句柄实现 &self 写入）
+    ///
+    /// Fixed 类型直接写入，Dynamic 类型按块写入。
+    pub(crate) fn write_raw(&self, offset: u64, data: &[u8]) -> Result<usize> {
         if offset >= self.virtual_disk_size {
             return Err(Error::InvalidParameter(format!(
                 "Write offset {} exceeds virtual disk size {}",
@@ -208,12 +210,13 @@ impl File {
         .unwrap_or(usize::MAX);
 
         if self.is_fixed {
-            // Fixed 类型：计算文件内偏移（跳过头部区域），直接写入
+            // Fixed 类型：计算文件内偏移（跳过头部区域），通过克隆句柄写入
             let header_size = u64::try_from(HEADER_SECTION_SIZE).unwrap_or(0);
             let file_offset = header_size + offset;
 
-            self.inner.seek(SeekFrom::Start(file_offset))?;
-            self.inner.write_all(&data[..bytes_to_write])?;
+            let mut file = self.inner.try_clone()?;
+            file.seek(SeekFrom::Start(file_offset))?;
+            file.write_all(&data[..bytes_to_write])?;
             Ok(bytes_to_write)
         } else {
             // Dynamic 类型：委托给 write_dynamic 进行按块写入
@@ -225,18 +228,15 @@ impl File {
     /// Dynamic 类型的按块写入实现
     ///
     /// 根据写入偏移量计算所在块索引，查找 BAT 条目获取块在文件中的物理偏移，
-    /// 然后将数据写入对应的块位置。
-    fn write_dynamic(&mut self, offset: u64, data: &[u8]) -> Result<()> {
+    /// 然后通过克隆文件句柄将数据写入对应的块位置。
+    fn write_dynamic(&self, offset: u64, data: &[u8]) -> Result<()> {
         let block_size = u64::from(self.block_size);
         // 计算目标块索引和块内偏移
         let block_idx = offset / block_size;
         let block_offset = offset % block_size;
 
         let bat = self.sections.bat()?;
-        let block_idx_usize = usize::try_from(block_idx).map_err(|_| {
-            Error::InvalidParameter(format!("block_idx {block_idx} exceeds usize::MAX"))
-        })?;
-        let bat_entry = bat.entry(block_idx_usize);
+        let bat_entry = bat.entry(block_idx);
 
         // 根据 BAT 条目状态确定写入位置
         let file_offset = if let Some(entry) = bat_entry {
@@ -256,15 +256,17 @@ impl File {
             ));
         };
 
-        self.inner.seek(SeekFrom::Start(file_offset))?;
-        self.inner.write_all(data)?;
+        let mut file = self.inner.try_clone()?;
+        file.seek(SeekFrom::Start(file_offset))?;
+        file.write_all(data)?;
 
         Ok(())
     }
 
-    /// 将所有挂起的写入刷新到磁盘
-    pub fn flush(&mut self) -> Result<()> {
-        self.inner.sync_all()?;
+    /// 内部使用的原始刷新方法（通过克隆文件句柄实现 &self 刷新）
+    pub(crate) fn flush_raw(&self) -> Result<()> {
+        let file = self.inner.try_clone()?;
+        file.sync_all()?;
         Ok(())
     }
 
@@ -462,7 +464,7 @@ impl File {
                 file.sync_all()?;
 
                 // 创建新头部结构，清除日志 GUID（标记日志已处理）
-                let new_header = crate::HeaderStructure::create(
+                let new_header = crate::section::HeaderStructure::create(
                     current_header.sequence_number(),
                     current_header.file_write_guid(),
                     current_header.data_write_guid(),
@@ -956,4 +958,168 @@ fn create_region_table(
     data[4..8].copy_from_slice(&checksum.to_le_bytes());
 
     data
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 生成临时 VHDX 文件路径
+    fn temp_vhdx_path() -> std::path::PathBuf {
+        let dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let path = dir.path().join("test.vhdx");
+        std::mem::forget(dir);
+        path
+    }
+
+    /// 测试固定磁盘的创建与读写：写入数据后读回并验证一致性
+    #[test]
+    fn test_create_and_read_fixed_disk() {
+        let path = temp_vhdx_path();
+
+        let file = File::create(&path)
+            .size(1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk");
+
+        let test_data = b"Hello, VHDX!";
+        let bytes_written = file.write_raw(0, test_data).expect("Failed to write");
+        assert_eq!(bytes_written, test_data.len());
+
+        file.flush_raw().expect("Failed to flush");
+
+        let mut buf = vec![0u8; test_data.len()];
+        let bytes_read = file.read_raw(0, &mut buf).expect("Failed to read");
+        assert_eq!(bytes_read, test_data.len());
+        assert_eq!(&buf, test_data);
+    }
+
+    /// 测试对动态磁盘执行写入操作应失败（当前库仅支持读取动态磁盘）
+    #[test]
+    fn test_write_dynamic_disk_fails() {
+        let path = temp_vhdx_path();
+
+        let file = File::create(&path)
+            .size(1024 * 1024)
+            .fixed(false)
+            .finish()
+            .expect("Failed to create dynamic disk");
+
+        let result = file.write_raw(0, b"test");
+        assert!(result.is_err());
+    }
+
+    /// 测试以写入模式打开已有文件并写入数据
+    #[test]
+    fn test_open_with_write_access() {
+        let path = temp_vhdx_path();
+
+        File::create(&path)
+            .size(1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk");
+
+        let file = File::open(&path)
+            .write()
+            .finish()
+            .expect("Failed to open with write access");
+
+        let written = file.write_raw(0, b"test data").expect("Failed to write");
+        assert_eq!(written, 9);
+    }
+
+    /// 测试在非零偏移处写入和读取数据
+    #[test]
+    fn test_write_and_read_at_offset() {
+        let path = temp_vhdx_path();
+
+        let file = File::create(&path)
+            .size(1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk");
+
+        let data = b"offset data";
+        file.write_raw(512, data)
+            .expect("Failed to write at offset");
+
+        let mut buf = vec![0u8; data.len()];
+        file.read_raw(512, &mut buf)
+            .expect("Failed to read at offset");
+        assert_eq!(&buf, data);
+    }
+
+    /// 测试读取未写入区域应返回全零
+    #[test]
+    fn test_read_unwritten_area_returns_zeros() {
+        let path = temp_vhdx_path();
+
+        let file = File::create(&path)
+            .size(1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk");
+
+        file.write_raw(0, b"some data").expect("Failed to write");
+
+        let mut buf = vec![0u8; 512];
+        file.read_raw(4096, &mut buf).expect("Failed to read");
+        assert_eq!(buf, vec![0u8; 512], "Unwritten area should be zeros");
+    }
+
+    /// 测试多次写入和读取
+    #[test]
+    fn test_multiple_writes_and_reads() {
+        let path = temp_vhdx_path();
+
+        let file = File::create(&path)
+            .size(1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk");
+
+        file.write_raw(0, b"block0")
+            .expect("Failed to write block0");
+        file.write_raw(1024, b"block1")
+            .expect("Failed to write block1");
+        file.write_raw(2048, b"block2")
+            .expect("Failed to write block2");
+
+        let mut buf0 = vec![0u8; 6];
+        let mut buf1 = vec![0u8; 6];
+        let mut buf2 = vec![0u8; 6];
+
+        file.read_raw(0, &mut buf0).expect("Failed to read block0");
+        file.read_raw(1024, &mut buf1)
+            .expect("Failed to read block1");
+        file.read_raw(2048, &mut buf2)
+            .expect("Failed to read block2");
+
+        assert_eq!(&buf0, b"block0");
+        assert_eq!(&buf1, b"block1");
+        assert_eq!(&buf2, b"block2");
+    }
+
+    /// 测试写入后刷新并重新打开文件
+    #[test]
+    fn test_flush_after_write() {
+        let path = temp_vhdx_path();
+
+        let file = File::create(&path)
+            .size(1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk");
+
+        file.write_raw(0, b"flush test").expect("Failed to write");
+        file.flush_raw().expect("Failed to flush");
+
+        let file = File::open(&path).finish().expect("Failed to reopen");
+
+        let mut buf = vec![0u8; 10];
+        file.read_raw(0, &mut buf).expect("Failed to read");
+        assert_eq!(&buf, b"flush test");
+    }
 }

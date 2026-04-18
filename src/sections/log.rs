@@ -7,7 +7,7 @@
 //! 可以通过回放日志恢复一致性。
 //!
 //! 日志以环形缓冲区（circular buffer）方式组织在文件的日志区域中，
-//! 由一系列日志条目（[`LogEntry`]）组成，每个条目包含：
+//! 由一系列日志条目（[`Entry`]）组成，每个条目包含：
 //! - **条目头部**（[`LogEntryHeader`]）— 签名、校验和、序列号等（§2.3.1.1）
 //! - **描述符**（[`Descriptor`]）— 数据描述符或零描述符（§2.3.1.2/§2.3.1.3）
 //! - **数据扇区**（[`DataSector`]）— 实际的数据负载（§2.3.1.4）
@@ -43,7 +43,7 @@ impl Log {
 
     /// 获取指定索引的日志条目（当前未实现）
     #[must_use]
-    pub const fn entry(&self, _index: usize) -> Option<LogEntry<'_>> {
+    pub const fn entry(&self, _index: usize) -> Option<Entry<'_>> {
         let _ = self;
         None
     }
@@ -53,7 +53,7 @@ impl Log {
     /// 从日志区域起始位置开始，逐个尝试解析日志条目。
     /// 如果解析失败或条目长度异常，则按扇区大小（4KB）步进继续扫描。
     #[must_use]
-    pub fn entries(&self) -> Vec<LogEntry<'_>> {
+    pub fn entries(&self) -> Vec<Entry<'_>> {
         let mut entries = Vec::new();
         let mut offset = 0;
 
@@ -78,12 +78,12 @@ impl Log {
 
     /// 尝试在指定偏移量处解析日志条目
     ///
-    /// 检查剩余数据是否足够容纳日志条目头部，然后委托给 [`LogEntry::new`]。
-    fn try_parse_entry_at(&self, offset: usize) -> Result<LogEntry<'_>> {
+    /// 检查剩余数据是否足够容纳日志条目头部，然后委托给 [`Entry::new`]。
+    fn try_parse_entry_at(&self, offset: usize) -> Result<Entry<'_>> {
         if offset + LOG_ENTRY_HEADER_SIZE > self.raw_data.len() {
             return Err(Error::LogEntryCorrupted("Not enough data".to_string()));
         }
-        LogEntry::new(&self.raw_data[offset..])
+        Entry::new(&self.raw_data[offset..])
     }
 
     /// 检查是否存在需要回放的日志条目
@@ -176,12 +176,12 @@ impl Log {
 /// 1. 条目头部（64 字节）— 包含签名、校验和和描述符计数
 /// 2. 描述符数组（每个 32 字节）— 描述要写入的位置和方式
 /// 3. 数据扇区数组（每个 4KB）— 包含实际要写入的数据
-pub struct LogEntry<'a> {
+pub struct Entry<'a> {
     /// 条目的原始字节数据（包含头部、描述符和数据扇区）
     data: &'a [u8],
 }
 
-impl<'a> LogEntry<'a> {
+impl<'a> Entry<'a> {
     /// 从原始字节切片解析日志条目
     ///
     /// 要求数据长度至少能容纳一个日志条目头部（64 字节）。

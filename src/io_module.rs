@@ -9,8 +9,8 @@
 //! 每个 Payload Block 包含 `block_size / sector_size` 个逻辑扇区。
 
 use crate::File;
-use crate::PayloadBlockState;
 use crate::error::{Error, Result};
+use crate::section::{BatEntry, BatState, PayloadBlockState};
 
 /// 扇区/块级 IO 操作入口
 ///
@@ -35,7 +35,7 @@ impl<'a> IO<'a> {
 
         let sectors_per_block = block_size / sector_size; // 每个块包含的扇区数
         let block_idx = sector / sectors_per_block; // 扇区号 → 块索引
-        let block_sector_idx = u32::try_from(sector % sectors_per_block) // 块内扇区偏移
+        let block_sector_index = u32::try_from(sector % sectors_per_block) // 块内扇区偏移
             .expect("sector index within block should fit in u32");
 
         let total_sectors = self.file.virtual_disk_size() / sector_size;
@@ -46,13 +46,13 @@ impl<'a> IO<'a> {
         Some(Sector {
             file: self.file,
             block_idx,
-            block_sector_idx,
+            block_sector_index,
             size: self.file.logical_sector_size(),
         })
     }
 
     /// 批量读取连续扇区数据到缓冲区
-    pub fn read_sectors(&self, start_sector: u64, buf: &mut [u8]) -> Result<usize> {
+    pub(crate) fn read_sectors(&self, start_sector: u64, buf: &mut [u8]) -> Result<usize> {
         let sector_size = self.file.logical_sector_size() as usize;
         let num_sectors = buf.len() / sector_size;
 
@@ -82,7 +82,7 @@ impl<'a> IO<'a> {
     }
 
     /// 批量写入连续扇区（当前未完全实现）
-    pub fn write_sectors(&self, _start_sector: u64, data: &[u8]) -> Result<usize> {
+    pub(crate) fn write_sectors(&self, _start_sector: u64, data: &[u8]) -> Result<usize> {
         let sector_size = self.file.logical_sector_size() as usize;
         let _num_sectors = data.len() / sector_size;
 
@@ -108,31 +108,12 @@ pub struct Sector<'a> {
     /// 所属的 Payload Block 索引
     block_idx: u64,
     /// 在所属 Payload Block 内的扇区索引
-    block_sector_idx: u32,
+    pub block_sector_index: u32,
     /// 扇区大小（字节）
     size: u32,
 }
 
 impl Sector<'_> {
-    /// 获取所属 Payload Block 索引
-    #[must_use]
-    pub const fn block_idx(&self) -> u64 {
-        self.block_idx
-    }
-
-    /// 获取在所属 Payload Block 内的扇区索引
-    #[must_use]
-    pub const fn block_sector_idx(&self) -> u32 {
-        self.block_sector_idx
-    }
-
-    /// 计算全局扇区号 = block_idx × sectors_per_block + block_sector_idx
-    #[must_use]
-    pub fn global_sector(&self) -> u64 {
-        let sectors_per_block = u64::from(self.file.block_size() / self.size);
-        self.block_idx * sectors_per_block + u64::from(self.block_sector_idx)
-    }
-
     /// 读取扇区数据到缓冲区，缓冲区大小必须匹配扇区大小
     pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
         if buf.len() != self.size as usize {
@@ -143,8 +124,34 @@ impl Sector<'_> {
             )));
         }
 
-        let sector_offset = self.global_sector() * u64::from(self.size);
-        self.file.read(sector_offset, buf)
+        let sectors_per_block = u64::from(self.file.block_size() / self.size);
+        let global_sector = self.block_idx * sectors_per_block + u64::from(self.block_sector_index);
+        let sector_offset = global_sector * u64::from(self.size);
+        self.file.read_raw(sector_offset, buf)
+    }
+
+    /// 将数据写入扇区，数据长度必须匹配扇区大小
+    ///
+    /// 写入逻辑与 [`read()`](Sector::read) 对称：
+    /// 计算虚拟偏移量后通过内部写入方法完成实际 I/O。
+    /// Fixed 类型直接写入文件，Dynamic 类型通过 BAT 查找块位置。
+    ///
+    /// # 错误
+    /// 返回 [`Error::InvalidParameter`] 当数据长度不等于扇区大小时。
+    pub fn write(&self, data: &[u8]) -> Result<()> {
+        if data.len() != self.size as usize {
+            return Err(Error::InvalidParameter(format!(
+                "Data size {} does not match sector size {}",
+                data.len(),
+                self.size
+            )));
+        }
+
+        let sectors_per_block = u64::from(self.file.block_size() / self.size);
+        let global_sector = self.block_idx * sectors_per_block + u64::from(self.block_sector_index);
+        let sector_offset = global_sector * u64::from(self.size);
+        self.file.write_raw(sector_offset, data)?;
+        Ok(())
     }
 
     /// 获取此扇区所属的 Payload Block
@@ -171,40 +178,36 @@ pub struct PayloadBlock<'a> {
 impl PayloadBlock<'_> {
     /// 获取 Block 索引
     #[must_use]
-    pub const fn block_idx(&self) -> u64 {
+    pub(crate) const fn block_idx(&self) -> u64 {
         self.block_idx
     }
 
     /// 从 Block 的指定偏移量读取数据
-    pub fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
+    pub(crate) fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
         let block_size = u64::from(self.file.block_size());
         if offset >= block_size {
             return Ok(0);
         }
 
         let block_offset = self.block_idx * block_size + offset;
-        self.file.read(block_offset, buf)
+        self.file.read_raw(block_offset, buf)
     }
 
     /// 获取此 Block 的 BAT 条目，用于判断分配状态
-    #[must_use]
-    pub fn bat_entry(&self) -> Option<crate::BatEntry> {
+    pub(crate) fn bat_entry(&self) -> Option<BatEntry> {
         if let Ok(bat) = self.file.sections().bat() {
-            usize::try_from(self.block_idx)
-                .ok()
-                .and_then(|idx| bat.entry(idx))
+            bat.entry(self.block_idx)
         } else {
             None
         }
     }
 
     /// 检查此 Block 是否已分配（FullyPresent 状态）
-    #[must_use]
-    pub fn is_allocated(&self) -> bool {
+    pub(crate) fn is_allocated(&self) -> bool {
         if let Some(entry) = self.bat_entry() {
             matches!(
                 entry.state,
-                crate::BatState::Payload(PayloadBlockState::FullyPresent)
+                BatState::Payload(PayloadBlockState::FullyPresent)
             )
         } else {
             false

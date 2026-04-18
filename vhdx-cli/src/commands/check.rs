@@ -26,7 +26,11 @@ pub fn cmd_check(file: &Path, repair: bool, log_replay: bool) {
     match File::open(file).finish() {
         Ok(vhdx_file) => {
             // 检查是否存在未完成的日志条目
-            if vhdx_file.has_pending_logs() {
+            if vhdx_file
+                .sections()
+                .log()
+                .is_ok_and(|l| l.is_replay_required())
+            {
                 println!("⚠ File has pending log entries from an interrupted write.");
                 println!("  Run 'vhdx-tool repair <file>' to fix the file.");
                 println!();

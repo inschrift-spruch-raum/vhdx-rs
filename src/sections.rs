@@ -31,7 +31,7 @@ pub use bat::{Bat, BatEntry, BatState, PayloadBlockState, SectorBitmapState};
 pub use header::{
     FileTypeIdentifier, Header, HeaderStructure, RegionTable, RegionTableEntry, RegionTableHeader,
 };
-pub use log::{DataDescriptor, DataSector, Descriptor, LogEntry, LogEntryHeader, ZeroDescriptor};
+pub use log::{DataDescriptor, DataSector, Descriptor, Entry, LogEntryHeader, ZeroDescriptor};
 pub use metadata::{
     EntryFlags, FileParameters, KeyValueEntry, LocatorHeader, MetadataItems, MetadataTable,
     ParentLocator, TableEntry, TableHeader,
@@ -110,13 +110,13 @@ impl Log {
     ///
     /// 返回 `None` 表示索引超出范围或该条目为空条目。
     #[must_use]
-    pub const fn entry(&self, index: usize) -> Option<LogEntry<'_>> {
+    pub const fn entry(&self, index: usize) -> Option<Entry<'_>> {
         self.inner.entry(index)
     }
 
     /// 获取所有有效（非空）的日志条目
     #[must_use]
-    pub fn entries(&self) -> Vec<LogEntry<'_>> {
+    pub fn entries(&self) -> Vec<Entry<'_>> {
         self.inner.entries()
     }
 

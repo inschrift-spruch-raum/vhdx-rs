@@ -342,6 +342,8 @@ impl<'a> MetadataItems<'a> {
 ///   - bit 1: HasParent — 是否为差分磁盘（有父磁盘）
 #[derive(Clone, Copy, Debug)]
 pub struct FileParameters {
+    /// 原始字节数据（8 字节）
+    raw_data: [u8; 8],
     /// 块大小（字节），必须为 1MB 的幂次（1MB-256MB）
     block_size: u32,
     /// 标志位（bit 0: LeaveBlockAllocated, bit 1: HasParent）
@@ -354,7 +356,10 @@ impl FileParameters {
     /// 数据必须至少 8 字节：前 4 字节为块大小，后 4 字节为标志位。
     #[must_use]
     pub fn from_bytes(data: &[u8]) -> Self {
+        let mut raw_data = [0u8; 8];
+        raw_data.copy_from_slice(&data[..8]);
         Self {
+            raw_data,
             block_size: u32::from_le_bytes(data[0..4].try_into().unwrap()),
             flags: u32::from_le_bytes(data[4..8].try_into().unwrap()),
         }
@@ -382,6 +387,12 @@ impl FileParameters {
     #[must_use]
     pub const fn flags(&self) -> u32 {
         self.flags
+    }
+
+    /// 返回文件参数的原始字节数据
+    #[must_use]
+    pub const fn raw(&self) -> &[u8] {
+        &self.raw_data
     }
 }
 
@@ -496,6 +507,8 @@ impl<'a> LocatorHeader<'a> {
 /// 键和值均以 UTF-16 LE 编码存储在定位器的数据区域中。
 #[derive(Clone, Copy, Debug)]
 pub struct KeyValueEntry {
+    /// 原始字节数据（12 字节）
+    raw_data: [u8; 12],
     /// 键数据在定位器数据区域中的偏移量（字节）
     key_offset: u32,
     /// 值数据在定位器数据区域中的偏移量（字节）
@@ -516,7 +529,10 @@ impl KeyValueEntry {
                 "Key-Value Entry must be 12 bytes".to_string(),
             ));
         }
+        let mut raw_data = [0u8; 12];
+        raw_data.copy_from_slice(data);
         Ok(Self {
+            raw_data,
             key_offset: u32::from_le_bytes(data[0..4].try_into().unwrap()),
             value_offset: u32::from_le_bytes(data[4..8].try_into().unwrap()),
             key_length: u16::from_le_bytes(data[8..10].try_into().unwrap()),
@@ -524,15 +540,10 @@ impl KeyValueEntry {
         })
     }
 
-    /// 将键值对条目序列化为 12 字节数组
+    /// 返回键值对条目的原始字节数据
     #[must_use]
-    pub fn raw(&self) -> [u8; 12] {
-        let mut data = [0u8; 12];
-        data[0..4].copy_from_slice(&self.key_offset.to_le_bytes());
-        data[4..8].copy_from_slice(&self.value_offset.to_le_bytes());
-        data[8..10].copy_from_slice(&self.key_length.to_le_bytes());
-        data[10..12].copy_from_slice(&self.value_length.to_le_bytes());
-        data
+    pub const fn raw(&self) -> &[u8] {
+        &self.raw_data
     }
 
     /// 从定位器数据区域中读取键字符串
@@ -613,6 +624,7 @@ mod tests {
         }
 
         let entry = KeyValueEntry {
+            raw_data: [0u8; 12],
             key_offset: 0,
             value_offset: 32,
             key_length: u16::try_from(key.len() * 2).unwrap_or(0),

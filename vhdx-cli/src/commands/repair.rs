@@ -25,7 +25,11 @@ pub fn cmd_repair(file: &Path, dry_run: bool) {
         println!("Dry run mode - no changes will be made");
         match File::open(file).finish() {
             Ok(vhdx_file) => {
-                if vhdx_file.has_pending_logs() {
+                if vhdx_file
+                    .sections()
+                    .log()
+                    .is_ok_and(|l| l.is_replay_required())
+                {
                     println!("\u{2713} File has pending log entries that would be replayed");
                 } else {
                     println!("\u{2713} File does not require repair");

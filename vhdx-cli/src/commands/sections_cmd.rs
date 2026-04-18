@@ -25,7 +25,11 @@ pub fn cmd_sections(file: &Path, section: &SectionCommand) {
     match File::open(file).finish() {
         Ok(vhdx_file) => {
             // 检查是否存在未完成的日志条目
-            if vhdx_file.has_pending_logs() {
+            if vhdx_file
+                .sections()
+                .log()
+                .is_ok_and(|l| l.is_replay_required())
+            {
                 eprintln!("Warning: File has pending log entries from an interrupted write.");
                 eprintln!("         Run 'vhdx-tool repair <file>' to fix the file.");
                 eprintln!();
@@ -53,12 +57,11 @@ pub fn cmd_sections(file: &Path, section: &SectionCommand) {
                 SectionCommand::Bat => {
                     println!("BAT Section");
                     println!("===========");
-                    // 计算 BAT 总条目数
-                    let bat_entries = vhdx_rs::Bat::calculate_total_entries(
-                        vhdx_file.virtual_disk_size(),
-                        vhdx_file.block_size(),
-                        vhdx_file.logical_sector_size(),
-                    );
+                    // 获取 BAT 总条目数
+                    let bat_entries = match vhdx_file.sections().bat() {
+                        Ok(bat) => bat.len() as u64,
+                        Err(_) => 0,
+                    };
                     println!("Total BAT Entries: {bat_entries}");
                     println!("\nNote: Full BAT listing not yet implemented");
                 }

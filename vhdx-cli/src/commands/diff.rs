@@ -22,7 +22,11 @@ pub fn cmd_diff(file: &Path, command: &DiffCommand) {
     match File::open(file).finish() {
         Ok(vhdx_file) => {
             // 检查是否存在未完成的日志条目
-            if vhdx_file.has_pending_logs() {
+            if vhdx_file
+                .sections()
+                .log()
+                .is_ok_and(|l| l.is_replay_required())
+            {
                 eprintln!("Warning: File has pending log entries from an interrupted write.");
                 eprintln!("         Run 'vhdx-tool repair <file>' to fix the file.");
                 eprintln!();
@@ -31,8 +35,13 @@ pub fn cmd_diff(file: &Path, command: &DiffCommand) {
             match command {
                 // 查看父磁盘定位器信息
                 DiffCommand::Parent => {
-                    if vhdx_file.has_parent() {
-                        // 读取父磁盘定位器中的键值对条目
+                    if vhdx_file
+                        .sections()
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.items().file_parameters().map(|fp| fp.has_parent()))
+                        .unwrap_or(false)
+                    {
                         if let Ok(metadata) = vhdx_file.sections().metadata()
                             && let Some(locator) = metadata.items().parent_locator()
                         {
@@ -53,7 +62,13 @@ pub fn cmd_diff(file: &Path, command: &DiffCommand) {
                 DiffCommand::Chain => {
                     println!("Disk Chain:");
                     println!("  -> {}", file.display());
-                    if vhdx_file.has_parent() {
+                    if vhdx_file
+                        .sections()
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.items().file_parameters().map(|fp| fp.has_parent()))
+                        .unwrap_or(false)
+                    {
                         println!("     (has parent - chain traversal not yet implemented)");
                     } else {
                         println!("     (base disk)");

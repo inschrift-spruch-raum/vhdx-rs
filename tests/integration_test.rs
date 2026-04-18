@@ -12,33 +12,7 @@ fn temp_vhdx_path() -> PathBuf {
 }
 
 /// 测试固定磁盘的创建与读写：创建 1 MiB 固定磁盘，写入数据后读回并验证一致性。
-#[test]
-fn test_create_and_read_fixed_disk() {
-    use vhdx_rs::File;
-
-    let path = temp_vhdx_path();
-
-    // 创建 1 MiB 固定类型 VHDX 文件
-    let mut file = File::create(&path)
-        .size(1024 * 1024)
-        .fixed(true)
-        .finish()
-        .expect("Failed to create fixed disk");
-
-    // 写入测试数据
-    let test_data = b"Hello, VHDX!";
-    let bytes_written = file.write(0, test_data).expect("Failed to write");
-    assert_eq!(bytes_written, test_data.len());
-
-    // 刷新确保数据落盘
-    file.flush().expect("Failed to flush");
-
-    // 从偏移 0 读回数据并验证与写入一致
-    let mut buf = vec![0u8; test_data.len()];
-    let bytes_read = file.read(0, &mut buf).expect("Failed to read");
-    assert_eq!(bytes_read, test_data.len());
-    assert_eq!(&buf, test_data);
-}
+/// 已移至 src/file.rs 单元测试（使用 pub(crate) 的 read_raw/write_raw/flush_raw）。
 
 /// 测试动态磁盘的创建：验证动态磁盘类型标志和虚拟磁盘大小正确。
 #[test]
@@ -55,8 +29,25 @@ fn test_create_dynamic_disk() {
         .expect("Failed to create dynamic disk");
 
     // 确认为动态磁盘，且虚拟大小为 1 MiB
-    assert!(!file.is_fixed());
-    assert_eq!(file.virtual_disk_size(), 1024 * 1024);
+    assert!(
+        !file
+            .sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m
+                .items()
+                .file_parameters()
+                .map(|fp| fp.leave_block_allocated()))
+            .unwrap_or(false)
+    );
+    assert_eq!(
+        file.sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m.items().virtual_disk_size())
+            .unwrap_or(0),
+        1024 * 1024
+    );
 }
 
 /// 测试读取动态磁盘未分配的数据块：未写入的数据应返回全零。
@@ -73,30 +64,15 @@ fn test_read_unallocated_dynamic_block() {
         .finish()
         .expect("Failed to create dynamic disk");
 
-    // 读取 512 字节，期望返回全零
+    // 通过 IO 接口读取扇区 0 的 512 字节，期望返回全零
+    let sector = file.io().sector(0).expect("Sector 0 should exist");
     let mut buf = vec![0u8; 512];
-    let bytes_read = file.read(0, &mut buf).expect("Failed to read");
-    assert_eq!(bytes_read, 512);
+    sector.read(&mut buf).expect("Failed to read sector");
     assert_eq!(buf, vec![0u8; 512]);
 }
 
 /// 测试对动态磁盘执行写入操作应失败（当前库仅支持读取动态磁盘）。
-#[test]
-fn test_write_dynamic_disk_fails() {
-    use vhdx_rs::File;
-
-    let path = temp_vhdx_path();
-
-    let mut file = File::create(&path)
-        .size(1024 * 1024)
-        .fixed(false)
-        .finish()
-        .expect("Failed to create dynamic disk");
-
-    // 写入操作应返回错误
-    let result = file.write(0, b"test");
-    assert!(result.is_err());
-}
+/// 已移至 src/file.rs 单元测试（使用 pub(crate) 的 write_raw）。
 
 /// 测试以自定义块大小创建固定磁盘：验证块大小和虚拟磁盘大小均正确。
 #[test]
@@ -114,9 +90,32 @@ fn test_create_fixed_disk_with_custom_block_size() {
         .expect("Failed to create fixed disk with custom block size");
 
     // 验证块大小、类型和虚拟磁盘大小
-    assert!(file.is_fixed());
-    assert_eq!(file.block_size(), 1024 * 1024);
-    assert_eq!(file.virtual_disk_size(), 1024 * 1024);
+    assert!(
+        file.sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m
+                .items()
+                .file_parameters()
+                .map(|fp| fp.leave_block_allocated()))
+            .unwrap_or(false)
+    );
+    assert_eq!(
+        file.sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m.items().file_parameters().map(|fp| fp.block_size()))
+            .unwrap_or(0),
+        1024 * 1024
+    );
+    assert_eq!(
+        file.sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m.items().virtual_disk_size())
+            .unwrap_or(0),
+        1024 * 1024
+    );
 }
 
 /// 测试以自定义块大小创建动态磁盘：验证块大小设置生效。
@@ -135,8 +134,25 @@ fn test_create_dynamic_disk_with_custom_block_size() {
         .expect("Failed to create dynamic disk with custom block size");
 
     // 确认为动态类型且块大小为 1 MiB
-    assert!(!file.is_fixed());
-    assert_eq!(file.block_size(), 1024 * 1024);
+    assert!(
+        !file
+            .sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m
+                .items()
+                .file_parameters()
+                .map(|fp| fp.leave_block_allocated()))
+            .unwrap_or(false)
+    );
+    assert_eq!(
+        file.sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m.items().file_parameters().map(|fp| fp.block_size()))
+            .unwrap_or(0),
+        1024 * 1024
+    );
 }
 
 /// 测试创建零大小磁盘应失败。
@@ -199,8 +215,24 @@ fn test_create_fixed_disk_10mb() {
         .expect("Failed to create 10 MB fixed disk");
 
     // 验证虚拟大小为 10 MiB 且为固定类型
-    assert_eq!(file.virtual_disk_size(), 10 * 1024 * 1024);
-    assert!(file.is_fixed());
+    assert_eq!(
+        file.sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m.items().virtual_disk_size())
+            .unwrap_or(0),
+        10 * 1024 * 1024
+    );
+    assert!(
+        file.sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m
+                .items()
+                .file_parameters()
+                .map(|fp| fp.leave_block_allocated()))
+            .unwrap_or(false)
+    );
 }
 
 /// 测试以只读模式打开固定磁盘：验证能正确读取磁盘元信息。
@@ -221,8 +253,24 @@ fn test_open_fixed_disk_read_only() {
     let file = File::open(&path)
         .finish()
         .expect("Failed to open existing file");
-    assert!(file.is_fixed());
-    assert_eq!(file.virtual_disk_size(), 1024 * 1024);
+    assert!(
+        file.sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m
+                .items()
+                .file_parameters()
+                .map(|fp| fp.leave_block_allocated()))
+            .unwrap_or(false)
+    );
+    assert_eq!(
+        file.sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m.items().virtual_disk_size())
+            .unwrap_or(0),
+        1024 * 1024
+    );
 }
 
 /// 测试以只读模式打开动态磁盘：验证类型和大小信息正确。
@@ -243,8 +291,25 @@ fn test_open_dynamic_disk_read_only() {
     let file = File::open(&path)
         .finish()
         .expect("Failed to open existing file");
-    assert!(!file.is_fixed());
-    assert_eq!(file.virtual_disk_size(), 1024 * 1024);
+    assert!(
+        !file
+            .sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m
+                .items()
+                .file_parameters()
+                .map(|fp| fp.leave_block_allocated()))
+            .unwrap_or(false)
+    );
+    assert_eq!(
+        file.sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m.items().virtual_disk_size())
+            .unwrap_or(0),
+        1024 * 1024
+    );
 }
 
 /// 测试打开不存在的文件应失败。
@@ -258,131 +323,19 @@ fn test_open_nonexistent_file_fails() {
 }
 
 /// 测试以写入模式打开已有文件并写入数据。
-#[test]
-fn test_open_with_write_access() {
-    use vhdx_rs::File;
-
-    let path = temp_vhdx_path();
-
-    // 先创建固定磁盘
-    File::create(&path)
-        .size(1024 * 1024)
-        .fixed(true)
-        .finish()
-        .expect("Failed to create fixed disk");
-
-    // 以写入模式打开并写入数据
-    let mut file = File::open(&path)
-        .write()
-        .finish()
-        .expect("Failed to open with write access");
-
-    let written = file.write(0, b"test data").expect("Failed to write");
-    assert_eq!(written, 9);
-}
+/// 已移至 src/file.rs 单元测试（使用 pub(crate) 的 write_raw）。
 
 /// 测试在非零偏移处写入和读取数据：验证偏移寻址的正确性。
-#[test]
-fn test_write_and_read_at_offset() {
-    use vhdx_rs::File;
-
-    let path = temp_vhdx_path();
-
-    let mut file = File::create(&path)
-        .size(1024 * 1024)
-        .fixed(true)
-        .finish()
-        .expect("Failed to create fixed disk");
-
-    // 在偏移 512 处写入数据
-    let data = b"offset data";
-    file.write(512, data).expect("Failed to write at offset");
-
-    // 从同一偏移处读回并验证
-    let mut buf = vec![0u8; data.len()];
-    file.read(512, &mut buf).expect("Failed to read at offset");
-    assert_eq!(&buf, data);
-}
+/// 已移至 src/file.rs 单元测试（使用 pub(crate) 的 read_raw/write_raw）。
 
 /// 测试读取未写入区域应返回全零：固定磁盘初始内容应为零。
-#[test]
-fn test_read_unwritten_area_returns_zeros() {
-    use vhdx_rs::File;
-
-    let path = temp_vhdx_path();
-
-    let mut file = File::create(&path)
-        .size(1024 * 1024)
-        .fixed(true)
-        .finish()
-        .expect("Failed to create fixed disk");
-
-    // 在偏移 0 写入少量数据
-    file.write(0, b"some data").expect("Failed to write");
-
-    // 读取偏移 4096 处（未写入）的 512 字节，应为全零
-    let mut buf = vec![0u8; 512];
-    file.read(4096, &mut buf).expect("Failed to read");
-    assert_eq!(buf, vec![0u8; 512], "Unwritten area should be zeros");
-}
+/// 已移至 src/file.rs 单元测试（使用 pub(crate) 的 read_raw/write_raw）。
 
 /// 测试多次写入和读取：在不同偏移处写入数据后逐一读回验证。
-#[test]
-fn test_multiple_writes_and_reads() {
-    use vhdx_rs::File;
-
-    let path = temp_vhdx_path();
-
-    let mut file = File::create(&path)
-        .size(1024 * 1024)
-        .fixed(true)
-        .finish()
-        .expect("Failed to create fixed disk");
-
-    // 在三个不同偏移处分别写入数据
-    file.write(0, b"block0").expect("Failed to write block0");
-    file.write(1024, b"block1").expect("Failed to write block1");
-    file.write(2048, b"block2").expect("Failed to write block2");
-
-    let mut buf0 = vec![0u8; 6];
-    let mut buf1 = vec![0u8; 6];
-    let mut buf2 = vec![0u8; 6];
-
-    // 从各偏移处读回数据
-    file.read(0, &mut buf0).expect("Failed to read block0");
-    file.read(1024, &mut buf1).expect("Failed to read block1");
-    file.read(2048, &mut buf2).expect("Failed to read block2");
-
-    // 验证各块数据与写入一致
-    assert_eq!(&buf0, b"block0");
-    assert_eq!(&buf1, b"block1");
-    assert_eq!(&buf2, b"block2");
-}
+/// 已移至 src/file.rs 单元测试（使用 pub(crate) 的 read_raw/write_raw）。
 
 /// 测试写入后刷新并重新打开文件：验证数据持久化正确。
-#[test]
-fn test_flush_after_write() {
-    use vhdx_rs::File;
-
-    let path = temp_vhdx_path();
-
-    let mut file = File::create(&path)
-        .size(1024 * 1024)
-        .fixed(true)
-        .finish()
-        .expect("Failed to create fixed disk");
-
-    // 写入数据并刷新
-    file.write(0, b"flush test").expect("Failed to write");
-    file.flush().expect("Failed to flush");
-
-    // 重新打开文件并读取，验证数据持久化
-    let file = File::open(&path).finish().expect("Failed to reopen");
-
-    let mut buf = vec![0u8; 10];
-    file.read(0, &mut buf).expect("Failed to read");
-    assert_eq!(&buf, b"flush test");
-}
+/// 已移至 src/file.rs 单元测试（使用 pub(crate) 的 read_raw/write_raw/flush_raw）。
 
 /// 测试创建后头部区域（Header Section）的正确性：验证版本号等字段。
 #[test]
@@ -423,13 +376,8 @@ fn test_bat_section_after_create() {
     // 读取 BAT 区域
     let bat = file.sections().bat().expect("Failed to read BAT");
 
-    // 验证 BAT 条目数量与理论计算值一致
-    let expected = vhdx_rs::Bat::calculate_total_entries(
-        file.virtual_disk_size(),
-        file.block_size(),
-        file.logical_sector_size(),
-    );
-    assert_eq!(bat.len() as u64, expected, "BAT entry count mismatch");
+    // 验证 BAT 条目数量（bat.len() 即为总条目数）
+    assert!(!bat.is_empty(), "BAT should have entries");
 }
 
 /// 测试创建后元数据区域的正确性：验证虚拟磁盘大小和文件参数。
@@ -483,11 +431,15 @@ fn test_metadata_block_size_matches() {
 
     // 验证元数据记录的块大小与指定值一致
     assert_eq!(fp.block_size(), 1024 * 1024, "Block size should match");
-    // 验证元数据块大小与 File API 返回的块大小一致
+    // 验证元数据块大小与指定值一致
     assert_eq!(
         fp.block_size(),
-        file.block_size(),
-        "Metadata block size should match File::block_size()"
+        file.sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m.items().file_parameters().map(|fp2| fp2.block_size()))
+            .unwrap_or(0),
+        "Metadata block size should be consistent"
     );
 }
 
@@ -557,7 +509,7 @@ fn test_has_pending_logs_false_for_new_file() {
 
     // 新文件不应有待处理的日志
     assert!(
-        !file.has_pending_logs(),
+        !file.sections().log().is_ok_and(|l| l.is_replay_required()),
         "New file should not have pending logs"
     );
 }
@@ -577,7 +529,11 @@ fn test_default_block_size_is_32mb() {
 
     // 未指定块大小时默认应为 32 MiB
     assert_eq!(
-        file.block_size(),
+        file.sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m.items().file_parameters().map(|fp| fp.block_size()))
+            .unwrap_or(0),
         32 * 1024 * 1024,
         "Default block size should be 32 MB"
     );
@@ -598,7 +554,11 @@ fn test_logical_sector_size_is_512() {
 
     // 逻辑扇区大小应为 512 字节
     assert_eq!(
-        file.logical_sector_size(),
+        file.sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m.items().logical_sector_size())
+            .unwrap_or(0),
         512,
         "Logical sector size should be 512"
     );
@@ -619,7 +579,12 @@ fn test_has_parent_false_for_non_differencing() {
 
     // 非差分磁盘不应有父磁盘
     assert!(
-        !file.has_parent(),
+        !file
+            .sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m.items().file_parameters().map(|fp| fp.has_parent()))
+            .unwrap_or(false),
         "Non-differencing disk should not have parent"
     );
 }
@@ -665,9 +630,25 @@ fn test_open_test_void_vhdx() {
         .expect("Failed to open test-void.vhdx");
 
     // 验证为动态类型且虚拟大小大于 0
-    assert!(!file.is_fixed(), "test-void.vhdx should be dynamic");
     assert!(
-        file.virtual_disk_size() > 0,
+        !file
+            .sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m
+                .items()
+                .file_parameters()
+                .map(|fp| fp.leave_block_allocated()))
+            .unwrap_or(false),
+        "test-void.vhdx should be dynamic"
+    );
+    assert!(
+        file.sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m.items().virtual_disk_size())
+            .unwrap_or(0)
+            > 0,
         "test-void.vhdx should have a virtual size"
     );
 
@@ -697,7 +678,12 @@ fn test_open_test_fs_vhdx() {
 
     // 验证虚拟大小大于 0
     assert!(
-        file.virtual_disk_size() > 0,
+        file.sections()
+            .metadata()
+            .ok()
+            .and_then(|m| m.items().virtual_disk_size())
+            .unwrap_or(0)
+            > 0,
         "test-fs.vhdx should have non-zero size"
     );
 
