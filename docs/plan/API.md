@@ -11,8 +11,8 @@ vhdx::
 ├── File                                    # 核心 API
 │   ├── open(path) -> File::OpenOptions     # 链式打开
 │   ├── create(path) -> File::CreateOptions # 链式创建
-│   ├── sections(&self) -> &Sections        # 获取所有sections
-│   ├── io(&self) -> IO                    # 获取IO模块
+│   ├── sections(&self) -> &Sections<'_>    # 获取所有sections
+│   ├── io(&self) -> IO<'_>                 # 获取IO模块
 │   ├── validator(&self) -> validation::SpecValidator  # 获取规范校验器
 │   └── inner(&self) -> &std::fs::File
 │
@@ -45,22 +45,22 @@ vhdx::
 │   └── ValidationIssue                      # 可选：结构化校验问题（用于报告）
 │
 ├── section::                               # Section模块 - 物理文件结构映射
-│   ├── Sections                            # 容器，管理所有sections (懒加载)
-│   │   ├── header(&self) -> &Header
-│   │   ├── bat(&self) -> &Bat
-│   │   ├── metadata(&self) -> &Metadata
-│   │   └── log(&self) -> &Log
+│   ├── Sections<'a>                        # 容器，管理所有sections (懒加载)
+│   │   ├── header(&self) -> Result<std::cell::Ref<'_, Header<'a>>>
+│   │   ├── bat(&self) -> Result<std::cell::Ref<'_, Bat<'a>>>
+│   │   ├── metadata(&self) -> Result<std::cell::Ref<'_, Metadata<'a>>>
+│   │   └── log(&self) -> Result<std::cell::Ref<'_, Log<'a>>>
 │   │
-│   ├── Header                              # Header Section (1 MB)
-│   │   ├── file_type(&self) -> &FileTypeIdentifier
-│   │   ├── header(&self, index: usize) -> Option<&HeaderStructure>  # 0=current, 1=header1, 2=header2
-│   │   └── region_table(&self, index: usize) -> Option<&RegionTable>  # 0=current, 1=rt1, 2=rt2
+│   ├── Header<'a>                          # Header Section (1 MB)
+│   │   ├── file_type(&self) -> FileTypeIdentifier<'_>
+│   │   ├── header(&self, index: usize) -> Option<HeaderStructure<'_>>  # 0=current, 1=header1, 2=header2
+│   │   └── region_table(&self, index: usize) -> Option<RegionTable<'_>>  # 0=current, 1=rt1, 2=rt2
 │   │
-│   │   └── FileTypeIdentifier              # 文件类型标识符
+│   │   └── FileTypeIdentifier<'a>          # 文件类型标识符视图
 │   │       ├── signature: [u8; 8]
-│   │       └── creator: [u8; 512]
+│   │       └── creator: &'a [u8]
 │   │
-│   │   └── HeaderStructure                 # VHDX Header
+│   │   └── HeaderStructure<'a>             # VHDX Header 视图
 │   │       ├── signature: [u8; 4]
 │   │       ├── checksum: u32
 │   │       ├── sequence_number: u64
@@ -72,21 +72,21 @@ vhdx::
 │   │       ├── log_length: u32
 │   │       └── log_offset: u64
 │   │
-│   │   └── RegionTable                     # Region Table
-│   │       └── RegionTableHeader           # Region Table Header
+│   │   └── RegionTable<'a>                 # Region Table 视图
+│   │       └── RegionTableHeader<'a>       # Region Table Header 视图
 │   │           ├── signature: [u8; 4]
 │   │           ├── checksum: u32
 │   │           ├── entry_count: u32
 │   │           └── reserved: u32
-│   │       └── RegionTableEntry            # Region Table Entry
+│   │       └── RegionTableEntry<'a>        # Region Table Entry 视图
 │   │           ├── guid: Guid
 │   │           ├── file_offset: u64
 │   │           ├── length: u32
 │   │           └── required: u32
 │   │
-│   ├── Bat                                 # BAT Section
-│   │   ├── entry(&self, index: u64) -> Option<&BatEntry>
-│   │   ├── entries(&self) -> &[BatEntry]
+│   ├── Bat<'a>                             # BAT Section
+│   │   ├── entry(&self, index: u64) -> Option<BatEntry>
+│   │   ├── entries(&self) -> Vec<BatEntry>
 │   │   └── len(&self) -> usize
 │   │
 │   │   └── BatEntry                        # BAT Entry 结构体
@@ -109,60 +109,60 @@ vhdx::
 │   │              ├── NotPresent
 │   │              └── Present
 │   │
-│   ├── Metadata                            # Metadata Section
-│   │   ├── table(&self) -> &MetadataTable
-│   │   └── items(&self) -> &MetadataItems
+│   ├── Metadata<'a>                        # Metadata Section
+│   │   ├── table(&self) -> MetadataTable<'_>
+│   │   └── items(&self) -> MetadataItems<'_>
 │   │
-│   │   └── MetadataTable
-│   │       ├── header(&self) -> &TableHeader
-│   │       ├── entry(&self, item_id: &Guid) -> Option<&TableEntry>
-│   │       └── entries(&self) -> &[TableEntry]
+│   │   └── MetadataTable<'a>
+│   │       ├── header(&self) -> TableHeader<'_>
+│   │       ├── entry(&self, item_id: &Guid) -> Option<TableEntry<'_>>
+│   │       └── entries(&self) -> Vec<TableEntry<'_>>
 │   │
-│   │       └── TableHeader
+│   │       └── TableHeader<'a>
 │   │           ├── signature: [u8; 8]
 │   │           ├── reserved: [u8; 2]
 │   │           ├── entry_count: u16
 │   │           └── reserved2: [u8; 20]
 │   │
-│   │       └── TableEntry
+│   │       └── TableEntry<'a>
 │   │           ├── item_id: Guid
 │   │           ├── offset: u32
 │   │           ├── length: u32
 │   │           ├── flags: u32
 │   │           └── reserved: u32
-│   │           └── flags(&self) -> &EntryFlags
+│   │           └── flags(&self) -> EntryFlags
 │   │
 │   │           └── EntryFlags
 │   │               ├── is_user(&self) -> bool
 │   │               ├── is_virtual_disk(&self) -> bool
 │   │               └── is_required(&self) -> bool
 │   │
-│   │   └── MetadataItems
-│   │       ├── file_parameters(&self) -> Option<&FileParameters>
+│   │   └── MetadataItems<'a>
+│   │       ├── file_parameters(&self) -> Option<FileParameters<'_>>
 │   │       ├── virtual_disk_size(&self) -> Option<u64>
-│   │       ├── virtual_disk_id(&self) -> Option<&Guid>
+│   │       ├── virtual_disk_id(&self) -> Option<Guid>
 │   │       ├── logical_sector_size(&self) -> Option<u32>
 │   │       ├── physical_sector_size(&self) -> Option<u32>
-│   │       └── parent_locator(&self) -> Option<&ParentLocator>
+│   │       └── parent_locator(&self) -> Option<ParentLocator<'_>>
 │   │
-│   │       └── FileParameters
+│   │       └── FileParameters<'a>
 │   │           ├── block_size(&self) -> u32
 │   │           ├── leave_block_allocated(&self) -> bool
 │   │           └── has_parent(&self) -> bool
 │   │
-│   │       └── ParentLocator
-│   │           ├── header(&self) -> &LocatorHeader
-│   │           ├── entry(&self, index: usize) -> Option<&KeyValueEntry>
-│   │           ├── entries(&self) -> &[KeyValueEntry]
+│   │       └── ParentLocator<'a>
+│   │           ├── header(&self) -> LocatorHeader<'_>
+│   │           ├── entry(&self, index: usize) -> Option<KeyValueEntry<'_>>
+│   │           ├── entries(&self) -> Vec<KeyValueEntry<'_>>
 │   │           └── key_value_data(&self) -> &[u8]
 │   │           └── resolve_parent_path(&self) -> Option<PathBuf> # 按 relative_path->volume_path->absolute_win32_path 顺序解析
 │   │
-│   │           └── LocatorHeader
+│   │           └── LocatorHeader<'a>
 │   │               ├── locator_type: Guid
 │   │               ├── reserved: u16
 │   │               └── key_value_count: u16
 │   │
-│   │           └── KeyValueEntry
+│   │           └── KeyValueEntry<'a>
 │   │               ├── key_offset: u32
 │   │               ├── value_offset: u32
 │   │               ├── key_length: u16
@@ -170,36 +170,36 @@ vhdx::
 │   │               ├── key(&self, data: &[u8]) -> Option<String>
 │   │               └── value(&self, data: &[u8]) -> Option<String>
 │   │
-│   └── Log                                 # Log Section
-│       ├── entry(&self, index: usize) -> Option<&Entry>
-│       └── entries(&self) -> &[Entry]
+│   └── Log<'a>                             # Log Section
+│       ├── entry(&self, index: usize) -> Option<Entry<'_>>
+│       └── entries(&self) -> Vec<Entry<'_>>
 │    
-│       └── Entry                           # Log Entry
-│           ├── header(&self) -> &LogEntryHeader
-│           ├── descriptor(&self, index: usize) -> Option<&Descriptor>
-│           ├── descriptors(&self) -> &[Descriptor]
-│           └── data(&self) -> &[DataSector]
+│       └── Entry<'a>                       # Log Entry
+│           ├── header(&self) -> LogEntryHeader<'_>
+│           ├── descriptor(&self, index: usize) -> Option<Descriptor<'_>>
+│           ├── descriptors(&self) -> Vec<Descriptor<'_>>
+│           └── data(&self) -> Vec<DataSector<'_>>
 │    
-│           └── Descriptor                  # Descriptor 枚举
-│               ├── Data(DataDescriptor)    # Data Descriptor 变体
+│           └── Descriptor<'a>              # Descriptor 枚举
+│               ├── Data(DataDescriptor<'a>)    # Data Descriptor 变体
 │               │
-│               └── Zero(ZeroDescriptor)    # Zero Descriptor 变体
+│               └── Zero(ZeroDescriptor<'a>)    # Zero Descriptor 变体
 │    
-│               └── DataDescriptor          # Data Descriptor
+│               └── DataDescriptor<'a>      # Data Descriptor
 │                   ├── signature: [u8; 4]
 │                   ├── trailing_bytes: u32
 │                   ├── leading_bytes: u64
 │                   ├── file_offset: u64
 │                   └── sequence_number: u64
 │    
-│               └── ZeroDescriptor          # Zero Descriptor
+│               └── ZeroDescriptor<'a>      # Zero Descriptor
 │                   ├── signature: [u8; 4]
 │                   ├── reserved: u32
 │                   ├── zero_length: u64
 │                   ├── file_offset: u64
 │                   └── sequence_number: u64
 │    
-│           └── LogEntryHeader              # Log Entry Header
+│           └── LogEntryHeader<'a>          # Log Entry Header
 │               ├── signature: [u8; 4]
 │               ├── checksum: u32
 │               ├── entry_length: u32
@@ -211,19 +211,21 @@ vhdx::
 │               ├── flushed_file_offset: u64
 │               └── last_file_offset: u64
 │    
-│           └── DataSector                  # Data Sector
+│           └── DataSector<'a>              # Data Sector
 │               ├── signature: [u8; 4]
 │               ├── sequence_high: u32
-│               ├── data: [u8; 4084]
+│               ├── data: &'a [u8]
 │               └── sequence_low: u32
 │    
-├── IO                                      # IO模块 (扇区级操作)
-│   └── sector(&self, sector: u64) -> Option<Sector>  # 输入: 全局扇区号
+├── IO<'a>                                  # IO模块 (扇区级操作)
+│   └── sector(&self, sector: u64) -> Option<Sector<'_>>  # 输入: 全局扇区号
 │   │
-│   └── Sector                              # 扇区级定位与操作
-│       ├── payload(&self) -> &PayloadBlock
+│   └── Sector<'a>                          # 扇区级定位与操作
+│       ├── payload(&self) -> PayloadBlock<'_>
 │       ├── read(&self, buf: &mut [u8]) -> Result<usize>
 │       └── write(&self, data: &[u8]) -> Result<()>
+│
+│   └── PayloadBlock<'a>                    # Payload Block 视图
 │
 ├── Guid                                    # GUID 类型
 ├── LogReplayPolicy                         # 日志回放策略
@@ -299,12 +301,12 @@ impl File {
     pub fn create(path: impl AsRef<Path>) -> File::CreateOptions;
     
     /// 获取所有Section的容器（懒加载）
-    pub fn sections(&self) -> &Sections;
+    pub fn sections(&self) -> &Sections<'_>;
     
     /// 获取IO模块（用于扇区级读写）
     /// 懒加载：内部Sector缓存按需从文件读取
     /// 前置条件：文件无待回放日志，或已按策略完成日志回放
-    pub fn io(&self) -> IO;
+    pub fn io(&self) -> IO<'_>;
 
     /// 获取规范校验器（只读）
     ///
@@ -492,26 +494,26 @@ pub mod validation {
 /// VHDX文件中的所有Section的容器
 /// 
 /// 采用懒加载策略：访问具体Section时才从文件读取
-pub struct Sections {
+pub struct Sections<'a> {
     // 内部字段：缓存已加载的sections
 }
 
-impl Sections {
+impl<'a> Sections<'a> {
     /// 访问Header Section
     /// 懒加载：首次调用时从文件读取1MB Header Section
-    pub fn header(&self) -> &Header;
+    pub fn header(&self) -> Result<std::cell::Ref<'_, Header<'a>>>;
     
     /// 访问BAT Section
     /// 懒加载：首次调用时从文件读取BAT区域
-    pub fn bat(&self) -> &Bat;
+    pub fn bat(&self) -> Result<std::cell::Ref<'_, Bat<'a>>>;
     
     /// 访问Metadata Section
     /// 懒加载：首次调用时从文件读取Metadata区域
-    pub fn metadata(&self) -> &Metadata;
+    pub fn metadata(&self) -> Result<std::cell::Ref<'_, Metadata<'a>>>;
     
     /// 访问Log Section
     /// 懒加载：首次调用时从文件读取Log区域
-    pub fn log(&self) -> &Log;
+    pub fn log(&self) -> Result<std::cell::Ref<'_, Log<'a>>>;
 }
 ```
 
@@ -521,70 +523,68 @@ impl Sections {
 /// Header Section (1 MB固定大小)
 /// 
 /// 结构：FileTypeIdentifier(64KB) + Header1(4KB) + Header2(4KB) + RegionTable1(64KB) + RegionTable2(64KB) + Reserved
-pub struct Header;
+pub struct Header<'a>;
 
-impl Header {
+impl<'a> Header<'a> {
     /// 文件类型标识符
-    pub fn file_type(&self) -> &FileTypeIdentifier;
+    pub fn file_type(&self) -> FileTypeIdentifier<'_>;
     
     /// 获取Header
     /// - index = 0: 返回 current header（根据 sequence_number 自动选择）
     /// - index = 1: 返回 header 1（物理第一个，偏移 64KB）
     /// - index = 2: 返回 header 2（物理第二个，偏移 128KB）
     /// - index > 2: 返回 None
-    pub fn header(&self, index: usize) -> Option<&HeaderStructure>;
+    pub fn header(&self, index: usize) -> Option<HeaderStructure<'_>>;
     
     /// 获取Region Table
     /// - index = 0: 返回 current header 对应的 region table
     /// - index = 1: 返回 region table 1（偏移 192KB）
     /// - index = 2: 返回 region table 2（偏移 256KB）
     /// - index > 2: 返回 None
-    pub fn region_table(&self, index: usize) -> Option<&RegionTable>;
+    pub fn region_table(&self, index: usize) -> Option<RegionTable<'_>>;
 }
 
 /// File Type Identifier (8 bytes signature + 512 bytes creator) (64KB)
-#[repr(C, packed)]
-pub struct FileTypeIdentifier {
-    pub signature: [u8; 8],      // "vhdxfile"
-    pub creator: [u8; 512],      // UTF-16, null-terminated
+pub struct FileTypeIdentifier<'a> {
+    pub signature: [u8; 8],
+    pub creator: &'a [u8],
 }
 
-/// VHDX Header (4KB)
-#[repr(C, packed)]
-pub struct HeaderStructure {
-    pub signature: [u8; 4],      // "head"
-    pub checksum: u32,           // CRC-32C
+/// VHDX Header 视图（4KB）
+pub struct HeaderStructure<'a> {
+    pub signature: [u8; 4],
+    pub checksum: u32,
     pub sequence_number: u64,
     pub file_write_guid: Guid,
     pub data_write_guid: Guid,
     pub log_guid: Guid,
-    pub log_version: u16,        // Must be 0
-    pub version: u16,            // Must be 1
+    pub log_version: u16,
+    pub version: u16,
     pub log_length: u32,
     pub log_offset: u64,
-    // ... Reserved填充至4KB
+    pub raw: &'a [u8],
 }
 
-/// Region Table (64KB)
-pub struct RegionTable {
-    pub header: RegionTableHeader,
-    pub entries: Vec<RegionTableEntry>,
+/// Region Table 视图（64KB）
+pub struct RegionTable<'a> {
+    pub header: RegionTableHeader<'a>,
+    pub entries: Vec<RegionTableEntry<'a>>,
 }
 
-#[repr(C, packed)]
-pub struct RegionTableHeader {
-    pub signature: [u8; 4],      // "regi"
+pub struct RegionTableHeader<'a> {
+    pub signature: [u8; 4],
     pub checksum: u32,
     pub entry_count: u32,
     pub reserved: u32,
+    pub raw: &'a [u8],
 }
 
-#[repr(C, packed)]
-pub struct RegionTableEntry {
+pub struct RegionTableEntry<'a> {
     pub guid: Guid,
     pub file_offset: u64,
     pub length: u32,
     pub required: u32,
+    pub raw: &'a [u8],
 }
 ```
 
@@ -594,14 +594,14 @@ pub struct RegionTableEntry {
 /// BAT (Block Allocation Table) Section
 /// 
 /// 存储虚拟磁盘块到文件偏移的映射
-pub struct Bat;
+pub struct Bat<'a>;
 
-impl Bat {
+impl<'a> Bat<'a> {
     /// 获取指定索引的BAT Entry
-    pub fn entry(&self, index: u64) -> Option<&BatEntry>;
+    pub fn entry(&self, index: u64) -> Option<BatEntry>;
     
-    /// 获取所有BAT Entries
-    pub fn entries(&self) -> &[BatEntry];
+    /// 获取所有BAT Entries（按需解析为视图列表）
+    pub fn entries(&self) -> Vec<BatEntry>;
     
     /// BAT Entry数量
     pub fn len(&self) -> usize;
@@ -654,52 +654,52 @@ pub enum SectorBitmapState {
 /// Metadata Section
 /// 
 /// 结构：MetadataTable(64KB固定) + MetadataItems(可变大小)
-pub struct Metadata;
+pub struct Metadata<'a>;
 
-impl Metadata {
+impl<'a> Metadata<'a> {
     /// 访问Metadata Table
-    pub fn table(&self) -> &MetadataTable;
+    pub fn table(&self) -> MetadataTable<'_>;
     
     /// 访问Metadata Items
-    pub fn items(&self) -> &MetadataItems;
+    pub fn items(&self) -> MetadataItems<'_>;
 }
 
 /// Metadata Table (64KB固定大小)
-pub struct MetadataTable;
+pub struct MetadataTable<'a>;
 
-impl MetadataTable {
+impl<'a> MetadataTable<'a> {
     /// 访问Table Header
-    pub fn header(&self) -> &TableHeader;
+    pub fn header(&self) -> TableHeader<'_>;
     
     /// 根据Item ID查找Entry
-    pub fn entry(&self, item_id: &Guid) -> Option<&TableEntry>;
+    pub fn entry(&self, item_id: &Guid) -> Option<TableEntry<'_>>;
     
-    /// 获取所有Entries
-    pub fn entries(&self) -> &[TableEntry];
+    /// 获取所有Entries（按需解析为视图列表）
+    pub fn entries(&self) -> Vec<TableEntry<'_>>;
 }
 
 /// Table Header (32字节)
-#[repr(C, packed)]
-pub struct TableHeader {
-    pub signature: [u8; 8],      // "metadata"
+pub struct TableHeader<'a> {
+    pub signature: [u8; 8],
     pub reserved: [u8; 2],
     pub entry_count: u16,
     pub reserved2: [u8; 20],
+    pub raw: &'a [u8],
 }
 
 /// Table Entry (32字节)
-#[repr(C, packed)]
-pub struct TableEntry {
+pub struct TableEntry<'a> {
     pub item_id: Guid,
     pub offset: u32,
     pub length: u32,
     pub flags: u32,
     pub reserved: u32,
+    pub raw: &'a [u8],
 }
 
-impl TableEntry {
+impl<'a> TableEntry<'a> {
     /// 获取Entry Flags
-    pub fn flags(&self) -> &EntryFlags;
+    pub fn flags(&self) -> EntryFlags;
 }
 
 /// Entry Flags (TableEntry.flags的包装)
@@ -717,17 +717,17 @@ impl EntryFlags {
 }
 
 /// Metadata Items (64KB之后，变长)
-pub struct MetadataItems;
+pub struct MetadataItems<'a>;
 
-impl MetadataItems {
+impl<'a> MetadataItems<'a> {
     /// 获取File Parameters
-    pub fn file_parameters(&self) -> Option<&FileParameters>;
+    pub fn file_parameters(&self) -> Option<FileParameters<'_>>;
     
     /// 获取虚拟磁盘大小
     pub fn virtual_disk_size(&self) -> Option<u64>;
     
     /// 获取虚拟磁盘ID
-    pub fn virtual_disk_id(&self) -> Option<&Guid>;
+    pub fn virtual_disk_id(&self) -> Option<Guid>;
     
     /// 获取逻辑扇区大小
     pub fn logical_sector_size(&self) -> Option<u32>;
@@ -736,18 +736,18 @@ impl MetadataItems {
     pub fn physical_sector_size(&self) -> Option<u32>;
     
     /// 获取父定位器（差分磁盘）
-    pub fn parent_locator(&self) -> Option<&ParentLocator>;
+    pub fn parent_locator(&self) -> Option<ParentLocator<'_>>;
 
 }
 
 /// File Parameters (8字节)
-#[repr(C, packed)]
-pub struct FileParameters {
+pub struct FileParameters<'a> {
     pub block_size: u32,
     pub flags: u32,
+    pub raw: &'a [u8],
 }
 
-impl FileParameters {
+impl<'a> FileParameters<'a> {
     /// 块大小（1MB-256MB，2的幂）
     pub fn block_size(&self) -> u32;
     
@@ -759,17 +759,17 @@ impl FileParameters {
 }
 
 /// Parent Locator（差分磁盘，变长结构）
-pub struct ParentLocator;
+pub struct ParentLocator<'a>;
 
-impl ParentLocator {
+impl<'a> ParentLocator<'a> {
     /// 访问Locator Header
-    pub fn header(&self) -> &LocatorHeader;
+    pub fn header(&self) -> LocatorHeader<'_>;
     
     /// 根据索引获取Key-Value Entry
-    pub fn entry(&self, index: usize) -> Option<&KeyValueEntry>;
+    pub fn entry(&self, index: usize) -> Option<KeyValueEntry<'_>>;
     
-    /// 获取所有Key-Value Entries
-    pub fn entries(&self) -> &[KeyValueEntry];
+    /// 获取所有Key-Value Entries（按需解析为视图列表）
+    pub fn entries(&self) -> Vec<KeyValueEntry<'_>>;
     
     /// 获取Key-Value数据区域
     pub fn key_value_data(&self) -> &[u8];
@@ -781,23 +781,23 @@ impl ParentLocator {
 }
 
 /// Locator Header (20字节)
-#[repr(C, packed)]
-pub struct LocatorHeader {
+pub struct LocatorHeader<'a> {
     pub locator_type: Guid,
     pub reserved: u16,
     pub key_value_count: u16,
+    pub raw: &'a [u8],
 }
 
 /// Key-Value Entry (12字节)
-#[repr(C, packed)]
-pub struct KeyValueEntry {
+pub struct KeyValueEntry<'a> {
     pub key_offset: u32,
     pub value_offset: u32,
     pub key_length: u16,
     pub value_length: u16,
+    pub raw: &'a [u8],
 }
 
-impl KeyValueEntry {
+impl<'a> KeyValueEntry<'a> {
     /// 从key_value_data中获取Key字符串（UTF-16LE解码）
     pub fn key(&self, data: &[u8]) -> Option<String>;
     
@@ -851,63 +851,62 @@ pub mod StandardItems {
 /// Log Section
 /// 
 /// 环形缓冲区，用于崩溃恢复
-pub struct Log;
+pub struct Log<'a>;
 
-impl Log {
+impl<'a> Log<'a> {
     /// 根据索引获取Entry
-    pub fn entry(&self, index: usize) -> Option<&Entry>;
+    pub fn entry(&self, index: usize) -> Option<Entry<'_>>;
     
-    /// 获取所有Entries
-    pub fn entries(&self) -> &[Entry];
+    /// 获取所有Entries（按需解析为视图列表）
+    pub fn entries(&self) -> Vec<Entry<'_>>;
 }
 
 /// Log Entry（组合结构，包含header、descriptors和sectors）
-pub struct Entry;
+pub struct Entry<'a>;
 
-impl Entry {
+impl<'a> Entry<'a> {
     /// 获取Log Entry Header
-    pub fn header(&self) -> &LogEntryHeader;
+    pub fn header(&self) -> LogEntryHeader<'_>;
     
     /// 根据索引获取单个Descriptor
-    pub fn descriptor(&self, index: usize) -> Option<&Descriptor>;
+    pub fn descriptor(&self, index: usize) -> Option<Descriptor<'_>>;
     
-    /// 获取所有Descriptors（按原始顺序）
-    pub fn descriptors(&self) -> &[Descriptor];
+    /// 获取所有Descriptors（按原始顺序，按需解析）
+    pub fn descriptors(&self) -> Vec<Descriptor<'_>>;
     
-    /// 获取Data Sectors
-    pub fn data(&self) -> &[DataSector];
+    /// 获取Data Sectors（按需解析）
+    pub fn data(&self) -> Vec<DataSector<'_>>;
 }
 
 /// Descriptor 枚举
-pub enum Descriptor {
-    Data(DataDescriptor),
-    Zero(ZeroDescriptor),
+pub enum Descriptor<'a> {
+    Data(DataDescriptor<'a>),
+    Zero(ZeroDescriptor<'a>),
 }
 
 /// Data Descriptor (32字节)
-#[repr(C, packed)]
-pub struct DataDescriptor {
-    pub signature: [u8; 4],      // "desc"
+pub struct DataDescriptor<'a> {
+    pub signature: [u8; 4],
     pub trailing_bytes: u32,
     pub leading_bytes: u64,
     pub file_offset: u64,
     pub sequence_number: u64,
+    pub raw: &'a [u8],
 }
 
 /// Zero Descriptor (32字节)
-#[repr(C, packed)]
-pub struct ZeroDescriptor {
-    pub signature: [u8; 4],      // "zero"
+pub struct ZeroDescriptor<'a> {
+    pub signature: [u8; 4],
     pub reserved: u32,
     pub zero_length: u64,
     pub file_offset: u64,
     pub sequence_number: u64,
+    pub raw: &'a [u8],
 }
 
 /// Log Entry Header (64字节)
-#[repr(C, packed)]
-pub struct LogEntryHeader {
-    pub signature: [u8; 4],      // "loge"
+pub struct LogEntryHeader<'a> {
+    pub signature: [u8; 4],
     pub checksum: u32,
     pub entry_length: u32,
     pub tail: u32,
@@ -917,15 +916,16 @@ pub struct LogEntryHeader {
     pub log_guid: Guid,
     pub flushed_file_offset: u64,
     pub last_file_offset: u64,
+    pub raw: &'a [u8],
 }
 
 /// Data Sector (4KB)
-#[repr(C, packed)]
-pub struct DataSector {
-    pub signature: [u8; 4],      // "data"
+pub struct DataSector<'a> {
+    pub signature: [u8; 4],
     pub sequence_high: u32,
-    pub data: [u8; 4084],
+    pub data: &'a [u8],
     pub sequence_low: u32,
+    pub raw: &'a [u8],
 }
 ```
 
@@ -941,27 +941,28 @@ pub struct DataSector {
 /// - 所有虚拟磁盘读写必须经由 IO::sector -> Sector::read/write
 /// - 禁止在 File 层新增等价的数据读写接口
 /// 输入: 全局扇区号 -> 内部自动计算块索引和块内扇区偏移
-pub struct IO;
+pub struct IO<'a>;
 
-impl IO {
+impl<'a> IO<'a> {
     /// 通过全局扇区号定位并返回Sector
     /// 内部自动: 1) 通过BAT找到对应块 2) 计算块内扇区偏移
     /// 懒加载: Sector缓存按需从文件读取
-    pub fn sector(&self, sector: u64) -> Option<Sector>;
+    pub fn sector(&self, sector: u64) -> Option<Sector<'_>>;
 }
 
 /// Sector - 扇区级定位与操作
 /// 
 /// 封装了PayloadBlock引用和块内扇区索引
 #[derive(Clone, Debug, PartialEq)]
-pub struct Sector {
+pub struct Sector<'a> {
     // 简单类型字段: 块内扇区索引
     pub block_sector_index: u32,
+    pub payload: PayloadBlock<'a>,
 }
 
-impl Sector {
+impl<'a> Sector<'a> {
     /// 获取对应的PayloadBlock
-    pub fn payload(&self) -> &PayloadBlock;
+    pub fn payload(&self) -> PayloadBlock<'_>;
     
     /// 读取扇区数据
     /// buf长度必须为扇区大小的整数倍
@@ -976,7 +977,9 @@ impl Sector {
 /// 
 /// 用户通过Sector访问，不直接操作
 #[derive(Clone, Debug, PartialEq)]
-pub struct PayloadBlock;
+pub struct PayloadBlock<'a> {
+    pub bytes: &'a [u8],
+}
 ```
 
 
@@ -1044,12 +1047,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sections = file.sections();
     
     // 访问Header Section
-    let header = sections.header();
+    let header = sections.header()?;
     println!("File Type: {:?}", header.file_type().signature);
     println!("Current Header Seq: {}", header.header(0).unwrap().sequence_number);
     
     // 访问Metadata Section（结构化访问）
-    let metadata = sections.metadata();
+    let metadata = sections.metadata()?;
     
     // 从 FileParameters 获取磁盘类型和块大小
     if let Some(fp) = metadata.items().file_parameters() {
@@ -1077,7 +1080,7 @@ use vhdx::section::BatState;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file = File::open("disk.vhdx").finish()?;
-    let bat = file.sections().bat();
+    let bat = file.sections().bat()?;
     
     // 遍历前10个BAT Entries
     for i in 0..10.min(bat.len() as u64) {
@@ -1142,7 +1145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     
     // 验证创建的Metadata
-    let metadata = file.sections().metadata();
+    let metadata = file.sections().metadata()?;
     if let Some(fp) = metadata.items().file_parameters() {
         assert_eq!(fp.block_size(), 32 * 1024 * 1024);
         assert!(!fp.has_parent());
@@ -1169,7 +1172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .finish()?;
     
     // 验证
-    let metadata = file.sections().metadata();
+    let metadata = file.sections().metadata()?;
     if let Some(fp) = metadata.items().file_parameters() {
         assert!(fp.leave_block_allocated());  // 固定磁盘
         assert!(!fp.has_parent());
@@ -1191,8 +1194,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sections = file.sections();
 
     // 导出 Header/Metadata 的结构化摘要
-    let current_header = sections.header().header(0).unwrap();
-    let metadata = sections.metadata();
+    let header = sections.header()?;
+    let current_header = header.header(0).unwrap();
+    let metadata = sections.metadata()?;
 
     let summary = format!(
         "seq={}\nlog_length={}\nmetadata_entries={}\n",
@@ -1220,7 +1224,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .strict(true)
         .finish()?;
     let sections = file.sections();
-    let metadata = sections.metadata();
+    let metadata = sections.metadata()?;
     
     if let Some(fp) = metadata.items().file_parameters() {
         if fp.has_parent() {
