@@ -223,6 +223,7 @@ impl<'a> HeaderStructure<'a> {
         u32::from_le_bytes(self.data[4..8].try_into().unwrap())
     }
 
+    /// 验证头部结构的 CRC32C 校验和的正确性
     pub fn verify_checksum(&self) -> Result<()> {
         let expected = self.checksum();
         let actual = crc32c_with_zero_field(self.data, 4, 4);

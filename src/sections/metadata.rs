@@ -342,7 +342,9 @@ impl<'a> MetadataItems<'a> {
 ///   - bit 1: HasParent — 是否为差分磁盘（有父磁盘）
 #[derive(Clone, Copy, Debug)]
 pub struct FileParameters {
+    /// 块大小（字节），必须为 1MB 的幂次（1MB-256MB）
     block_size: u32,
+    /// 标志位（bit 0: LeaveBlockAllocated, bit 1: HasParent）
     flags: u32,
 }
 

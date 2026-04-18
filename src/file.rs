@@ -66,13 +66,21 @@ use crate::types::Guid;
 /// - `has_parent` — 是否为差分磁盘（有父磁盘引用）
 /// - `has_pending_logs` — 是否存在未回放的日志条目
 pub struct File {
+    /// 底层操作系统文件句柄
     inner: StdFile,
+    /// 各 VHDX 区域的延迟加载容器
     sections: Sections,
+    /// 虚拟磁盘大小（字节）
     virtual_disk_size: u64,
+    /// 块大小（字节），用于 Dynamic 类型
     block_size: u32,
+    /// 逻辑扇区大小（512 或 4096）
     logical_sector_size: u32,
+    /// 是否为 Fixed 类型（`leave_block_allocated` 标志）
     is_fixed: bool,
+    /// 是否为差分磁盘（有父磁盘引用）
     has_parent: bool,
+    /// 是否存在未回放的日志条目
     has_pending_logs: bool,
 }
 
@@ -715,7 +723,9 @@ impl File {
 /// }
 /// ```
 pub struct OpenOptions {
+    /// 要打开的 VHDX 文件路径
     path: std::path::PathBuf,
+    /// 是否以写入模式打开
     write: bool,
 }
 
@@ -750,11 +760,17 @@ impl OpenOptions {
 /// }
 /// ```
 pub struct CreateOptions {
+    /// 要创建的 VHDX 文件路径
     path: std::path::PathBuf,
+    /// 虚拟磁盘大小（字节），必填
     size: Option<u64>,
+    /// 是否创建 Fixed 类型磁盘
     fixed: bool,
+    /// 是否为差分磁盘（有父磁盘引用）
     has_parent: bool,
+    /// 块大小（字节）
     block_size: u32,
+    /// 逻辑扇区大小（512 或 4096）
     logical_sector_size: u32,
 }
 
