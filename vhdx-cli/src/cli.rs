@@ -47,15 +47,25 @@ pub enum Commands {
         /// 虚拟磁盘大小（如 10GB、100MB）
         #[arg(short, long, value_parser = parse_size, help = "Virtual disk size (e.g. 10GB, 100MB)")]
         size: u64,
-        /// 磁盘类型
-        #[arg(short, long, value_enum, default_value = "dynamic", help = "Disk type")]
-        disk_type: DiskType,
+        /// 磁盘类型（主路径）
+        #[arg(short, long = "type", value_enum, help = "Disk type (primary flag)")]
+        disk_type: Option<DiskType>,
+        /// 磁盘类型（兼容别名，优先级低于 --type）
+        #[arg(
+            long = "disk-type",
+            value_enum,
+            help = "Disk type (compat alias, ignored when --type is given)"
+        )]
+        disk_type_compat: Option<DiskType>,
         /// 块大小（如 1MB、32MB）
         #[arg(short, long, default_value = "32MiB", value_parser = parse_block_size, help = "Block size (e.g. 1MB, 32MB)")]
         block_size: u32,
         /// 父磁盘路径（用于差分磁盘）
         #[arg(short, long, help = "Parent disk path (for differencing disks)")]
         parent: Option<PathBuf>,
+        /// 强制覆盖已存在的目标文件
+        #[arg(short, long, help = "Overwrite existing file")]
+        force: bool,
     },
     /// 检查 VHDX 文件完整性
     #[command(about = "Check VHDX file integrity")]

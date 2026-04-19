@@ -19,12 +19,13 @@ use crate::cli::DiskType;
 /// # 参数
 /// - `path`: 新 VHDX 文件的保存路径
 /// - `size_bytes`: 虚拟磁盘大小（字节）
-/// - `disk_type`: 磁盘类型（动态/固定/差分）
+/// - `disk_type`: 已解析的磁盘类型（动态/固定/差分），由调用方按 `--type` 优先、`--disk-type` 兼容回退的规则合并
 /// - `block_size_bytes`: 块大小（字节）
 /// - `parent`: 可选的父磁盘路径（差分磁盘必须指定）
+/// - `force`: 是否在目标文件已存在时强制覆盖
 pub fn cmd_create(
     path: &Path, size_bytes: u64, disk_type: &DiskType, block_size_bytes: u32,
-    parent: Option<&Path>,
+    parent: Option<&Path>, force: bool,
 ) {
     use vhdx_rs::File;
 
@@ -37,6 +38,17 @@ pub fn cmd_create(
     if has_parent && parent.is_none() {
         eprintln!("Error: Differencing disk requires --parent option");
         std::process::exit(1);
+    }
+
+    // --force 处理：仅在目标文件已存在时删除，其他错误路径不受影响
+    if path.exists() {
+        if force {
+            if let Err(e) = std::fs::remove_file(path) {
+                eprintln!("Error removing existing file: {e}");
+                std::process::exit(1);
+            }
+        }
+        // 未指定 --force 时由库返回 "File already exists" 错误
     }
 
     let mut builder = File::create(path)

@@ -28,10 +28,16 @@ fn main() {
             path,
             size,
             disk_type,
+            disk_type_compat,
             block_size,
             parent,
+            force,
         } => {
-            commands::cmd_create(&path, size, &disk_type, block_size, parent.as_deref());
+            // 解析磁盘类型：--type 优先，--disk-type 作为兼容回退，默认 dynamic
+            let resolved = disk_type
+                .or(disk_type_compat)
+                .unwrap_or(cli::DiskType::Dynamic);
+            commands::cmd_create(&path, size, &resolved, block_size, parent.as_deref(), force);
         }
         // 检查 VHDX 文件完整性
         Commands::Check {

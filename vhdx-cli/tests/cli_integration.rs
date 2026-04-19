@@ -97,6 +97,107 @@ fn create_dynamic_disk_success() {
         .stdout(predicate::str::contains("Dynamic"));
 }
 
+/// 测试通过 --type 主路径创建固定磁盘：验证输出包含创建成功信息和 "Fixed" 类型标识。
+#[test]
+fn create_fixed_disk_via_type_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fixed.vhdx");
+
+    vhdx_tool()
+        .args([
+            "create",
+            path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--type",
+            "fixed",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created VHDX file"))
+        .stdout(predicate::str::contains("Fixed"));
+}
+
+/// 测试通过 --type 主路径创建动态磁盘：验证输出包含创建成功信息和 "Dynamic" 类型标识。
+#[test]
+fn create_dynamic_disk_via_type_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dynamic.vhdx");
+
+    vhdx_tool()
+        .args([
+            "create",
+            path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--type",
+            "dynamic",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created VHDX file"))
+        .stdout(predicate::str::contains("Dynamic"));
+}
+
+/// 测试 --disk-type 兼容路径仍然有效：验证输出包含创建成功信息和 "Fixed" 类型标识。
+#[test]
+fn create_fixed_disk_via_compat_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("compat.vhdx");
+
+    vhdx_tool()
+        .args([
+            "create",
+            path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--disk-type",
+            "fixed",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created VHDX file"))
+        .stdout(predicate::str::contains("Fixed"));
+}
+
+/// 测试同时传入 --type 与 --disk-type 时 --type 优先：验证输出显示 --type 指定的类型。
+#[test]
+fn create_both_flags_type_takes_precedence() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("precedence.vhdx");
+
+    // --type fixed --disk-type dynamic → 应使用 fixed（--type 优先）
+    vhdx_tool()
+        .args([
+            "create",
+            path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--type",
+            "fixed",
+            "--disk-type",
+            "dynamic",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created VHDX file"))
+        .stdout(predicate::str::contains("Fixed"));
+}
+
+/// 测试仅传入 --type 省略磁盘类型时默认为 dynamic：验证输出显示 "Dynamic"。
+#[test]
+fn create_default_disk_type_is_dynamic() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("default.vhdx");
+
+    vhdx_tool()
+        .args(["create", path.to_str().unwrap(), "--size", "1MiB"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created VHDX file"))
+        .stdout(predicate::str::contains("Dynamic"));
+}
+
 /// 测试创建时指定自定义块大小：验证输出中显示指定的块大小。
 #[test]
 fn create_with_explicit_block_size() {
@@ -174,6 +275,90 @@ fn create_file_already_exists_fails() {
             "1MiB",
             "--disk-type",
             "fixed",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Error creating VHDX file"));
+}
+
+/// 测试 --force 标志允许覆盖已存在的文件：验证第二次创建成功。
+#[test]
+fn create_force_overwrites_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("force.vhdx");
+
+    // 首次创建应成功
+    vhdx_tool()
+        .args([
+            "create",
+            path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--disk-type",
+            "fixed",
+        ])
+        .assert()
+        .success();
+
+    // 使用 --force 覆盖应成功
+    vhdx_tool()
+        .args([
+            "create",
+            path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--disk-type",
+            "fixed",
+            "--force",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created VHDX file"));
+}
+
+/// 测试 --force 不绕过差分磁盘的父磁盘校验：无 parent 时仍应失败。
+#[test]
+fn create_force_does_not_bypass_parent_validation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("diff_no_parent.vhdx");
+
+    // --force + --disk-type differencing 但无 --parent，仍应失败
+    vhdx_tool()
+        .args([
+            "create",
+            path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--disk-type",
+            "differencing",
+            "--force",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Differencing disk requires --parent",
+        ));
+}
+
+/// 测试 --force 不绕过父磁盘路径不存在的校验：指定不存在的 parent 仍应失败。
+#[test]
+fn create_force_does_not_bypass_missing_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("diff_bad_parent.vhdx");
+    let fake_parent = dir.path().join("nonexistent.vhdx");
+
+    // --force + --parent 指向不存在的文件，仍应失败
+    vhdx_tool()
+        .args([
+            "create",
+            path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--disk-type",
+            "differencing",
+            "--parent",
+            fake_parent.to_str().unwrap(),
+            "--force",
         ])
         .assert()
         .failure()

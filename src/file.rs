@@ -112,7 +112,9 @@ struct ReplayWrite {
 pub enum LogReplayPolicy {
     /// 若存在未回放日志则直接返回 `Error::LogReplayRequired`
     Require,
-    /// 自动回放日志（只读打开时保持兼容行为，不执行磁盘写回）
+    /// 自动回放日志
+    ///
+    /// 只读打开时会执行内存回放（不写回磁盘），与 `InMemoryOnReadOnly` 的只读行为一致。
     Auto,
     /// 只读打开时允许以内存方式回放（不写回磁盘）
     InMemoryOnReadOnly,
@@ -385,7 +387,12 @@ impl File {
             .region_table(0)
             .ok_or_else(|| Error::InvalidRegionTable("No valid region table found".to_string()))?;
 
-        // 从区域表中提取 BAT 和元数据区域的位置与大小
+        // strict 模式：校验 required 区域条目是否均为已知项
+        if strict {
+            Self::validate_required_region_entries_are_known(&region_table)?;
+        }
+
+        // 从区域表中提取 BAT 和元数据区域的位置和大小
         let (bat_offset, bat_size, metadata_offset, metadata_size) =
             Self::extract_region_info(&region_table)?;
         // 步骤 6：从元数据区域提取虚拟磁盘参数
@@ -550,6 +557,26 @@ impl File {
             || *item_id == crate::common::constants::metadata_guids::PARENT_LOCATOR
     }
 
+    /// 校验 required 区域条目是否均为已知项（strict 模式）
+    fn validate_required_region_entries_are_known(
+        region_table: &crate::sections::RegionTable<'_>,
+    ) -> Result<()> {
+        for entry in region_table.entries() {
+            if entry.required() && !Self::is_known_region_guid(&entry.guid()) {
+                return Err(Error::InvalidRegionTable(format!(
+                    "Unknown required region: {:?}",
+                    entry.guid()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// 判断区域 GUID 是否为规范已知项
+    fn is_known_region_guid(guid: &Guid) -> bool {
+        *guid == region_guids::BAT_REGION || *guid == region_guids::METADATA_REGION
+    }
+
     /// 处理日志回放，如有未完成的日志条目则回放并更新头部
     fn handle_log_replay(
         file: &mut StdFile, sections: &Sections<'_>,
@@ -562,13 +589,7 @@ impl File {
             if (*log).is_replay_required() {
                 match policy {
                     LogReplayPolicy::Require => return Err(Error::LogReplayRequired),
-                    LogReplayPolicy::Auto => {
-                        if !writable {
-                            return Ok((true, None));
-                        }
-                        Self::replay_log_and_clear_guid(file, current_header, &log)?;
-                    }
-                    LogReplayPolicy::InMemoryOnReadOnly => {
+                    LogReplayPolicy::Auto | LogReplayPolicy::InMemoryOnReadOnly => {
                         if writable {
                             Self::replay_log_and_clear_guid(file, current_header, &log)?;
                         } else {
@@ -724,8 +745,8 @@ impl File {
     /// 9. Fixed 类型：预分配数据区域
     /// 10. 重新打开文件（通过 open_file 验证完整性）
     fn create_file(
-        path: &Path, virtual_size: u64, fixed: bool, has_parent: bool, block_size: u32,
-        logical_sector_size: u32, physical_sector_size: u32,
+        path: &Path, virtual_size: u64, fixed: bool, has_parent: bool, parent_path: Option<&Path>,
+        block_size: u32, logical_sector_size: u32, physical_sector_size: u32,
     ) -> Result<Self> {
         // 步骤 1：验证创建参数
         Self::validate_create_params(
@@ -786,8 +807,9 @@ impl File {
             physical_sector_size,
             fixed,
             has_parent,
+            parent_path,
             data_write_guid,
-        );
+        )?;
         file.write_all(&metadata_data)?;
         // 补齐元数据区域到计算的大小
         let actual_metadata_size = u64::try_from(metadata_data.len()).unwrap_or(0);
@@ -1113,6 +1135,7 @@ impl CreateOptions {
             size,
             self.fixed,
             has_parent,
+            self.parent_path.as_deref(),
             self.block_size,
             self.logical_sector_size,
             self.physical_sector_size,
@@ -1128,9 +1151,24 @@ impl CreateOptions {
 /// - 数据区域：按表项描述的顺序存储实际数据
 fn create_metadata(
     virtual_size: u64, block_size: u32, logical_sector_size: u32, physical_sector_size: u32,
-    fixed: bool, has_parent: bool, disk_id: Guid,
-) -> Vec<u8> {
+    fixed: bool, has_parent: bool, parent_path: Option<&Path>, disk_id: Guid,
+) -> Result<Vec<u8>> {
     use crate::common::metadata_guids;
+
+    let parent_locator_payload = if has_parent {
+        let parent = parent_path.ok_or_else(|| {
+            Error::InvalidParameter("Differencing disk requires parent_path".to_string())
+        })?;
+        let parent_file = File::open(parent).finish()?;
+        let parent_sections_header = parent_file.sections().header()?;
+        let parent_header = parent_sections_header
+            .header(0)
+            .ok_or_else(|| Error::CorruptedHeader("No valid header found".to_string()))?;
+        let parent_linkage = parent_header.data_write_guid();
+        Some(build_parent_locator_payload(parent, parent_linkage)?)
+    } else {
+        None
+    };
 
     let mut data = Vec::with_capacity(METADATA_TABLE_SIZE);
 
@@ -1188,10 +1226,18 @@ fn create_metadata(
     current_offset += 4;
 
     // 表项 6（可选）：父磁盘定位器（仅差分磁盘包含）
-    if has_parent {
+    if let Some(locator_payload) = parent_locator_payload.as_ref() {
         data.extend_from_slice(metadata_guids::PARENT_LOCATOR.as_bytes());
         data.extend_from_slice(&current_offset.to_le_bytes());
-        data.extend_from_slice(&24u32.to_le_bytes());
+        data.extend_from_slice(
+            &u32::try_from(locator_payload.len())
+                .map_err(|_| {
+                    Error::InvalidParameter(
+                        "Parent locator payload exceeds u32::MAX bytes".to_string(),
+                    )
+                })?
+                .to_le_bytes(),
+        );
         data.extend_from_slice(&0x06u32.to_le_bytes());
         data.extend_from_slice(&[0u8; 4]);
     }
@@ -1219,7 +1265,69 @@ fn create_metadata(
     // 物理扇区大小
     data.extend_from_slice(&physical_sector_size.to_le_bytes());
 
-    data
+    // 差分盘父定位器数据
+    if let Some(locator_payload) = parent_locator_payload {
+        data.extend_from_slice(&locator_payload);
+    }
+
+    Ok(data)
+}
+
+/// 构造可被当前解析器读取的 Parent Locator payload。
+///
+/// 结构：20 字节头 + N * 12 字节 entry table + UTF-16LE key/value 数据区。
+fn build_parent_locator_payload(parent_path: &Path, parent_linkage: Guid) -> Result<Vec<u8>> {
+    let parent_path_str = parent_path.to_string_lossy().to_string();
+    let entries = [
+        ("parent_linkage", format!("{parent_linkage}")),
+        ("relative_path", parent_path_str),
+    ];
+
+    let key_value_count = u16::try_from(entries.len()).map_err(|_| {
+        Error::InvalidParameter("Parent locator key/value count exceeds u16::MAX".to_string())
+    })?;
+
+    let mut payload = vec![0u8; 20];
+    payload[18..20].copy_from_slice(&key_value_count.to_le_bytes());
+
+    let mut entry_table = Vec::with_capacity(entries.len() * 12);
+    let mut key_value_data = Vec::new();
+
+    for (key, value) in entries {
+        let key_bytes = encode_utf16le(key);
+        let value_bytes = encode_utf16le(&value);
+
+        let key_offset = u32::try_from(key_value_data.len()).map_err(|_| {
+            Error::InvalidParameter("Parent locator key offset exceeds u32::MAX".to_string())
+        })?;
+        key_value_data.extend_from_slice(&key_bytes);
+
+        let value_offset = u32::try_from(key_value_data.len()).map_err(|_| {
+            Error::InvalidParameter("Parent locator value offset exceeds u32::MAX".to_string())
+        })?;
+        key_value_data.extend_from_slice(&value_bytes);
+
+        let key_length = u16::try_from(key_bytes.len()).map_err(|_| {
+            Error::InvalidParameter("Parent locator key length exceeds u16::MAX".to_string())
+        })?;
+        let value_length = u16::try_from(value_bytes.len()).map_err(|_| {
+            Error::InvalidParameter("Parent locator value length exceeds u16::MAX".to_string())
+        })?;
+
+        entry_table.extend_from_slice(&key_offset.to_le_bytes());
+        entry_table.extend_from_slice(&value_offset.to_le_bytes());
+        entry_table.extend_from_slice(&key_length.to_le_bytes());
+        entry_table.extend_from_slice(&value_length.to_le_bytes());
+    }
+
+    payload.extend_from_slice(&entry_table);
+    payload.extend_from_slice(&key_value_data);
+    Ok(payload)
+}
+
+/// 将字符串编码为 UTF-16LE 字节序列。
+fn encode_utf16le(value: &str) -> Vec<u8> {
+    value.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
 }
 
 /// 构造区域表的原始字节数据，包含 BAT 和元数据区域条目，自动计算 CRC32C 校验和
