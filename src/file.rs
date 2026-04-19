@@ -82,6 +82,27 @@ pub struct File {
     has_parent: bool,
     /// 是否存在未回放的日志条目
     has_pending_logs: bool,
+    /// 打开该文件时使用的路径
+    opened_path: PathBuf,
+    /// 只读内存回放覆盖层（按文件绝对偏移覆盖读取结果）
+    replay_overlay: Option<ReplayOverlay>,
+}
+
+/// 只读内存回放覆盖层
+///
+/// 当以 `InMemoryOnReadOnly` 策略打开且检测到待回放日志时，
+/// 将 replay 结果记录到内存，并在读取时按绝对文件偏移覆盖返回数据。
+struct ReplayOverlay {
+    /// 按日志顺序收集的写入片段
+    writes: Vec<ReplayWrite>,
+}
+
+/// 单个覆盖写入片段
+struct ReplayWrite {
+    /// 文件绝对偏移
+    file_offset: u64,
+    /// 写入字节内容
+    data: Vec<u8>,
 }
 
 /// 日志回放策略
@@ -93,7 +114,7 @@ pub enum LogReplayPolicy {
     Require,
     /// 自动回放日志（只读打开时保持兼容行为，不执行磁盘写回）
     Auto,
-    /// 只读打开时允许以内存方式回放（当前实现与只读不回放等价）
+    /// 只读打开时允许以内存方式回放（不写回磁盘）
     InMemoryOnReadOnly,
     /// 只读打开且不回放日志
     ///
@@ -193,6 +214,11 @@ impl File {
         self.has_pending_logs
     }
 
+    /// 获取打开该文件时使用的路径（crate 内部）
+    pub(crate) fn opened_path(&self) -> &Path {
+        &self.opened_path
+    }
+
     /// 内部读取实现（按虚拟偏移读取）
     fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
         if offset >= self.virtual_disk_size {
@@ -214,6 +240,9 @@ impl File {
             let mut file = self.inner.try_clone()?;
             file.seek(SeekFrom::Start(file_offset))?;
             let bytes_read = file.read(buf)?;
+            if let Some(overlay) = &self.replay_overlay {
+                Self::apply_replay_overlay(overlay, file_offset, &mut buf[..bytes_read]);
+            }
             Ok(bytes_read)
         } else {
             // Dynamic 类型：当前返回零填充（按块读取尚未实现）
@@ -324,7 +353,7 @@ impl File {
 
     /// 打开 VHDX 文件的核心实现（带策略选项）
     fn open_file_with_options(
-        path: &Path, writable: bool, _strict: bool, log_replay: LogReplayPolicy,
+        path: &Path, writable: bool, strict: bool, log_replay: LogReplayPolicy,
     ) -> Result<Self> {
         // 步骤 1：以共享模式打开文件
         let mut file = Self::open_file_with_share_mode(path, writable)?;
@@ -361,7 +390,7 @@ impl File {
             Self::extract_region_info(&region_table)?;
         // 步骤 6：从元数据区域提取虚拟磁盘参数
         let (virtual_disk_size, block_size, is_fixed, has_parent, logical_sector_size) =
-            Self::read_metadata(&mut file, metadata_offset, metadata_size)?;
+            Self::read_metadata(&mut file, metadata_offset, metadata_size, strict)?;
 
         // 获取日志区域的位置和大小
         let log_offset = current_header.log_offset();
@@ -385,7 +414,7 @@ impl File {
         });
 
         // 步骤 7：处理日志回放
-        let has_pending_logs =
+        let (has_pending_logs, replay_overlay) =
             Self::handle_log_replay(&mut file, &sections, &current_header, writable, log_replay)?;
 
         Ok(Self {
@@ -397,6 +426,8 @@ impl File {
             is_fixed,
             has_parent,
             has_pending_logs,
+            opened_path: path.to_path_buf(),
+            replay_overlay,
         })
     }
 
@@ -454,7 +485,7 @@ impl File {
 
     /// 读取并解析元数据区域，提取虚拟磁盘参数
     fn read_metadata(
-        file: &mut StdFile, metadata_offset: u64, metadata_size: u64,
+        file: &mut StdFile, metadata_offset: u64, metadata_size: u64, strict: bool,
     ) -> Result<(u64, u32, bool, bool, u32)> {
         // 克隆文件句柄以避免影响原文件指针位置
         let mut file_clone = file.try_clone()?;
@@ -462,6 +493,9 @@ impl File {
         let mut metadata_data = vec![0u8; usize::try_from(metadata_size).unwrap_or(0)];
         file_clone.read_exact(&mut metadata_data)?;
         let temp_metadata = crate::sections::Metadata::new(metadata_data)?;
+        if strict {
+            Self::validate_required_metadata_items_are_known(&temp_metadata)?;
+        }
         let temp_items = temp_metadata.items();
 
         // 提取虚拟磁盘大小
@@ -491,12 +525,37 @@ impl File {
         ))
     }
 
+    /// 校验 required 元数据项是否均为已知项（strict 模式）
+    fn validate_required_metadata_items_are_known(
+        metadata: &crate::sections::Metadata<'_>,
+    ) -> Result<()> {
+        for entry in metadata.table().entries() {
+            let item_id = entry.item_id();
+            if entry.flags().is_required() && !Self::is_known_metadata_item_id(&item_id) {
+                return Err(Error::InvalidMetadata(format!(
+                    "Unknown required metadata item: {item_id:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// 判断元数据项 GUID 是否为规范已知项
+    fn is_known_metadata_item_id(item_id: &Guid) -> bool {
+        *item_id == crate::common::constants::metadata_guids::FILE_PARAMETERS
+            || *item_id == crate::common::constants::metadata_guids::VIRTUAL_DISK_SIZE
+            || *item_id == crate::common::constants::metadata_guids::VIRTUAL_DISK_ID
+            || *item_id == crate::common::constants::metadata_guids::LOGICAL_SECTOR_SIZE
+            || *item_id == crate::common::constants::metadata_guids::PHYSICAL_SECTOR_SIZE
+            || *item_id == crate::common::constants::metadata_guids::PARENT_LOCATOR
+    }
+
     /// 处理日志回放，如有未完成的日志条目则回放并更新头部
     fn handle_log_replay(
         file: &mut StdFile, sections: &Sections<'_>,
         current_header: &crate::sections::HeaderStructure<'_>, writable: bool,
         policy: LogReplayPolicy,
-    ) -> Result<bool> {
+    ) -> Result<(bool, Option<ReplayOverlay>)> {
         // 检查日志 GUID 是否为空，非空表示存在日志条目
         if current_header.log_guid() != Guid::nil() {
             let log = sections.log()?;
@@ -505,7 +564,7 @@ impl File {
                     LogReplayPolicy::Require => return Err(Error::LogReplayRequired),
                     LogReplayPolicy::Auto => {
                         if !writable {
-                            return Ok(true);
+                            return Ok((true, None));
                         }
                         Self::replay_log_and_clear_guid(file, current_header, &log)?;
                     }
@@ -513,7 +572,8 @@ impl File {
                         if writable {
                             Self::replay_log_and_clear_guid(file, current_header, &log)?;
                         } else {
-                            return Ok(true);
+                            let overlay = Self::build_replay_overlay(&log)?;
+                            return Ok((false, Some(overlay)));
                         }
                     }
                     LogReplayPolicy::ReadOnlyNoReplay => {
@@ -522,12 +582,108 @@ impl File {
                                 "ReadOnlyNoReplay policy requires read-only open".to_string(),
                             ));
                         }
-                        return Ok(true);
+                        return Ok((true, None));
                     }
                 }
             }
         }
-        Ok(false)
+        Ok((false, None))
+    }
+
+    /// 基于日志条目构建只读内存回放覆盖层
+    fn build_replay_overlay(
+        log: &std::cell::Ref<'_, crate::sections::Log>,
+    ) -> Result<ReplayOverlay> {
+        let mut writes = Vec::new();
+
+        for entry in (*log).entries() {
+            let header = entry.header();
+            if header.signature() != crate::common::constants::LOG_ENTRY_SIGNATURE {
+                return Err(Error::LogEntryCorrupted(
+                    "Invalid log entry signature".to_string(),
+                ));
+            }
+
+            let descriptors = entry.descriptors();
+            let data_sectors = entry.data();
+            let mut data_sector_index = 0usize;
+
+            for desc in descriptors {
+                match desc {
+                    crate::sections::Descriptor::Data(data_desc) => {
+                        if data_sector_index < data_sectors.len() {
+                            let sector = &data_sectors[data_sector_index];
+                            let trailing =
+                                usize::try_from(data_desc.trailing_bytes()).map_err(|_| {
+                                    Error::InvalidParameter(
+                                        "Log trailing_bytes exceeds usize::MAX".to_string(),
+                                    )
+                                })?;
+                            let leading =
+                                usize::try_from(data_desc.leading_bytes()).map_err(|_| {
+                                    Error::InvalidParameter(
+                                        "Log leading_bytes exceeds usize::MAX".to_string(),
+                                    )
+                                })?;
+
+                            let mut data = Vec::with_capacity(
+                                trailing
+                                    .saturating_add(sector.data().len())
+                                    .saturating_add(leading),
+                            );
+                            data.extend(std::iter::repeat_n(0u8, trailing));
+                            data.extend_from_slice(sector.data());
+                            data.extend(std::iter::repeat_n(0u8, leading));
+
+                            writes.push(ReplayWrite {
+                                file_offset: data_desc.file_offset(),
+                                data,
+                            });
+                            data_sector_index += 1;
+                        }
+                    }
+                    crate::sections::Descriptor::Zero(zero_desc) => {
+                        let zero_len = usize::try_from(zero_desc.zero_length()).map_err(|_| {
+                            Error::InvalidParameter(
+                                "Log zero_length exceeds usize::MAX".to_string(),
+                            )
+                        })?;
+                        writes.push(ReplayWrite {
+                            file_offset: zero_desc.file_offset(),
+                            data: vec![0u8; zero_len],
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(ReplayOverlay { writes })
+    }
+
+    /// 将只读内存回放覆盖层应用到读取缓冲区
+    fn apply_replay_overlay(overlay: &ReplayOverlay, read_offset: u64, buf: &mut [u8]) {
+        let read_len = u64::try_from(buf.len()).unwrap_or(u64::MAX);
+        let read_end = read_offset.saturating_add(read_len);
+
+        for write in &overlay.writes {
+            let write_len = u64::try_from(write.data.len()).unwrap_or(u64::MAX);
+            let write_end = write.file_offset.saturating_add(write_len);
+
+            let start = read_offset.max(write.file_offset);
+            let end = read_end.min(write_end);
+            if start >= end {
+                continue;
+            }
+
+            let dst_start = usize::try_from(start.saturating_sub(read_offset)).unwrap_or(0);
+            let src_start = usize::try_from(start.saturating_sub(write.file_offset)).unwrap_or(0);
+            let copy_len = usize::try_from(end.saturating_sub(start)).unwrap_or(0);
+
+            if dst_start + copy_len <= buf.len() && src_start + copy_len <= write.data.len() {
+                buf[dst_start..dst_start + copy_len]
+                    .copy_from_slice(&write.data[src_start..src_start + copy_len]);
+            }
+        }
     }
 
     /// 执行日志回放并将头部日志 GUID 清零
@@ -845,7 +1001,6 @@ impl OpenOptions {
     /// 设置严格模式
     ///
     /// strict=true 时遇到 required 未知项应视为错误。
-    /// 当前版本仅保留该选项以对齐公开 API。
     pub const fn strict(mut self, strict: bool) -> Self {
         self.strict = strict;
         self

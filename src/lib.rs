@@ -57,6 +57,26 @@ pub mod section {
 
     /// API.md 兼容别名：[`Entry`] 等价于 [`LogEntry`]
     pub use crate::sections::LogEntry as Entry;
+
+    /// 标准 Metadata Item GUID 常量命名空间（API.md 兼容路径）
+    ///
+    /// 该模块用于提供 `vhdx_rs::section::StandardItems::*` 访问路径，
+    /// 并复用现有常量定义以保持取值一致。
+    #[allow(non_snake_case)]
+    pub mod StandardItems {
+        use crate::Guid;
+
+        pub use crate::common::constants::metadata_guids::{
+            FILE_PARAMETERS, LOGICAL_SECTOR_SIZE, PARENT_LOCATOR, PHYSICAL_SECTOR_SIZE,
+            VIRTUAL_DISK_ID, VIRTUAL_DISK_SIZE,
+        };
+
+        /// VHDX 父定位器类型 GUID（MS-VHDX §2.6.2.6）
+        pub const LOCATOR_TYPE_VHDX: Guid = Guid::from_bytes([
+            0xB7, 0xEF, 0x4A, 0xB0, 0x9E, 0xD1, 0x81, 0x4A, 0xB7, 0x89, 0x25, 0xB8, 0xE9, 0x44,
+            0x59, 0x13,
+        ]);
+    }
 }
 
 // IO 抽象类型

@@ -11,7 +11,9 @@
 //! BAT 中的条目按 Payload Block 和 Sector Bitmap Block 交错排列，
 //! 交错间隔由块比率（Chunk ratio）决定（MS-VHDX §2.5）。
 
-use crate::common::constants::{BAT_ENTRY_SIZE, CHUNK_RATIO_CONSTANT, MiB};
+use crate::common::constants::{
+    BAT_ENTRY_SIZE, CHUNK_RATIO_CONSTANT, DEFAULT_BLOCK_SIZE, LOGICAL_SECTOR_SIZE_512, MiB,
+};
 use crate::error::{Error, Result};
 use std::marker::PhantomData;
 
@@ -46,9 +48,23 @@ impl<'a> Bat<'a> {
                 data.len()
             )));
         }
+        let chunk_ratio: usize =
+            Self::calculate_chunk_ratio(LOGICAL_SECTOR_SIZE_512, DEFAULT_BLOCK_SIZE)
+                .try_into()
+                .map_err(|_| {
+                    Error::InvalidFile("default chunk ratio exceeds usize::MAX".to_string())
+                })?;
+        if chunk_ratio == 0 {
+            return Err(Error::InvalidFile(
+                "default chunk ratio must be non-zero".to_string(),
+            ));
+        }
+        let sector_bitmap_blocks = entry_count.div_ceil(chunk_ratio + 1);
+        let payload_blocks = entry_count.saturating_sub(sector_bitmap_blocks);
+
         // 预解析所有 BAT 条目
         let entries: Vec<BatEntry> = (0..entry_count)
-            .filter_map(|i| {
+            .map(|i| {
                 let offset = i * BAT_ENTRY_SIZE;
                 let raw_value = u64::from_le_bytes([
                     data[offset],
@@ -60,9 +76,11 @@ impl<'a> Bat<'a> {
                     data[offset + 6],
                     data[offset + 7],
                 ]);
-                BatEntry::from_raw(raw_value).ok()
+                let is_sector_bitmap_entry =
+                    Self::is_sector_bitmap_entry_index(i, chunk_ratio, payload_blocks);
+                BatEntry::from_raw_with_context(raw_value, is_sector_bitmap_entry)
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(Self {
             raw_data: data,
@@ -135,6 +153,37 @@ impl<'a> Bat<'a> {
             Self::calculate_sector_bitmap_blocks(payload_blocks, chunk_ratio);
         payload_blocks + sector_bitmap_blocks
     }
+
+    /// 判断指定 BAT 条目索引是否属于 Sector Bitmap 条目
+    ///
+    /// BAT 条目按 `chunk_ratio` 个 Payload 条目后接 1 个 Sector Bitmap 条目交错排列。
+    /// 因此在 0 基索引下，满足 `index % (chunk_ratio + 1) == chunk_ratio` 的条目为 Sector Bitmap。
+    #[must_use]
+    pub(crate) const fn is_sector_bitmap_entry_index(
+        index: usize, chunk_ratio: usize, payload_blocks: usize,
+    ) -> bool {
+        if chunk_ratio == 0 {
+            return false;
+        }
+
+        let chunk_size = chunk_ratio + 1;
+        let chunk_index = index / chunk_size;
+        let position_in_chunk = index % chunk_size;
+        let payload_start = chunk_index * chunk_ratio;
+
+        if payload_start >= payload_blocks {
+            return false;
+        }
+
+        let remaining_payload = payload_blocks - payload_start;
+        let payload_in_chunk = if remaining_payload < chunk_ratio {
+            remaining_payload
+        } else {
+            chunk_ratio
+        };
+
+        position_in_chunk == payload_in_chunk
+    }
 }
 
 /// BAT 条目（MS-VHDX §2.5.1）
@@ -160,12 +209,19 @@ pub struct BatEntry {
 impl BatEntry {
     /// 从原始 64 位值解析 BAT 条目，提取低 3 位状态和高 44 位偏移量
     pub(crate) fn from_raw(raw: u64) -> std::result::Result<Self, Error> {
+        Self::from_raw_with_context(raw, false)
+    }
+
+    /// 从原始 64 位值解析 BAT 条目，并根据条目类型上下文选择状态映射路径
+    pub(crate) fn from_raw_with_context(
+        raw: u64, is_sector_bitmap_entry: bool,
+    ) -> std::result::Result<Self, Error> {
         // 低 3 位为块状态
         let state_bits = (raw & 0x7) as u8;
         // 高 44 位为文件偏移量（以 MB 为单位）
         let offset_mb = raw >> 20;
 
-        let state = BatState::from_bits(state_bits)?;
+        let state = BatState::from_bits_with_context(state_bits, is_sector_bitmap_entry)?;
 
         Ok(Self {
             state,
@@ -213,9 +269,23 @@ impl BatState {
     ///
     /// 值 0-3、6、7 映射为 Payload Block 状态，值 4、5 为无效状态。
     pub const fn from_bits(bits: u8) -> std::result::Result<Self, Error> {
-        match bits {
-            0 | 1 | 2 | 3 | 6 | 7 => Ok(Self::Payload(PayloadBlockState::from_bits(bits))),
-            _ => Err(Error::InvalidBlockState(bits)),
+        Self::from_bits_with_context(bits, false)
+    }
+
+    /// 从 3 位状态值解析块状态，并根据条目类型上下文决定 Payload/Sector Bitmap 语义
+    pub const fn from_bits_with_context(
+        bits: u8, is_sector_bitmap_entry: bool,
+    ) -> std::result::Result<Self, Error> {
+        if is_sector_bitmap_entry {
+            match bits {
+                0 | 6 => Ok(Self::SectorBitmap(SectorBitmapState::from_bits(bits))),
+                _ => Err(Error::InvalidBlockState(bits)),
+            }
+        } else {
+            match bits {
+                0 | 1 | 2 | 3 | 6 | 7 => Ok(Self::Payload(PayloadBlockState::from_bits(bits))),
+                _ => Err(Error::InvalidBlockState(bits)),
+            }
         }
     }
 
@@ -350,6 +420,95 @@ mod tests {
     }
 
     #[test]
+    fn test_bat_entry_from_raw_sector_bitmap_context() {
+        let raw = (3u64 << 20) | 6u64;
+        let entry = BatEntry::from_raw_with_context(raw, true).unwrap();
+
+        assert_eq!(entry.file_offset_mb, 3);
+        assert!(matches!(
+            entry.state,
+            BatState::SectorBitmap(SectorBitmapState::Present)
+        ));
+    }
+
+    #[test]
+    fn test_bat_entry_from_raw_sector_bitmap_context_rejects_invalid_state() {
+        let raw = (3u64 << 20) | 7u64;
+        let err = BatEntry::from_raw_with_context(raw, true).unwrap_err();
+        assert!(matches!(err, Error::InvalidBlockState(7)));
+    }
+
+    #[test]
+    fn test_bat_new_parses_sector_bitmap_via_entry_and_entries() {
+        let entry_count = 129usize;
+        let mut data = vec![0u8; entry_count * BAT_ENTRY_SIZE];
+
+        // 索引 128（默认 chunk ratio=128）为 Sector Bitmap 条目
+        let raw_bitmap = (3u64 << 20) | 6u64;
+        let bitmap_offset = 128 * BAT_ENTRY_SIZE;
+        data[bitmap_offset..bitmap_offset + BAT_ENTRY_SIZE]
+            .copy_from_slice(&raw_bitmap.to_le_bytes());
+
+        let bat = Bat::new(data, entry_count as u64).expect("BAT creation should succeed");
+
+        let entry = bat.entry(128).expect("entry 128 should exist");
+        assert!(matches!(
+            entry.state,
+            BatState::SectorBitmap(SectorBitmapState::Present)
+        ));
+
+        let entries = bat.entries();
+        assert!(matches!(
+            entries[128].state,
+            BatState::SectorBitmap(SectorBitmapState::Present)
+        ));
+    }
+
+    #[test]
+    fn test_bat_new_rejects_invalid_sector_bitmap_state() {
+        let entry_count = 129usize;
+        let mut data = vec![0u8; entry_count * BAT_ENTRY_SIZE];
+
+        // 索引 128（默认 chunk ratio=128）为 Sector Bitmap 条目，状态 7 非法
+        let raw_invalid_bitmap = (1u64 << 20) | 7u64;
+        let bitmap_offset = 128 * BAT_ENTRY_SIZE;
+        data[bitmap_offset..bitmap_offset + BAT_ENTRY_SIZE]
+            .copy_from_slice(&raw_invalid_bitmap.to_le_bytes());
+
+        assert!(matches!(
+            Bat::new(data, entry_count as u64),
+            Err(Error::InvalidBlockState(7))
+        ));
+    }
+
+    #[test]
+    fn test_bat_new_parses_sector_bitmap_in_partial_final_chunk() {
+        // 默认 chunk ratio=128，entry_count=131 => payload=129, bitmap=2，bitmap 索引应为 128 和 130
+        let entry_count = 131usize;
+        let mut data = vec![0u8; entry_count * BAT_ENTRY_SIZE];
+
+        let raw_bitmap_first = (1u64 << 20) | 6u64;
+        let raw_bitmap_second = (2u64 << 20) | 0u64;
+
+        data[128 * BAT_ENTRY_SIZE..129 * BAT_ENTRY_SIZE]
+            .copy_from_slice(&raw_bitmap_first.to_le_bytes());
+        data[130 * BAT_ENTRY_SIZE..131 * BAT_ENTRY_SIZE]
+            .copy_from_slice(&raw_bitmap_second.to_le_bytes());
+
+        let bat = Bat::new(data, entry_count as u64).expect("BAT creation should succeed");
+        let entries = bat.entries();
+
+        assert!(matches!(
+            entries[128].state,
+            BatState::SectorBitmap(SectorBitmapState::Present)
+        ));
+        assert!(matches!(
+            entries[130].state,
+            BatState::SectorBitmap(SectorBitmapState::NotPresent)
+        ));
+    }
+
+    #[test]
     fn test_payload_block_states() {
         assert_eq!(PayloadBlockState::NotPresent.to_bits(), 0);
         assert_eq!(PayloadBlockState::FullyPresent.to_bits(), 6);
@@ -376,8 +535,8 @@ mod tests {
     /// 测试 entries() 返回 Vec<BatEntry>：验证长度、顺序和状态一致性
     #[test]
     fn test_entries_returns_vec_with_correct_content() {
-        // 构造 3 个 BAT 条目的原始数据
-        let mut data = vec![0u8; 3 * BAT_ENTRY_SIZE];
+        // 构造 4 个 BAT 条目的原始数据（默认 chunk ratio=128 下，索引 0..2 均为 Payload）
+        let mut data = vec![0u8; 4 * BAT_ENTRY_SIZE];
         // 条目 0：FullyPresent，偏移 1 MB
         let raw0 = (1u64 << 20) | 6u64;
         data[0..8].copy_from_slice(&raw0.to_le_bytes());
@@ -386,11 +545,11 @@ mod tests {
         let raw2 = (2u64 << 20) | 2u64;
         data[16..24].copy_from_slice(&raw2.to_le_bytes());
 
-        let bat = Bat::new(data, 3).expect("BAT creation should succeed");
+        let bat = Bat::new(data, 4).expect("BAT creation should succeed");
         let entries = bat.entries();
 
         // 返回类型为 Vec<BatEntry>，长度等于条目数
-        assert_eq!(entries.len(), 3, "entries() should return 3 entries");
+        assert_eq!(entries.len(), 4, "entries() should return 4 entries");
 
         // 验证条目 0 状态
         assert!(matches!(

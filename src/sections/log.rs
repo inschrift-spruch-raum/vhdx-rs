@@ -70,10 +70,48 @@ impl<'a> Log<'a> {
         &self.raw_data
     }
 
-    /// 获取指定索引的日志条目（当前未实现）
+    /// 获取指定索引的日志条目
+    ///
+    /// 索引语义与 [`Self::entries`] 保持一致：
+    /// - 采用相同的线性扫描顺序
+    /// - 仅统计成功解析且长度有效（>= 头部大小）的条目
+    /// - 解析失败时按扇区步进继续
     #[must_use]
-    pub const fn entry(&self, _index: usize) -> Option<LogEntry<'_>> {
-        let _ = self;
+    pub const fn entry(&self, index: usize) -> Option<LogEntry<'_>> {
+        let raw = self.raw_data.as_slice();
+        let mut current_index = 0;
+        let mut offset = 0;
+
+        while offset + LOG_ENTRY_HEADER_SIZE <= raw.len() {
+            // 与 entries() 对齐：仅要求剩余数据至少包含头部，读取 entry_length 决定步进
+            let entry_length = u32::from_le_bytes([
+                raw[offset + 8],
+                raw[offset + 9],
+                raw[offset + 10],
+                raw[offset + 11],
+            ]);
+            let entry_len = entry_length as usize;
+
+            // 条目长度小于头部大小，视为无效，按扇区步进
+            if entry_len < LOG_ENTRY_HEADER_SIZE {
+                // 解析失败，按扇区步进
+                offset += DATA_SECTOR_SIZE;
+                continue;
+            }
+
+            if current_index == index {
+                let data_len = raw.len() - offset;
+                // 在 const 上下文中避免使用切片 range 索引（当前仍受限），
+                // 通过原始指针重建从 offset 开始的尾部切片。
+                let data =
+                    unsafe { std::slice::from_raw_parts(raw.as_ptr().add(offset), data_len) };
+                return Some(LogEntry { data });
+            }
+
+            current_index += 1;
+            offset += entry_len;
+        }
+
         None
     }
 
@@ -678,6 +716,14 @@ impl<'a> DataSector<'a> {
 mod tests {
     use super::*;
 
+    fn build_log_entry(entry_length: u32, sequence_number: u64) -> Vec<u8> {
+        let mut entry = vec![0u8; usize::try_from(entry_length).unwrap_or(0)];
+        entry[0..4].copy_from_slice(LOG_ENTRY_SIGNATURE);
+        entry[8..12].copy_from_slice(&entry_length.to_le_bytes());
+        entry[16..24].copy_from_slice(&sequence_number.to_le_bytes());
+        entry
+    }
+
     #[test]
     fn test_log_entry_header() {
         let mut data = [0u8; 64];
@@ -721,5 +767,37 @@ mod tests {
         let desc = ZeroDescriptor::new(&data).unwrap();
         assert_eq!(desc.zero_length(), 0x1000);
         assert_eq!(desc.file_offset(), 0x0020_0000);
+    }
+
+    #[test]
+    fn test_log_entry_index_matches_entries_order() {
+        let mut raw = Vec::new();
+        raw.extend(build_log_entry(64, 11));
+        raw.extend(build_log_entry(64, 22));
+
+        let log = Log::new(raw);
+        let entries = log.entries();
+
+        let indexed = log.entry(1).expect("entry(1) should exist");
+        let by_entries = entries.get(1).expect("entries().get(1) should exist");
+
+        assert_eq!(
+            indexed.header().sequence_number(),
+            by_entries.header().sequence_number()
+        );
+        assert_eq!(
+            indexed.header().entry_length(),
+            by_entries.header().entry_length()
+        );
+    }
+
+    #[test]
+    fn test_log_entry_out_of_range_returns_none() {
+        let mut raw = Vec::new();
+        raw.extend(build_log_entry(64, 1));
+
+        let log = Log::new(raw);
+
+        assert!(log.entry(1).is_none());
     }
 }

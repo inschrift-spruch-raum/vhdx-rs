@@ -6,6 +6,22 @@
 use crate::File;
 use crate::error::{Error, Result};
 use crate::file::ParentChainInfo;
+use crate::types::Guid;
+
+/// 解析 Parent Locator 中的 GUID 字符串。
+///
+/// 兼容带花括号和大小写差异的常见表示。
+fn parse_locator_guid(value: &str) -> Option<Guid> {
+    let trimmed = value.trim().trim_start_matches('{').trim_end_matches('}');
+    let parsed = uuid::Uuid::parse_str(trimmed).ok()?;
+    let bytes = parsed.as_bytes();
+
+    // uuid::Uuid 字节序为 RFC4122；Guid 内部使用前 3 组小端布局。
+    Some(Guid::from_bytes([
+        bytes[3], bytes[2], bytes[1], bytes[0], bytes[5], bytes[4], bytes[7], bytes[6], bytes[8],
+        bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+    ]))
+}
 
 /// 结构化校验问题
 ///
@@ -147,7 +163,7 @@ impl<'a> SpecValidator<'a> {
         let data = locator.key_value_data();
         let entries = locator.entries();
 
-        let mut has_parent_linkage = false;
+        let mut parent_linkage: Option<Guid> = None;
         let mut has_path = false;
 
         for entry in entries {
@@ -155,13 +171,39 @@ impl<'a> SpecValidator<'a> {
                 continue;
             };
             match key.as_str() {
-                "parent_linkage" => has_parent_linkage = true,
+                "parent_linkage" => {
+                    let value = entry.value(data).ok_or_else(|| {
+                        Error::InvalidMetadata(
+                            "Parent locator key parent_linkage has no value".to_string(),
+                        )
+                    })?;
+                    parent_linkage = parse_locator_guid(&value);
+                    if parent_linkage.is_none() {
+                        return Err(Error::InvalidMetadata(
+                            "Parent locator key parent_linkage is not a valid GUID".to_string(),
+                        ));
+                    }
+                }
+                "parent_linkage2" => {
+                    let value = entry.value(data).ok_or_else(|| {
+                        Error::InvalidMetadata(
+                            "Parent locator key parent_linkage2 has no value".to_string(),
+                        )
+                    })?;
+
+                    // parent_linkage2 为可选键：存在时需可解析为 GUID。
+                    if parse_locator_guid(&value).is_none() {
+                        return Err(Error::InvalidMetadata(
+                            "Parent locator key parent_linkage2 is not a valid GUID".to_string(),
+                        ));
+                    }
+                }
                 "relative_path" | "volume_path" | "absolute_win32_path" => has_path = true,
                 _ => {}
             }
         }
 
-        if !has_parent_linkage {
+        if parent_linkage.is_none() {
             return Err(Error::InvalidMetadata(
                 "Parent locator missing required key: parent_linkage".to_string(),
             ));
@@ -205,22 +247,62 @@ impl<'a> SpecValidator<'a> {
                 path: std::path::PathBuf::new(),
             })?;
 
-        // 检查 parent_linkage 键是否存在（最小匹配检测）
+        // 收集 parent_linkage / parent_linkage2
         let data = locator.key_value_data();
         let entries = locator.entries();
-        let mut linkage_matched = false;
+        let mut parent_linkage: Option<Guid> = None;
+        let mut parent_linkage2: Option<Guid> = None;
 
         for entry in entries {
             if let Some(key) = entry.key(data) {
-                if key == "parent_linkage" {
-                    linkage_matched = true;
-                    break;
+                match key.as_str() {
+                    "parent_linkage" => {
+                        let value = entry.value(data).ok_or_else(|| {
+                            Error::InvalidMetadata(
+                                "Parent locator key parent_linkage has no value".to_string(),
+                            )
+                        })?;
+                        parent_linkage = parse_locator_guid(&value);
+                    }
+                    "parent_linkage2" => {
+                        let value = entry.value(data).ok_or_else(|| {
+                            Error::InvalidMetadata(
+                                "Parent locator key parent_linkage2 has no value".to_string(),
+                            )
+                        })?;
+                        parent_linkage2 = parse_locator_guid(&value);
+                    }
+                    _ => {}
                 }
             }
         }
 
+        let linkage = parent_linkage.ok_or_else(|| {
+            Error::InvalidMetadata(
+                "Parent locator missing required key: parent_linkage".to_string(),
+            )
+        })?;
+
+        // 读取父盘 DataWriteGuid 进行链路一致性校验。
+        let parent_file = File::open(&parent).finish()?;
+        let parent_sections_header = parent_file.sections().header()?;
+        let parent_header = parent_sections_header
+            .header(0)
+            .ok_or_else(|| Error::CorruptedHeader("Current header is not available".to_string()))?;
+        let parent_data_write_guid = parent_header.data_write_guid();
+
+        let linkage_matched = parent_data_write_guid == linkage
+            || parent_linkage2.is_some_and(|alt| parent_data_write_guid == alt);
+
+        if !linkage_matched {
+            return Err(Error::ParentMismatch {
+                expected: linkage,
+                actual: parent_data_write_guid,
+            });
+        }
+
         Ok(ParentChainInfo {
-            child: std::path::PathBuf::new(),
+            child: self.file.opened_path().to_path_buf(),
             parent,
             linkage_matched,
         })

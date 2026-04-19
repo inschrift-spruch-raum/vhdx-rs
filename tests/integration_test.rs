@@ -1,6 +1,11 @@
 //! VHDX 库集成测试 — 验证文件创建、打开、读写等核心操作的正确性
 
+use std::fs::OpenOptions;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use vhdx_rs::constants::{
+    DATA_SECTOR_SIZE, DESCRIPTOR_SIZE, HEADER_SECTION_SIZE, LOG_ENTRY_HEADER_SIZE,
+};
 
 /// 生成一个临时 VHDX 文件路径，通过 `mem::forget` 阻止临时目录被自动清理，
 /// 以便测试代码可以在该路径上创建 VHDX 文件。
@@ -9,6 +14,174 @@ fn temp_vhdx_path() -> PathBuf {
     let path = dir.path().join("test.vhdx");
     std::mem::forget(dir);
     path
+}
+
+/// 将 UTF-16 字符串编码为小端字节序。
+fn utf16_le_bytes(s: &str) -> Vec<u8> {
+    s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
+}
+
+/// 构造 Parent Locator 原始数据。
+fn build_parent_locator(entries: &[(&str, &str)]) -> Vec<u8> {
+    let mut key_value_data = Vec::new();
+    let mut entry_table = Vec::new();
+
+    for (key, value) in entries {
+        let key_bytes = utf16_le_bytes(key);
+        let value_bytes = utf16_le_bytes(value);
+
+        let key_offset = u32::try_from(key_value_data.len()).expect("key offset overflow");
+        key_value_data.extend_from_slice(&key_bytes);
+        let value_offset = u32::try_from(key_value_data.len()).expect("value offset overflow");
+        key_value_data.extend_from_slice(&value_bytes);
+
+        entry_table.extend_from_slice(&key_offset.to_le_bytes());
+        entry_table.extend_from_slice(&value_offset.to_le_bytes());
+        entry_table.extend_from_slice(
+            &u16::try_from(key_bytes.len())
+                .expect("key length overflow")
+                .to_le_bytes(),
+        );
+        entry_table.extend_from_slice(
+            &u16::try_from(value_bytes.len())
+                .expect("value length overflow")
+                .to_le_bytes(),
+        );
+    }
+
+    let mut locator = vec![0u8; 20];
+    locator[18..20].copy_from_slice(
+        &u16::try_from(entries.len())
+            .expect("entry count overflow")
+            .to_le_bytes(),
+    );
+    locator.extend_from_slice(&entry_table);
+    locator.extend_from_slice(&key_value_data);
+    locator
+}
+
+/// 向差分盘写入可控的 Parent Locator 数据（测试专用）。
+fn inject_parent_locator(path: &std::path::Path, locator: &[u8]) {
+    // 当前创建布局中 metadata 起始偏移固定为 2 * 1MiB。
+    const METADATA_OFFSET: u64 = 2 * 1024 * 1024;
+    // 第 6 个 metadata entry 为 Parent Locator（索引 5）。
+    const PARENT_LOCATOR_ENTRY_OFFSET: u64 = METADATA_OFFSET + 32 + 5 * 32;
+    const PARENT_LOCATOR_LENGTH_FIELD_OFFSET: u64 = PARENT_LOCATOR_ENTRY_OFFSET + 20;
+    const PARENT_LOCATOR_DATA_OFFSET: u64 = METADATA_OFFSET + 65_576;
+
+    let mut raw = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("Failed to open child file for parent locator injection");
+
+    raw.seek(SeekFrom::Start(PARENT_LOCATOR_LENGTH_FIELD_OFFSET))
+        .expect("Failed to seek parent locator length field");
+    raw.write_all(
+        &u32::try_from(locator.len())
+            .expect("parent locator size overflow")
+            .to_le_bytes(),
+    )
+    .expect("Failed to write parent locator length");
+
+    raw.seek(SeekFrom::Start(PARENT_LOCATOR_DATA_OFFSET))
+        .expect("Failed to seek parent locator data offset");
+    raw.write_all(locator)
+        .expect("Failed to write parent locator data");
+    raw.flush()
+        .expect("Failed to flush injected parent locator");
+}
+
+/// 在指定偏移读取固定长度原始字节（测试专用）。
+fn read_raw_bytes(path: &std::path::Path, offset: u64, len: usize) -> Vec<u8> {
+    let mut raw = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .expect("Failed to open file for raw read");
+    raw.seek(SeekFrom::Start(offset))
+        .expect("Failed to seek for raw read");
+    let mut buf = vec![0u8; len];
+    raw.read_exact(&mut buf).expect("Failed to read raw bytes");
+    buf
+}
+
+/// 注入一个最小可回放日志条目，并设置 header 的 log_guid 为非空。
+fn inject_pending_log_entry(path: &std::path::Path, write_offset: u64, payload: &[u8]) {
+    use vhdx_rs::{File, Guid};
+
+    let file = File::open(path)
+        .finish()
+        .expect("Failed to open file for log injection metadata");
+    let header_ref = file
+        .sections()
+        .header()
+        .expect("Failed to read header for log injection");
+    let header = header_ref
+        .header(0)
+        .expect("No active header for log injection");
+
+    let log_offset = header.log_offset();
+    let log_length = usize::try_from(header.log_length()).expect("log_length overflow");
+
+    let entry_len = LOG_ENTRY_HEADER_SIZE + DESCRIPTOR_SIZE + DATA_SECTOR_SIZE;
+    let mut entry = vec![0u8; entry_len];
+    entry[0..4].copy_from_slice(b"loge");
+    entry[8..12]
+        .copy_from_slice(&(u32::try_from(entry_len).expect("entry length overflow")).to_le_bytes());
+    entry[24..28].copy_from_slice(&1u32.to_le_bytes()); // descriptor_count = 1
+
+    let desc_off = LOG_ENTRY_HEADER_SIZE;
+    entry[desc_off..desc_off + 4].copy_from_slice(b"desc");
+    entry[desc_off + 4..desc_off + 8].copy_from_slice(&0u32.to_le_bytes()); // trailing_bytes
+    entry[desc_off + 8..desc_off + 16].copy_from_slice(&0u64.to_le_bytes()); // leading_bytes
+    entry[desc_off + 16..desc_off + 24].copy_from_slice(&write_offset.to_le_bytes());
+    entry[desc_off + 24..desc_off + 32].copy_from_slice(&1u64.to_le_bytes()); // sequence
+
+    let sector_off = LOG_ENTRY_HEADER_SIZE + DESCRIPTOR_SIZE;
+    entry[sector_off..sector_off + 4].copy_from_slice(b"data");
+    entry[sector_off + 4..sector_off + 8].copy_from_slice(&1u32.to_le_bytes());
+    let payload_len = payload.len().min(4084);
+    entry[sector_off + 8..sector_off + 8 + payload_len].copy_from_slice(&payload[..payload_len]);
+    entry[sector_off + 4092..sector_off + 4096].copy_from_slice(&1u32.to_le_bytes());
+
+    let mut raw = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("Failed to open file for log injection write");
+
+    raw.seek(SeekFrom::Start(log_offset))
+        .expect("Failed to seek log offset");
+    raw.write_all(&entry).expect("Failed to write log entry");
+
+    let remaining = log_length.saturating_sub(entry.len());
+    if remaining > 0 {
+        raw.write_all(&vec![0u8; remaining])
+            .expect("Failed to clear log tail");
+    }
+
+    let log_guid = Guid::from_bytes([
+        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
+        0x22,
+    ]);
+    let updated_header = vhdx_rs::section::HeaderStructure::create(
+        header.sequence_number(),
+        header.file_write_guid(),
+        header.data_write_guid(),
+        log_guid,
+        header.log_length(),
+        header.log_offset(),
+    );
+
+    raw.seek(SeekFrom::Start(64 * 1024))
+        .expect("Failed to seek header1");
+    raw.write_all(&updated_header)
+        .expect("Failed to write header1");
+    raw.seek(SeekFrom::Start(128 * 1024))
+        .expect("Failed to seek header2");
+    raw.write_all(&updated_header)
+        .expect("Failed to write header2");
+    raw.flush().expect("Failed to flush injected log");
 }
 
 /// 测试固定磁盘的创建与读写：创建 1 MiB 固定磁盘，写入数据后读回并验证一致性。
@@ -400,13 +573,25 @@ fn test_bat_entries_vec_traversable() {
     let entries = bat.entries();
     assert!(!entries.is_empty(), "entries() should return non-empty Vec");
 
-    // 遍历并断言每个条目状态有效（为 Payload 变体）
+    // 遍历并断言每个条目状态有效（Payload 或 SectorBitmap）
     for entry in &entries {
         assert!(
-            matches!(entry.state, vhdx_rs::section::BatState::Payload(_)),
-            "Each BAT entry state should be a Payload variant"
+            matches!(
+                entry.state,
+                vhdx_rs::section::BatState::Payload(_)
+                    | vhdx_rs::section::BatState::SectorBitmap(_)
+            ),
+            "Each BAT entry state should be a valid BAT state variant"
         );
     }
+
+    // 默认参数创建的该用例应包含至少一个 Sector Bitmap 条目
+    assert!(
+        entries
+            .iter()
+            .any(|entry| matches!(entry.state, vhdx_rs::section::BatState::SectorBitmap(_))),
+        "entries() should include at least one SectorBitmap entry"
+    );
 
     // entries() 长度与 bat.len() 一致
     assert_eq!(entries.len(), bat.len());
@@ -616,6 +801,77 @@ fn test_open_options_chain_methods_happy_path() {
         .expect("Failed to open with strict/log_replay chain");
 
     assert_eq!(file.virtual_disk_size(), 1024 * 1024);
+}
+
+/// 测试 strict 模式对 required unknown 元数据项的分歧行为。
+#[test]
+fn test_open_strict_unknown_required_metadata_behavior() {
+    use vhdx_rs::{File, Guid};
+
+    let path = temp_vhdx_path();
+
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    // 在 metadata table 中追加一个 required 的未知 GUID 表项。
+    // 表项指向已存在的数据区偏移，避免触发边界读取失败。
+    let mut raw = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .expect("Failed to open raw file");
+
+    // 元数据区域起始偏移：2 * 1MB（对应当前创建布局）
+    const METADATA_OFFSET: u64 = 2 * 1024 * 1024;
+    raw.seek(SeekFrom::Start(METADATA_OFFSET + 10))
+        .expect("Failed to seek entry_count");
+    let mut entry_count_bytes = [0u8; 2];
+    std::io::Read::read_exact(&mut raw, &mut entry_count_bytes)
+        .expect("Failed to read entry_count");
+    let old_count = u16::from_le_bytes(entry_count_bytes);
+    let new_count = old_count + 1;
+
+    raw.seek(SeekFrom::Start(METADATA_OFFSET + 10))
+        .expect("Failed to seek entry_count for write");
+    raw.write_all(&new_count.to_le_bytes())
+        .expect("Failed to write entry_count");
+
+    let entry_offset = METADATA_OFFSET + 32 + u64::from(old_count) * 32;
+    raw.seek(SeekFrom::Start(entry_offset))
+        .expect("Failed to seek new metadata entry");
+
+    let unknown_required_guid = Guid::from_bytes([
+        0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88,
+    ]);
+    raw.write_all(unknown_required_guid.as_bytes())
+        .expect("Failed to write unknown guid");
+    raw.write_all(&65_536_u32.to_le_bytes()) // 指向 metadata 数据区起点
+        .expect("Failed to write metadata entry offset");
+    raw.write_all(&8_u32.to_le_bytes())
+        .expect("Failed to write metadata entry length");
+    raw.write_all(&0x2000_0000_u32.to_le_bytes()) // required=true
+        .expect("Failed to write metadata entry flags");
+    raw.write_all(&0_u32.to_le_bytes())
+        .expect("Failed to write metadata entry reserved");
+    raw.flush().expect("Failed to flush raw file");
+
+    // strict=true（默认）应拒绝打开
+    let strict_result = File::open(&path).strict(true).finish();
+    assert!(
+        strict_result.is_err(),
+        "strict=true should reject unknown required metadata item"
+    );
+
+    // strict=false 应允许打开同一文件
+    let relaxed_result = File::open(&path).strict(false).finish();
+    assert!(
+        relaxed_result.is_ok(),
+        "strict=false should allow unknown required metadata item"
+    );
 }
 
 /// 测试 CreateOptions 链式方法：logical/physical/parent_path 可编译并成功。
@@ -1356,6 +1612,119 @@ fn test_validate_parent_chain_non_diff_disk_returns_error() {
     }
 }
 
+/// 测试差分链校验：当 parent_linkage2 匹配父盘 DataWriteGuid 时通过，且 child 路径等于实际子盘路径。
+#[test]
+fn test_validate_parent_chain_passes_with_parent_linkage2_and_real_child_path() {
+    use vhdx_rs::{File, Guid};
+
+    let parent_path = temp_vhdx_path();
+    let parent = File::create(&parent_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let parent_data_write_guid = parent
+        .sections()
+        .header()
+        .expect("Failed to read parent header")
+        .header(0)
+        .expect("Missing active parent header")
+        .data_write_guid();
+
+    let child_path = temp_vhdx_path();
+    let child = File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create child differencing disk");
+    drop(child);
+
+    let primary_mismatch = Guid::from_bytes([
+        0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88,
+    ]);
+
+    let locator = build_parent_locator(&[
+        ("parent_linkage", &format!("{primary_mismatch}")),
+        ("parent_linkage2", &format!("{parent_data_write_guid}")),
+        ("relative_path", &parent_path.to_string_lossy()),
+    ]);
+    inject_parent_locator(&child_path, &locator);
+
+    let child_reopen = File::open(&child_path)
+        .finish()
+        .expect("Failed to reopen child disk");
+    let validator = child_reopen.validator();
+
+    validator
+        .validate_parent_locator()
+        .expect("validate_parent_locator should accept optional parent_linkage2");
+
+    let info = validator
+        .validate_parent_chain()
+        .expect("validate_parent_chain should pass when linkage2 matches");
+
+    assert!(info.linkage_matched, "linkage should be matched");
+    assert_eq!(info.child, child_path);
+    assert_eq!(info.parent, parent_path);
+}
+
+/// 测试差分链校验：当 parent_linkage 与 parent_linkage2 都不匹配父盘 DataWriteGuid 时失败。
+#[test]
+fn test_validate_parent_chain_fails_on_linkage_mismatch() {
+    use vhdx_rs::{Error, File, Guid};
+
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    let child = File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create child differencing disk");
+    drop(child);
+
+    let mismatch1 = Guid::from_bytes([
+        0xAA, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88,
+    ]);
+    let mismatch2 = Guid::from_bytes([
+        0xBB, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88,
+    ]);
+
+    let locator = build_parent_locator(&[
+        ("parent_linkage", &format!("{mismatch1}")),
+        ("parent_linkage2", &format!("{mismatch2}")),
+        ("relative_path", &parent_path.to_string_lossy()),
+    ]);
+    inject_parent_locator(&child_path, &locator);
+
+    let child_reopen = File::open(&child_path)
+        .finish()
+        .expect("Failed to reopen child disk");
+
+    let err = child_reopen
+        .validator()
+        .validate_parent_chain()
+        .expect_err("Expected parent linkage mismatch error");
+
+    match err {
+        Error::ParentMismatch { expected, actual } => {
+            assert_eq!(expected, mismatch1);
+            assert_ne!(actual, mismatch1);
+            assert_ne!(actual, mismatch2);
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
 /// 测试 LogReplayPolicy 全部 4 个变体可从 crate root 导入且值可匹配。
 #[test]
 fn test_log_replay_policy_variants_accessible() {
@@ -1408,6 +1777,110 @@ fn test_open_with_read_only_no_replay_policy() {
         .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
         .finish()
         .expect("Open with ReadOnlyNoReplay policy should succeed");
+}
+
+/// 测试 InMemoryOnReadOnly 与 ReadOnlyNoReplay 在 pending log 场景下行为分歧。
+#[test]
+fn test_open_readonly_replay_policies_behavior_diff_with_pending_logs() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    let virtual_size = 2 * 1024 * 1024;
+    let target_disk_offset = 512_u64;
+    let target_file_offset =
+        u64::try_from(HEADER_SECTION_SIZE).expect("header size overflow") + target_disk_offset;
+    let target_sector = 0_u64;
+    let payload = b"INMEM_REPLAY_POLICY_DIFF";
+
+    File::create(&path)
+        .size(virtual_size)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    inject_pending_log_entry(&path, target_file_offset, payload);
+
+    let mut no_replay_buf = vec![0u8; payload.len()];
+    let no_replay = File::open(&path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("ReadOnlyNoReplay open should succeed");
+    let no_replay_sector = no_replay
+        .io()
+        .sector(target_sector)
+        .expect("ReadOnlyNoReplay sector should exist");
+    let mut no_replay_sector_buf = vec![0u8; 4096];
+    no_replay_sector
+        .read(&mut no_replay_sector_buf)
+        .expect("ReadOnlyNoReplay read should succeed");
+    no_replay_buf.copy_from_slice(&no_replay_sector_buf[512..512 + payload.len()]);
+    assert_eq!(
+        no_replay_buf,
+        vec![0u8; payload.len()],
+        "ReadOnlyNoReplay should keep original on-disk bytes"
+    );
+
+    let mut inmem_buf = vec![0u8; payload.len()];
+    let inmem = File::open(&path)
+        .log_replay(LogReplayPolicy::InMemoryOnReadOnly)
+        .finish()
+        .expect("InMemoryOnReadOnly open should succeed");
+    assert!(
+        !inmem.has_pending_logs(),
+        "InMemoryOnReadOnly should execute replay logic in-memory"
+    );
+    let inmem_sector = inmem
+        .io()
+        .sector(target_sector)
+        .expect("InMemoryOnReadOnly sector should exist");
+    let mut inmem_sector_buf = vec![0u8; 4096];
+    inmem_sector
+        .read(&mut inmem_sector_buf)
+        .expect("InMemoryOnReadOnly read should succeed");
+    inmem_buf.copy_from_slice(&inmem_sector_buf[512..512 + payload.len()]);
+    assert_eq!(
+        &inmem_buf, payload,
+        "InMemoryOnReadOnly should expose replayed payload in reads"
+    );
+}
+
+/// 测试只读 InMemoryOnReadOnly 不应将回放结果写回磁盘。
+#[test]
+fn test_inmemory_on_readonly_does_not_write_back_to_disk() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    let virtual_size = 2 * 1024 * 1024;
+    let target_disk_offset = 1024_u64;
+    let target_file_offset =
+        u64::try_from(HEADER_SECTION_SIZE).expect("header size overflow") + target_disk_offset;
+    let payload = b"NO_DISK_WRITEBACK_ON_INMEM_REPLAY";
+
+    File::create(&path)
+        .size(virtual_size)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    inject_pending_log_entry(&path, target_file_offset, payload);
+
+    let before = read_raw_bytes(&path, target_file_offset, payload.len());
+    assert_eq!(
+        before,
+        vec![0u8; payload.len()],
+        "fixture expects zeroed on-disk bytes before read-only open"
+    );
+
+    let _inmem = File::open(&path)
+        .log_replay(LogReplayPolicy::InMemoryOnReadOnly)
+        .finish()
+        .expect("InMemoryOnReadOnly open should succeed");
+
+    let after = read_raw_bytes(&path, target_file_offset, payload.len());
+    assert_eq!(
+        after, before,
+        "InMemoryOnReadOnly must not persist replay result to disk in read-only mode"
+    );
 }
 
 // ── T9: ParentLocator / LocatorHeader / KeyValueEntry 签名收口测试 ──

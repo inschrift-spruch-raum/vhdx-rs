@@ -268,6 +268,39 @@ fn smoke_constants_metadata_guids_import() {
     assert!(!metadata_guids::PARENT_LOCATOR.is_nil());
 }
 
+/// section::StandardItems 命名空间可导入且与 legacy constants 路径一致。
+#[test]
+fn smoke_section_standard_items_namespace_import() {
+    use vhdx_rs::constants::metadata_guids;
+    use vhdx_rs::section::StandardItems;
+
+    assert_eq!(
+        StandardItems::FILE_PARAMETERS,
+        metadata_guids::FILE_PARAMETERS
+    );
+    assert_eq!(
+        StandardItems::VIRTUAL_DISK_SIZE,
+        metadata_guids::VIRTUAL_DISK_SIZE
+    );
+    assert_eq!(
+        StandardItems::VIRTUAL_DISK_ID,
+        metadata_guids::VIRTUAL_DISK_ID
+    );
+    assert_eq!(
+        StandardItems::LOGICAL_SECTOR_SIZE,
+        metadata_guids::LOGICAL_SECTOR_SIZE
+    );
+    assert_eq!(
+        StandardItems::PHYSICAL_SECTOR_SIZE,
+        metadata_guids::PHYSICAL_SECTOR_SIZE
+    );
+    assert_eq!(
+        StandardItems::PARENT_LOCATOR,
+        metadata_guids::PARENT_LOCATOR
+    );
+    assert!(!StandardItems::LOCATOR_TYPE_VHDX.is_nil());
+}
+
 // ════════════════════════════════════════════
 // 4. validation 模块导入 smoke
 // ════════════════════════════════════════════
