@@ -3,19 +3,29 @@
 //! 本模块提供虚拟磁盘的扇区（[`Sector`]）和块（[`PayloadBlock`]）级别的 IO 操作。
 //!
 //! 扇区和块的地址计算基于 VHDX 文件参数：
-//! - **逻辑扇区大小** — 通常为 512 字节（MS-VHDX §2.6.2.4）
+//! - **逻辑扇区大小** — 通常为 4096 字节（MS-VHDX §2.6.2.4）
 //! - **块大小** — 1MB 到 256MB 之间的 2 的幂次（MS-VHDX §2.6.2.1）
 //!
 //! 每个 Payload Block 包含 `block_size / sector_size` 个逻辑扇区。
+//!
+//! # 设计约束
+//!
+//! 唯一数据平面入口：
+//! - [`File`](crate::File) 层不提供 read/write/flush（公共数据面）
+//! - 所有虚拟磁盘读写必须经由 [`IO::sector`] → [`Sector::read`]/[`Sector::write`]
+//! - 输入: 全局扇区号 → 内部自动计算块索引和块内扇区偏移
+
+use std::fmt;
 
 use crate::File;
 use crate::error::{Error, Result};
-use crate::section::{BatEntry, BatState, PayloadBlockState};
 
 /// 扇区/块级 IO 操作入口
 ///
 /// 提供对 VHDX 文件的扇区级和批量读写操作。
 /// 通过 [`File`](crate::File) 的 [`io()`](crate::File::io) 方法获取实例。
+///
+/// 输入: 全局扇区号 → 内部自动计算块索引和块内扇区偏移。
 pub struct IO<'a> {
     /// 关联的 VHDX 文件引用
     file: &'a File,
@@ -27,7 +37,14 @@ impl<'a> IO<'a> {
         Self { file }
     }
 
-    /// 获取指定逻辑扇区号的扇区对象，超出范围返回 None
+    /// 通过全局扇区号定位并返回 [`Sector`]
+    ///
+    /// 内部自动执行：
+    /// 1. 通过 BAT 找到对应块
+    /// 2. 计算块内扇区偏移
+    ///
+    /// 扇区缓存按需从文件读取（懒加载）。
+    /// 超出虚拟磁盘范围时返回 `None`。
     #[must_use]
     pub fn sector(&self, sector: u64) -> Option<Sector<'a>> {
         let sector_size = u64::from(self.file.logical_sector_size());
@@ -48,6 +65,7 @@ impl<'a> IO<'a> {
             block_idx,
             block_sector_index,
             size: self.file.logical_sector_size(),
+            payload: PayloadBlock { bytes: &[] },
         })
     }
 
@@ -100,21 +118,54 @@ impl<'a> IO<'a> {
 
 /// 虚拟磁盘中的一个逻辑扇区
 ///
-/// 扇区大小由 VHDX 文件的逻辑扇区大小决定（通常 512 字节）。
+/// 封装了 [`PayloadBlock`] 引用和块内扇区索引。
+/// 扇区大小由 VHDX 文件的逻辑扇区大小决定（通常 4096 字节）。
 /// 每个扇区属于一个 Payload Block，扇区在该块内有一个偏移索引。
 pub struct Sector<'a> {
-    /// 关联的 VHDX 文件引用
+    /// 关联的 VHDX 文件引用（内部实现细节）
     file: &'a File,
-    /// 所属的 Payload Block 索引
+    /// 所属的 Payload Block 索引（内部实现细节）
     block_idx: u64,
     /// 在所属 Payload Block 内的扇区索引
     pub block_sector_index: u32,
-    /// 扇区大小（字节）
+    /// 扇区大小（字节，内部实现细节）
     size: u32,
+    /// 所属的 Payload Block 视图
+    pub payload: PayloadBlock<'a>,
+}
+
+impl Clone for Sector<'_> {
+    fn clone(&self) -> Self {
+        Self {
+            file: self.file,
+            block_idx: self.block_idx,
+            block_sector_index: self.block_sector_index,
+            size: self.size,
+            payload: self.payload.clone(),
+        }
+    }
+}
+
+impl fmt::Debug for Sector<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Sector")
+            .field("block_sector_index", &self.block_sector_index)
+            .field("payload", &self.payload)
+            .finish()
+    }
+}
+
+impl PartialEq for Sector<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.block_sector_index == other.block_sector_index && self.payload == other.payload
+    }
 }
 
 impl Sector<'_> {
     /// 读取扇区数据到缓冲区，缓冲区大小必须匹配扇区大小
+    ///
+    /// # 错误
+    /// 返回 [`Error::InvalidParameter`] 当缓冲区长度不等于扇区大小时。
     pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
         if buf.len() != self.size as usize {
             return Err(Error::InvalidParameter(format!(
@@ -156,61 +207,19 @@ impl Sector<'_> {
 
     /// 获取此扇区所属的 Payload Block
     #[must_use]
-    pub const fn payload(&self) -> PayloadBlock<'_> {
-        PayloadBlock {
-            file: self.file,
-            block_idx: self.block_idx,
-        }
+    pub fn payload(&self) -> PayloadBlock<'_> {
+        self.payload.clone()
     }
 }
 
-/// 虚拟磁盘中的一个 Payload Block（数据块）
+/// 虚拟磁盘中的一个 Payload Block 视图
 ///
-/// 每个 Payload Block 的大小由 VHDX 文件的块大小决定。
-/// Block 的状态由 BAT 条目决定（MS-VHDX §2.5.1.1）。
+/// 用户通过 [`Sector`] 访问，不直接操作。
+/// `bytes` 字段为块数据的字节切片视图；
+/// 对于懒加载场景（数据按需通过 [`Sector::read`]/[`Sector::write`] 访问），
+/// `bytes` 可能为空切片。
+#[derive(Clone, Debug, PartialEq)]
 pub struct PayloadBlock<'a> {
-    /// 关联的 VHDX 文件引用
-    file: &'a File,
-    /// Block 索引
-    block_idx: u64,
-}
-
-impl PayloadBlock<'_> {
-    /// 获取 Block 索引
-    #[must_use]
-    pub(crate) const fn block_idx(&self) -> u64 {
-        self.block_idx
-    }
-
-    /// 从 Block 的指定偏移量读取数据
-    pub(crate) fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let block_size = u64::from(self.file.block_size());
-        if offset >= block_size {
-            return Ok(0);
-        }
-
-        let block_offset = self.block_idx * block_size + offset;
-        self.file.read_raw(block_offset, buf)
-    }
-
-    /// 获取此 Block 的 BAT 条目，用于判断分配状态
-    pub(crate) fn bat_entry(&self) -> Option<BatEntry> {
-        if let Ok(bat) = self.file.sections().bat() {
-            bat.entry(self.block_idx)
-        } else {
-            None
-        }
-    }
-
-    /// 检查此 Block 是否已分配（FullyPresent 状态）
-    pub(crate) fn is_allocated(&self) -> bool {
-        if let Some(entry) = self.bat_entry() {
-            matches!(
-                entry.state,
-                BatState::Payload(PayloadBlockState::FullyPresent)
-            )
-        } else {
-            false
-        }
-    }
+    /// 块数据的字节切片视图
+    pub bytes: &'a [u8],
 }

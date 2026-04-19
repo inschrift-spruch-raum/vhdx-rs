@@ -18,7 +18,7 @@ fn create_fixed_vhdx() -> tempfile::TempDir {
             "create",
             path.to_str().unwrap(),
             "--size",
-            "1M",
+            "1MiB",
             "--disk-type",
             "fixed",
         ])
@@ -36,7 +36,7 @@ fn create_dynamic_vhdx() -> tempfile::TempDir {
             "create",
             path.to_str().unwrap(),
             "--size",
-            "1M",
+            "1MiB",
             "--disk-type",
             "dynamic",
         ])
@@ -66,7 +66,7 @@ fn create_fixed_disk_success() {
             "create",
             path.to_str().unwrap(),
             "--size",
-            "1M",
+            "1MiB",
             "--disk-type",
             "fixed",
         ])
@@ -87,7 +87,7 @@ fn create_dynamic_disk_success() {
             "create",
             path.to_str().unwrap(),
             "--size",
-            "1M",
+            "1MiB",
             "--disk-type",
             "dynamic",
         ])
@@ -108,7 +108,7 @@ fn create_with_explicit_block_size() {
             "create",
             path.to_str().unwrap(),
             "--size",
-            "1M",
+            "1MiB",
             "--block-size",
             "1MiB",
             "--disk-type",
@@ -158,7 +158,7 @@ fn create_file_already_exists_fails() {
             "create",
             path.to_str().unwrap(),
             "--size",
-            "1M",
+            "1MiB",
             "--disk-type",
             "fixed",
         ])
@@ -171,7 +171,7 @@ fn create_file_already_exists_fails() {
             "create",
             path.to_str().unwrap(),
             "--size",
-            "1M",
+            "1MiB",
             "--disk-type",
             "fixed",
         ])

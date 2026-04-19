@@ -32,6 +32,11 @@
 pub use error::{Error, Result};
 // GUID 类型
 pub use types::Guid;
+// 规范校验类型
+pub use validation::{SpecValidator, ValidationIssue};
+
+/// 规范一致性校验模块
+pub mod validation;
 
 /// Section 模块命名空间
 ///
@@ -39,13 +44,13 @@ pub use types::Guid;
 /// - [`Bat`] / [`BatEntry`] — 块分配表
 /// - [`Header`] / [`HeaderStructure`] — 头部结构
 /// - [`Metadata`] / [`MetadataTable`] / [`FileParameters`] — 元数据
-/// - [`Log`] / [`Entry`] / [`LogEntryHeader`] — 日志
+/// - [`Log`] / [`LogEntry`] / [`LogEntryHeader`] — 日志
 /// - 以及所有关联的描述符、标志位和辅助类型
 pub mod section {
     pub use crate::sections::{
-        Bat, BatEntry, BatState, DataDescriptor, DataSector, Descriptor, Entry, EntryFlags,
+        Bat, BatEntry, BatState, DataDescriptor, DataSector, Descriptor, EntryFlags,
         FileParameters, FileTypeIdentifier, Header, HeaderStructure, KeyValueEntry, LocatorHeader,
-        Log, LogEntryHeader, Metadata, MetadataItems, MetadataTable, ParentLocator,
+        Log, LogEntry, LogEntryHeader, Metadata, MetadataItems, MetadataTable, ParentLocator,
         PayloadBlockState, RegionTable, RegionTableEntry, RegionTableHeader, Sections,
         SectorBitmapState, TableEntry, TableHeader, ZeroDescriptor,
     };
@@ -55,7 +60,20 @@ pub mod section {
 pub use io_module::{IO, PayloadBlock, Sector};
 
 // 文件操作类型
-pub use file::{CreateOptions, File, OpenOptions};
+pub use file::{CreateOptions, File, LogReplayPolicy, OpenOptions, ParentChainInfo};
+
+// 区域初始化配置
+pub use sections::SectionsConfig;
+
+// CRC32C 校验辅助函数
+pub use sections::crc32c_with_zero_field;
+
+/// VHDX 格式常量与 GUID 命名空间
+///
+/// 提供对 VHDX 布局常量、签名、块大小限制、对齐函数及已知区域/元数据 GUID 的访问。
+pub mod constants {
+    pub use crate::common::constants::*;
+}
 
 // 内部模块
 mod common;

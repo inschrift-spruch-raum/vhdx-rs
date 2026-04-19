@@ -16,6 +16,35 @@ use crate::error::{Error, Result};
 use crate::sections::crc32c_with_zero_field;
 use crate::types::Guid;
 
+/// 从切片安全读取固定长度数组；长度不足时以 0 填充。
+fn read_array<const N: usize>(data: &[u8], start: usize) -> [u8; N] {
+    let mut out = [0u8; N];
+    if let Some(slice) = data.get(start..start + N) {
+        out.copy_from_slice(slice);
+    }
+    out
+}
+
+/// 从切片安全读取 `u16`（LE）；长度不足返回 0。
+fn read_u16(data: &[u8], start: usize) -> u16 {
+    u16::from_le_bytes(read_array::<2>(data, start))
+}
+
+/// 从切片安全读取 `u32`（LE）；长度不足返回 0。
+fn read_u32(data: &[u8], start: usize) -> u32 {
+    u32::from_le_bytes(read_array::<4>(data, start))
+}
+
+/// 从切片安全读取 `u64`（LE）；长度不足返回 0。
+fn read_u64(data: &[u8], start: usize) -> u64 {
+    u64::from_le_bytes(read_array::<8>(data, start))
+}
+
+/// 从切片安全读取 GUID；长度不足的字节按 0 填充。
+fn read_guid(data: &[u8], start: usize) -> Guid {
+    Guid::from_bytes(read_array::<16>(data, start))
+}
+
 /// VHDX 头部区域的统一访问接口
 ///
 /// 包装 1MB 头部区域的原始数据，提供对文件类型标识符、
@@ -98,7 +127,22 @@ impl Header {
     #[must_use]
     pub fn region_table(&self, index: usize) -> Option<RegionTable<'_>> {
         let offset = match index {
-            0 | 1 => REGION_TABLE_1_OFFSET,
+            0 => {
+                let h1 = HeaderStructure::new(
+                    &self.raw_data[HEADER_1_OFFSET..HEADER_1_OFFSET + HEADER_SIZE],
+                )
+                .ok()?;
+                let h2 = HeaderStructure::new(
+                    &self.raw_data[HEADER_2_OFFSET..HEADER_2_OFFSET + HEADER_SIZE],
+                )
+                .ok()?;
+                if h1.sequence_number() > h2.sequence_number() {
+                    REGION_TABLE_1_OFFSET
+                } else {
+                    REGION_TABLE_2_OFFSET
+                }
+            }
+            1 => REGION_TABLE_1_OFFSET,
             2 => REGION_TABLE_2_OFFSET,
             _ => return None,
         };
@@ -111,26 +155,38 @@ impl Header {
 /// 固定大小 64KB，位于文件开头。
 /// 前 8 字节为签名 "vhdxfile"，随后 512 字节为 UTF-16 LE 编码的创建者字符串。
 pub struct FileTypeIdentifier<'a> {
-    data: &'a [u8],
+    /// 文件类型签名（应为 "vhdxfile"）
+    pub signature: [u8; 8],
+    /// 创建者原始字节（UTF-16 LE）
+    pub creator: &'a [u8],
+    /// 原始字节视图
+    pub raw: &'a [u8],
 }
 
 impl<'a> FileTypeIdentifier<'a> {
     /// 从原始字节数据创建文件类型标识符实例
     #[must_use]
-    pub const fn new(data: &'a [u8]) -> Self {
-        Self { data }
+    pub fn new(data: &'a [u8]) -> Self {
+        let signature = read_array::<8>(data, 0);
+        let creator_end = 8 + 512.min(data.len().saturating_sub(8));
+        let creator = &data[8..creator_end];
+        Self {
+            signature,
+            creator,
+            raw: data,
+        }
     }
 
     /// 返回文件类型标识符的原始字节数据
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
-        self.data
+        self.raw
     }
 
     /// 返回 8 字节签名（MS-VHDX §2.2.1），应为 "vhdxfile"
     #[must_use]
-    pub fn signature(&self) -> &[u8] {
-        &self.data[0..8]
+    pub const fn signature(&self) -> &[u8; 8] {
+        &self.signature
     }
 
     /// 返回 UTF-16 LE 编码的创建者字符串（MS-VHDX §2.2.1）
@@ -138,7 +194,7 @@ impl<'a> FileTypeIdentifier<'a> {
     /// 从偏移 8 开始读取最多 512 字节，以空字符结尾。
     #[must_use]
     pub fn creator(&self) -> String {
-        let creator_bytes = &self.data[8..8 + 512.min(self.data.len().saturating_sub(8))];
+        let creator_bytes = self.creator;
         let utf16: Vec<u16> = creator_bytes
             .chunks_exact(2)
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
@@ -189,7 +245,28 @@ impl<'a> FileTypeIdentifier<'a> {
 /// | 68 | 4 | 日志长度 |
 /// | 72 | 8 | 日志偏移量 |
 pub struct HeaderStructure<'a> {
-    data: &'a [u8],
+    /// 头部签名（应为 "head"）
+    pub signature: [u8; 4],
+    /// CRC32C 校验和
+    pub checksum: u32,
+    /// 序列号
+    pub sequence_number: u64,
+    /// 文件写入 GUID
+    pub file_write_guid: Guid,
+    /// 数据写入 GUID
+    pub data_write_guid: Guid,
+    /// 日志 GUID
+    pub log_guid: Guid,
+    /// 日志版本
+    pub log_version: u16,
+    /// VHDX 版本
+    pub version: u16,
+    /// 日志长度
+    pub log_length: u32,
+    /// 日志偏移
+    pub log_offset: u64,
+    /// 原始字节视图
+    pub raw: &'a [u8],
 }
 
 impl<'a> HeaderStructure<'a> {
@@ -202,31 +279,43 @@ impl<'a> HeaderStructure<'a> {
                 data.len()
             )));
         }
-        Ok(Self { data })
+        Ok(Self {
+            signature: read_array::<4>(data, 0),
+            checksum: read_u32(data, 4),
+            sequence_number: read_u64(data, 8),
+            file_write_guid: read_guid(data, 16),
+            data_write_guid: read_guid(data, 32),
+            log_guid: read_guid(data, 48),
+            log_version: read_u16(data, 64),
+            version: read_u16(data, 66),
+            log_length: read_u32(data, 68),
+            log_offset: read_u64(data, 72),
+            raw: data,
+        })
     }
 
     /// 返回头部结构的原始字节数据
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
-        self.data
+        self.raw
     }
 
     /// 头部签名 "head"（MS-VHDX §2.2.2）
     #[must_use]
-    pub fn signature(&self) -> &[u8] {
-        &self.data[0..4]
+    pub const fn signature(&self) -> &[u8; 4] {
+        &self.signature
     }
 
     /// CRC32C 校验和（MS-VHDX §2.2.2），计算时校验和字段本身置零
     #[must_use]
-    pub fn checksum(&self) -> u32 {
-        u32::from_le_bytes(self.data[4..8].try_into().unwrap())
+    pub const fn checksum(&self) -> u32 {
+        self.checksum
     }
 
     /// 验证头部结构的 CRC32C 校验和的正确性
     pub fn verify_checksum(&self) -> Result<()> {
         let expected = self.checksum();
-        let actual = crc32c_with_zero_field(self.data, 4, 4);
+        let actual = crc32c_with_zero_field(self.raw, 4, 4);
         if expected != actual {
             return Err(Error::InvalidChecksum { expected, actual });
         }
@@ -235,50 +324,50 @@ impl<'a> HeaderStructure<'a> {
 
     /// 序列号（MS-VHDX §2.2.2），用于确定两个头部副本中哪个是活动的
     #[must_use]
-    pub fn sequence_number(&self) -> u64 {
-        u64::from_le_bytes(self.data[8..16].try_into().unwrap())
+    pub const fn sequence_number(&self) -> u64 {
+        self.sequence_number
     }
 
     /// 文件写入 GUID（MS-VHDX §2.2.2），每次文件打开并写入时更新
     #[must_use]
-    pub fn file_write_guid(&self) -> Guid {
-        Guid::from_bytes(self.data[16..32].try_into().unwrap())
+    pub const fn file_write_guid(&self) -> Guid {
+        self.file_write_guid
     }
 
     /// 数据写入 GUID（MS-VHDX §2.2.2），每次虚拟磁盘数据写入时更新
     #[must_use]
-    pub fn data_write_guid(&self) -> Guid {
-        Guid::from_bytes(self.data[32..48].try_into().unwrap())
+    pub const fn data_write_guid(&self) -> Guid {
+        self.data_write_guid
     }
 
     /// 日志 GUID（MS-VHDX §2.2.2），标识当前活跃的日志
     #[must_use]
-    pub fn log_guid(&self) -> Guid {
-        Guid::from_bytes(self.data[48..64].try_into().unwrap())
+    pub const fn log_guid(&self) -> Guid {
+        self.log_guid
     }
 
     /// 日志版本号（MS-VHDX §2.3.1.1），当前为 0
     #[must_use]
-    pub fn log_version(&self) -> u16 {
-        u16::from_le_bytes(self.data[64..66].try_into().unwrap())
+    pub const fn log_version(&self) -> u16 {
+        self.log_version
     }
 
     /// VHDX 格式版本号（MS-VHDX §2.2.2），当前为 1
     #[must_use]
-    pub fn version(&self) -> u16 {
-        u16::from_le_bytes(self.data[66..68].try_into().unwrap())
+    pub const fn version(&self) -> u16 {
+        self.version
     }
 
     /// 日志区域长度（MS-VHDX §2.2.2），单位字节
     #[must_use]
-    pub fn log_length(&self) -> u32 {
-        u32::from_le_bytes(self.data[68..72].try_into().unwrap())
+    pub const fn log_length(&self) -> u32 {
+        self.log_length
     }
 
     /// 日志区域在文件中的偏移量（MS-VHDX §2.2.2）
     #[must_use]
-    pub fn log_offset(&self) -> u64 {
-        u64::from_le_bytes(self.data[72..80].try_into().unwrap())
+    pub const fn log_offset(&self) -> u64 {
+        self.log_offset
     }
 
     /// 构造新的头部结构字节数据，自动计算 CRC32C 校验和
@@ -372,38 +461,53 @@ impl<'a> RegionTable<'a> {
 ///
 /// 包含区域表的签名、校验和和条目数量。
 pub struct RegionTableHeader<'a> {
-    data: &'a [u8],
+    /// 区域表签名（应为 "regi"）
+    pub signature: [u8; 4],
+    /// CRC32C 校验和
+    pub checksum: u32,
+    /// 表项数量
+    pub entry_count: u32,
+    /// 保留字段
+    pub reserved: u32,
+    /// 原始字节视图
+    pub raw: &'a [u8],
 }
 
 impl<'a> RegionTableHeader<'a> {
     /// 从原始字节数据创建区域表头部实例
     #[must_use]
-    pub const fn new(data: &'a [u8]) -> Self {
-        Self { data }
+    pub fn new(data: &'a [u8]) -> Self {
+        Self {
+            signature: read_array::<4>(data, 0),
+            checksum: read_u32(data, 4),
+            entry_count: read_u32(data, 8),
+            reserved: read_u32(data, 12),
+            raw: data,
+        }
     }
 
     /// 返回区域表头部的原始字节数据
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
-        self.data
+        self.raw
     }
 
     /// 返回 4 字节签名（MS-VHDX §2.2.3.1），应为 "regi"
     #[must_use]
-    pub fn signature(&self) -> &[u8] {
-        &self.data[0..4]
+    pub const fn signature(&self) -> &[u8; 4] {
+        &self.signature
     }
 
     /// CRC32C 校验和（MS-VHDX §2.2.3.1），计算时校验和字段本身置零
     #[must_use]
-    pub fn checksum(&self) -> u32 {
-        u32::from_le_bytes(self.data[4..8].try_into().unwrap())
+    pub const fn checksum(&self) -> u32 {
+        self.checksum
     }
 
     /// 验证 CRC32C 校验和的正确性
     pub fn verify_checksum(&self) -> Result<()> {
         let expected = self.checksum();
-        let actual = crc32c_with_zero_field(self.data, 4, 4);
+        let actual = crc32c_with_zero_field(self.raw, 4, 4);
         if expected != actual {
             return Err(Error::InvalidChecksum { expected, actual });
         }
@@ -412,8 +516,8 @@ impl<'a> RegionTableHeader<'a> {
 
     /// 区域表中的条目数量（MS-VHDX §2.2.3.1）
     #[must_use]
-    pub fn entry_count(&self) -> u32 {
-        u32::from_le_bytes(self.data[8..12].try_into().unwrap())
+    pub const fn entry_count(&self) -> u32 {
+        self.entry_count
     }
 }
 
@@ -425,7 +529,16 @@ impl<'a> RegionTableHeader<'a> {
 /// - 长度（4 字节）— 区域大小
 /// - 必需标志（4 字节）— 是否为 VHDX 文件必需的区域
 pub struct RegionTableEntry<'a> {
-    data: &'a [u8],
+    /// 区域 GUID
+    pub guid: Guid,
+    /// 区域文件偏移
+    pub file_offset: u64,
+    /// 区域长度
+    pub length: u32,
+    /// required 标志（原始值）
+    pub required: u32,
+    /// 原始字节视图
+    pub raw: &'a [u8],
 }
 
 impl<'a> RegionTableEntry<'a> {
@@ -436,37 +549,43 @@ impl<'a> RegionTableEntry<'a> {
                 "Entry must be 32 bytes".to_string(),
             ));
         }
-        Ok(Self { data })
+        Ok(Self {
+            guid: read_guid(data, 0),
+            file_offset: read_u64(data, 16),
+            length: read_u32(data, 24),
+            required: read_u32(data, 28),
+            raw: data,
+        })
     }
 
     /// 返回区域表条目的原始字节数据
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
-        self.data
+        self.raw
     }
 
     /// 区域 GUID（MS-VHDX §2.2.3.2），标识区域类型（如 BAT、元数据区域）
     #[must_use]
-    pub fn guid(&self) -> Guid {
-        Guid::from_bytes(self.data[0..16].try_into().unwrap())
+    pub const fn guid(&self) -> Guid {
+        self.guid
     }
 
     /// 区域在文件中的偏移量（MS-VHDX §2.2.3.2），单位字节
     #[must_use]
-    pub fn file_offset(&self) -> u64 {
-        u64::from_le_bytes(self.data[16..24].try_into().unwrap())
+    pub const fn file_offset(&self) -> u64 {
+        self.file_offset
     }
 
     /// 区域长度（MS-VHDX §2.2.3.2），单位字节
     #[must_use]
-    pub fn length(&self) -> u32 {
-        u32::from_le_bytes(self.data[24..28].try_into().unwrap())
+    pub const fn length(&self) -> u32 {
+        self.length
     }
 
     /// 区域是否为 VHDX 文件必需（MS-VHDX §2.2.3.2），非零值表示必需
     #[must_use]
-    pub fn required(&self) -> bool {
-        u32::from_le_bytes(self.data[28..32].try_into().unwrap()) != 0
+    pub const fn required(&self) -> bool {
+        self.required != 0
     }
 }
 

@@ -64,11 +64,11 @@ fn test_read_unallocated_dynamic_block() {
         .finish()
         .expect("Failed to create dynamic disk");
 
-    // 通过 IO 接口读取扇区 0 的 512 字节，期望返回全零
+    // 通过 IO 接口读取扇区 0 的 4096 字节，期望返回全零
     let sector = file.io().sector(0).expect("Sector 0 should exist");
-    let mut buf = vec![0u8; 512];
+    let mut buf = vec![0u8; 4096];
     sector.read(&mut buf).expect("Failed to read sector");
-    assert_eq!(buf, vec![0u8; 512]);
+    assert_eq!(buf, vec![0u8; 4096]);
 }
 
 /// 测试对动态磁盘执行写入操作应失败（当前库仅支持读取动态磁盘）。
@@ -380,6 +380,38 @@ fn test_bat_section_after_create() {
     assert!(!bat.is_empty(), "BAT should have entries");
 }
 
+/// 测试 Bat::entries() 返回 Vec<BatEntry>：验证可遍历且内容正确。
+#[test]
+fn test_bat_entries_vec_traversable() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    let file = File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    let bat = file.sections().bat().expect("Failed to read BAT");
+
+    // entries() 返回 Vec<BatEntry>，可以遍历
+    let entries = bat.entries();
+    assert!(!entries.is_empty(), "entries() should return non-empty Vec");
+
+    // 遍历并断言每个条目状态有效（为 Payload 变体）
+    for entry in &entries {
+        assert!(
+            matches!(entry.state, vhdx_rs::section::BatState::Payload(_)),
+            "Each BAT entry state should be a Payload variant"
+        );
+    }
+
+    // entries() 长度与 bat.len() 一致
+    assert_eq!(entries.len(), bat.len());
+}
+
 /// 测试创建后元数据区域的正确性：验证虚拟磁盘大小和文件参数。
 #[test]
 fn test_metadata_section_after_create() {
@@ -443,7 +475,7 @@ fn test_metadata_block_size_matches() {
     );
 }
 
-/// 测试元数据中的扇区大小：逻辑扇区和物理扇区均应为 512 字节。
+/// 测试元数据中的扇区大小：默认逻辑和物理扇区均应为 4096 字节。
 #[test]
 fn test_metadata_sector_sizes() {
     use vhdx_rs::File;
@@ -459,17 +491,17 @@ fn test_metadata_sector_sizes() {
     let metadata = file.sections().metadata().expect("Failed to read metadata");
     let items = metadata.items();
 
-    // 验证逻辑扇区大小为 512
+    // 验证逻辑扇区大小为 4096
     assert_eq!(
         items.logical_sector_size(),
-        Some(512),
-        "Logical sector size should be 512"
+        Some(4096),
+        "Logical sector size should be 4096"
     );
-    // 验证物理扇区大小为 512
+    // 验证物理扇区大小为 4096
     assert_eq!(
         items.physical_sector_size(),
-        Some(512),
-        "Physical sector size should be 512"
+        Some(4096),
+        "Physical sector size should be 4096"
     );
 }
 
@@ -552,16 +584,98 @@ fn test_logical_sector_size_is_512() {
         .finish()
         .expect("Failed to create fixed disk");
 
-    // 逻辑扇区大小应为 512 字节
+    // 默认逻辑扇区大小应为 4096 字节
     assert_eq!(
         file.sections()
             .metadata()
             .ok()
             .and_then(|m| m.items().logical_sector_size())
             .unwrap_or(0),
-        512,
-        "Logical sector size should be 512"
+        4096,
+        "Logical sector size should be 4096"
     );
+}
+
+/// 测试 OpenOptions 链式方法：strict + log_replay 可编译并成功打开。
+#[test]
+fn test_open_options_chain_methods_happy_path() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    let file = File::open(&path)
+        .strict(false)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("Failed to open with strict/log_replay chain");
+
+    assert_eq!(file.virtual_disk_size(), 1024 * 1024);
+}
+
+/// 测试 CreateOptions 链式方法：logical/physical/parent_path 可编译并成功。
+#[test]
+fn test_create_options_chain_methods_happy_path() {
+    use vhdx_rs::File;
+
+    let parent = temp_vhdx_path();
+    let child = temp_vhdx_path();
+
+    File::create(&parent)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_file = File::create(&child)
+        .size(4 * 1024 * 1024)
+        .fixed(false)
+        .block_size(1024 * 1024)
+        .logical_sector_size(512)
+        .physical_sector_size(4096)
+        .parent_path(&parent)
+        .finish()
+        .expect("Failed to create differencing disk with builder chain");
+
+    assert!(child_file.has_parent());
+    assert_eq!(child_file.logical_sector_size(), 512);
+}
+
+/// 测试 CreateOptions 非法组合：physical_sector_size < logical_sector_size 应失败。
+#[test]
+fn test_create_invalid_sector_size_combination_fails() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    let result = File::create(&path)
+        .size(4 * 1024 * 1024)
+        .logical_sector_size(4096)
+        .physical_sector_size(512)
+        .finish();
+
+    assert!(result.is_err());
+}
+
+/// 测试 CreateOptions 非法参数：不存在的 parent_path 应返回错误。
+#[test]
+fn test_create_with_nonexistent_parent_path_fails() {
+    use vhdx_rs::File;
+
+    let child = temp_vhdx_path();
+    let missing_parent = child.with_file_name("missing-parent.vhdx");
+
+    let result = File::create(&child)
+        .size(4 * 1024 * 1024)
+        .parent_path(&missing_parent)
+        .finish();
+
+    assert!(result.is_err());
 }
 
 /// 测试非差分磁盘不应有父磁盘。
@@ -694,4 +808,785 @@ fn test_open_test_fs_vhdx() {
         .sections()
         .metadata()
         .expect("Metadata should be readable");
+}
+
+/// 测试公共 getter 方法可见性：验证各 getter 返回正确值。
+#[test]
+fn test_public_getters() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    let file = File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    assert_eq!(file.virtual_disk_size(), 1024 * 1024);
+    assert_eq!(file.block_size(), 1024 * 1024);
+    assert_eq!(file.logical_sector_size(), 4096);
+    assert!(file.is_fixed());
+    assert!(!file.has_parent());
+    assert!(!file.has_pending_logs());
+}
+
+// ── IO / Sector / PayloadBlock API 对齐测试 ──
+
+/// 测试 Sector 公共字段可访问性：block_sector_index 和 payload 可直接读取。
+#[test]
+fn test_sector_public_fields_accessible() {
+    use vhdx_rs::{File, PayloadBlock};
+
+    let path = temp_vhdx_path();
+
+    let file = File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    let io = file.io();
+
+    // 扇区 0 存在，验证公共字段
+    let sector = io.sector(0).expect("Sector 0 should exist");
+    assert_eq!(
+        sector.block_sector_index, 0,
+        "block_sector_index should be 0"
+    );
+
+    // payload 字段可直接访问，类型为 PayloadBlock
+    let _payload: &PayloadBlock<'_> = &sector.payload;
+    assert!(
+        sector.payload.bytes.is_empty(),
+        "Lazy-load payload bytes should be empty slice"
+    );
+
+    // payload() 方法返回值与字段一致
+    let via_method = sector.payload();
+    assert_eq!(
+        via_method, sector.payload,
+        "payload() method should match public field"
+    );
+}
+
+/// 测试 Sector 在不同块内扇区的 block_sector_index 正确性。
+#[test]
+fn test_sector_block_sector_index_values() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    // 4 MiB 磁盘，1 MiB 块大小，4096 逻辑扇区大小 → 每块 256 个扇区
+    let file = File::create(&path)
+        .size(4 * 1024 * 1024)
+        .fixed(true)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    let io = file.io();
+
+    // 扇区 0 → block_sector_index 0
+    let s0 = io.sector(0).expect("Sector 0");
+    assert_eq!(s0.block_sector_index, 0);
+
+    // 扇区 1 → block_sector_index 1
+    let s1 = io.sector(1).expect("Sector 1");
+    assert_eq!(s1.block_sector_index, 1);
+
+    // 扇区 255 → block_sector_index 255（第一块最后一个扇区）
+    let s255 = io.sector(255).expect("Sector 255");
+    assert_eq!(s255.block_sector_index, 255);
+
+    // 扇区 256 → block_sector_index 0（第二块第一个扇区）
+    let s256 = io.sector(256).expect("Sector 256");
+    assert_eq!(s256.block_sector_index, 0);
+}
+
+/// 测试 IO::sector 超出范围返回 None。
+#[test]
+fn test_io_sector_out_of_range_returns_none() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    let file = File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    let io = file.io();
+
+    // 1 MiB / 4096 = 256 个扇区，索引 0..255 有效
+    assert!(io.sector(0).is_some(), "Sector 0 should exist");
+    assert!(io.sector(255).is_some(), "Last sector (255) should exist");
+    assert!(
+        io.sector(256).is_none(),
+        "Sector 256 should be out of range"
+    );
+    assert!(
+        io.sector(99999).is_none(),
+        "Large sector number should be out of range"
+    );
+}
+
+/// 测试 Sector Clone/Debug/PartialEq trait 实现。
+#[test]
+fn test_sector_derive_traits() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    let file = File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    let io = file.io();
+
+    let s0a = io.sector(0).expect("Sector 0a");
+    let s0b = io.sector(0).expect("Sector 0b");
+
+    // Clone
+    let s0_clone = s0a.clone();
+    assert_eq!(s0_clone.block_sector_index, 0);
+
+    // PartialEq — 同一扇区号应相等
+    assert_eq!(s0a, s0b, "Same sector should be equal");
+
+    // Debug — 不应 panic
+    let debug_str = format!("{:?}", s0a);
+    assert!(
+        debug_str.contains("Sector"),
+        "Debug output should contain 'Sector'"
+    );
+}
+
+/// 测试 PayloadBlock 的 Clone/Debug/PartialEq 派生。
+#[test]
+fn test_payload_block_traits() {
+    use vhdx_rs::{File, PayloadBlock};
+
+    let path = temp_vhdx_path();
+
+    let file = File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    let sector = file.io().sector(0).expect("Sector 0");
+    let pb1 = sector.payload();
+    let pb2 = sector.payload();
+
+    // Clone
+    let pb_clone = pb1.clone();
+    assert_eq!(pb_clone.bytes, pb1.bytes);
+
+    // PartialEq
+    assert_eq!(pb1, pb2, "Same payload should be equal");
+
+    // Debug
+    let debug_str = format!("{:?}", pb1);
+    assert!(
+        debug_str.contains("PayloadBlock"),
+        "Debug should contain 'PayloadBlock'"
+    );
+
+    // 手动构造 PayloadBlock 测试 PartialEq
+    let data = b"hello";
+    let manual = PayloadBlock { bytes: data };
+    let manual2 = PayloadBlock { bytes: data };
+    assert_eq!(manual, manual2);
+
+    let different = PayloadBlock { bytes: b"world" };
+    assert_ne!(manual, different);
+}
+
+// ── LogEntry 命名与导出对齐测试 ──
+
+/// 测试 LogEntry 可通过 section 模块路径导入并使用。
+#[test]
+fn test_log_entry_import_and_construction() {
+    use vhdx_rs::section::{LogEntry, LogEntryHeader};
+
+    // 构造最小有效日志条目：64 字节头部 + 签名
+    let mut data = vec![0u8; 64];
+    data[0..4].copy_from_slice(b"loge");
+    data[8..12].copy_from_slice(&64u32.to_le_bytes()); // entry_length = 64
+
+    // LogEntry::new 应成功
+    let entry = LogEntry::new(&data).expect("LogEntry::new should succeed");
+    let header = entry.header();
+    assert_eq!(header.signature(), b"loge", "Signature should be 'loge'");
+    assert_eq!(header.entry_length(), 64, "entry_length should be 64");
+
+    // 验证 LogEntryHeader 类型可独立使用
+    let standalone_header = LogEntryHeader::new(&data);
+    assert_eq!(standalone_header.signature(), b"loge");
+}
+
+// ── 常量与 GUID 子命名空间路径对齐测试 ──
+
+/// 测试 constants 命名空间中基本常量可导入且值正确。
+#[test]
+fn test_constants_namespace_basic_values() {
+    use vhdx_rs::constants::{KiB, MiB};
+
+    // KiB = 1024
+    assert_eq!(KiB, 1024u64, "KiB should be 1024");
+    // MiB = 1024 * 1024
+    assert_eq!(MiB, 1024u64 * 1024, "MiB should be 1048576");
+    // MiB 是 KiB 的整数倍
+    assert_eq!(MiB, 1024 * KiB);
+}
+
+/// 测试 constants 命名空间中布局常量可导入且值合理。
+#[test]
+fn test_constants_namespace_layout_constants() {
+    use vhdx_rs::constants::{
+        DEFAULT_BLOCK_SIZE, FILE_TYPE_SIZE, HEADER_1_OFFSET, HEADER_2_OFFSET, HEADER_SECTION_SIZE,
+        MAX_BLOCK_SIZE, MIN_BLOCK_SIZE, REGION_TABLE_SIZE,
+    };
+
+    // 布局常量基本约束
+    assert_eq!(HEADER_SECTION_SIZE, 1024 * 1024);
+    assert_eq!(FILE_TYPE_SIZE, 64 * 1024);
+    assert_eq!(HEADER_1_OFFSET, 64 * 1024);
+    assert_eq!(HEADER_2_OFFSET, 128 * 1024);
+    assert_eq!(REGION_TABLE_SIZE, 64 * 1024);
+    assert!(DEFAULT_BLOCK_SIZE >= MIN_BLOCK_SIZE);
+    assert!(DEFAULT_BLOCK_SIZE <= MAX_BLOCK_SIZE);
+}
+
+/// 测试 region_guids 子命名空间可导入且 GUID 非 nil。
+#[test]
+fn test_constants_region_guids_accessible() {
+    use vhdx_rs::constants::region_guids;
+
+    assert!(
+        !region_guids::BAT_REGION.is_nil(),
+        "BAT_REGION should not be nil"
+    );
+    assert!(
+        !region_guids::METADATA_REGION.is_nil(),
+        "METADATA_REGION should not be nil"
+    );
+}
+
+/// 测试 metadata_guids 子命名空间可导入且所有已知 GUID 非 nil。
+#[test]
+fn test_constants_metadata_guids_accessible() {
+    use vhdx_rs::constants::metadata_guids;
+
+    assert!(!metadata_guids::FILE_PARAMETERS.is_nil());
+    assert!(!metadata_guids::VIRTUAL_DISK_SIZE.is_nil());
+    assert!(!metadata_guids::VIRTUAL_DISK_ID.is_nil());
+    assert!(!metadata_guids::LOGICAL_SECTOR_SIZE.is_nil());
+    assert!(!metadata_guids::PHYSICAL_SECTOR_SIZE.is_nil());
+    assert!(!metadata_guids::PARENT_LOCATOR.is_nil());
+}
+
+/// 测试对齐辅助函数可通过 constants 命名空间调用。
+#[test]
+fn test_constants_align_functions() {
+    use vhdx_rs::constants::{MiB, align_1mib, align_up};
+
+    assert_eq!(align_up(0, MiB), 0);
+    assert_eq!(align_up(1, MiB), MiB);
+    assert_eq!(align_1mib(1), MiB);
+    assert_eq!(align_1mib(MiB), MiB);
+    assert_eq!(align_1mib(MiB + 1), 2 * MiB);
+}
+
+/// 测试 GUID 各常量值彼此不同（无重复）。
+#[test]
+fn test_constants_guids_are_unique() {
+    use vhdx_rs::constants::metadata_guids;
+    use vhdx_rs::constants::region_guids;
+
+    let guids = [
+        region_guids::BAT_REGION,
+        region_guids::METADATA_REGION,
+        metadata_guids::FILE_PARAMETERS,
+        metadata_guids::VIRTUAL_DISK_SIZE,
+        metadata_guids::VIRTUAL_DISK_ID,
+        metadata_guids::LOGICAL_SECTOR_SIZE,
+        metadata_guids::PHYSICAL_SECTOR_SIZE,
+        metadata_guids::PARENT_LOCATOR,
+    ];
+
+    // 所有 GUID 两两不等
+    for i in 0..guids.len() {
+        for j in (i + 1)..guids.len() {
+            assert_ne!(
+                guids[i], guids[j],
+                "GUIDs at index {i} and {j} should differ"
+            );
+        }
+    }
+}
+
+/// 测试 ParentLocator::resolve_parent_path 按规范优先级选择路径。
+#[test]
+fn test_parent_locator_resolve_parent_path_priority() {
+    use vhdx_rs::section::ParentLocator;
+
+    fn utf16_bytes(s: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        for c in s.encode_utf16() {
+            out.extend_from_slice(&c.to_le_bytes());
+        }
+        out
+    }
+
+    let relative_key = "relative_path";
+    let relative_val = "..\\parent.vhdx";
+    let volume_key = "volume_path";
+    let volume_val = "C:\\volume\\parent.vhdx";
+
+    let mut kv_data = Vec::new();
+
+    let r_key = utf16_bytes(relative_key);
+    let r_val = utf16_bytes(relative_val);
+    let r_key_offset = kv_data.len() as u32;
+    kv_data.extend_from_slice(&r_key);
+    let r_val_offset = kv_data.len() as u32;
+    kv_data.extend_from_slice(&r_val);
+
+    let v_key = utf16_bytes(volume_key);
+    let v_val = utf16_bytes(volume_val);
+    let v_key_offset = kv_data.len() as u32;
+    kv_data.extend_from_slice(&v_key);
+    let v_val_offset = kv_data.len() as u32;
+    kv_data.extend_from_slice(&v_val);
+
+    let mut buf = vec![0u8; 20 + 12 * 2];
+    // key_value_count = 2
+    buf[18..20].copy_from_slice(&(2u16).to_le_bytes());
+
+    // entry 0: relative_path
+    buf[20..24].copy_from_slice(&r_key_offset.to_le_bytes());
+    buf[24..28].copy_from_slice(&r_val_offset.to_le_bytes());
+    buf[28..30].copy_from_slice(&(r_key.len() as u16).to_le_bytes());
+    buf[30..32].copy_from_slice(&(r_val.len() as u16).to_le_bytes());
+
+    // entry 1: volume_path
+    buf[32..36].copy_from_slice(&v_key_offset.to_le_bytes());
+    buf[36..40].copy_from_slice(&v_val_offset.to_le_bytes());
+    buf[40..42].copy_from_slice(&(v_key.len() as u16).to_le_bytes());
+    buf[42..44].copy_from_slice(&(v_val.len() as u16).to_le_bytes());
+
+    buf.extend_from_slice(&kv_data);
+
+    let locator = ParentLocator::new(&buf).expect("ParentLocator should parse");
+    let resolved = locator
+        .resolve_parent_path()
+        .expect("Should resolve parent path");
+
+    assert_eq!(resolved, std::path::PathBuf::from(relative_val));
+}
+
+/// 测试异常 ParentLocator 路径返回错误而非 panic。
+#[test]
+fn test_parent_locator_malformed_returns_error_or_none() {
+    use vhdx_rs::section::ParentLocator;
+
+    // 小于 20 字节应返回错误
+    let too_small = [0u8; 10];
+    let err = ParentLocator::new(&too_small);
+    assert!(err.is_err(), "Small parent locator should return Err");
+
+    // key_value_count 与数据不匹配时不应 panic，解析应返回 None
+    let mut malformed = vec![0u8; 20];
+    malformed[18..20].copy_from_slice(&(1u16).to_le_bytes()); // 声称有 1 条 entry，但无实际 entry 数据
+    let locator = ParentLocator::new(&malformed).expect("Header-sized locator should parse");
+    assert!(locator.entry(0).is_none());
+    assert!(locator.resolve_parent_path().is_none());
+}
+
+/// 测试 validation 模块公共类型可导入且基础校验路径可执行。
+#[test]
+fn test_validation_api_import_and_validate_file() {
+    use vhdx_rs::{File, SpecValidator, ValidationIssue};
+
+    let path = temp_vhdx_path();
+    let file = File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    let validator = SpecValidator::new(&file);
+    validator
+        .validate_file()
+        .expect("validate_file should pass for a valid fixed disk");
+
+    let issue = ValidationIssue {
+        section: "metadata",
+        code: "EXAMPLE",
+        message: "example issue".to_string(),
+        spec_ref: "MS-VHDX §2.6",
+    };
+    assert_eq!(issue.section, "metadata");
+    assert_eq!(issue.code, "EXAMPLE");
+}
+
+/// 测试差分盘缺少 Parent Locator 必需键时返回错误而非 panic。
+#[test]
+fn test_validation_parent_locator_invalid_returns_error() {
+    use vhdx_rs::{Error, File, SpecValidator};
+
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    let file = File::create(&child_path)
+        .size(1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create differencing-style disk");
+
+    let validator = SpecValidator::new(&file);
+    let err = validator
+        .validate_parent_locator()
+        .expect_err("Expected missing parent_linkage validation error");
+
+    match err {
+        Error::InvalidMetadata(message) => {
+            assert!(
+                message.contains("parent_linkage"),
+                "unexpected error message: {message}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// 测试 File::validator() 返回的 SpecValidator 可成功执行全量校验（happy path）。
+#[test]
+fn test_file_validator_callable_and_validate_file() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+    let file = File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    // File::validator() 返回的校验器应能成功执行 validate_file
+    file.validator()
+        .validate_file()
+        .expect("validate_file should succeed for a valid fixed disk");
+}
+
+/// 测试 File::validator() 可调用分项校验。
+#[test]
+fn test_file_validator_individual_methods() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+    let file = File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    let v = file.validator();
+    v.validate_header().expect("header");
+    v.validate_region_table().expect("region table");
+    v.validate_bat().expect("bat");
+    v.validate_metadata().expect("metadata");
+    v.validate_required_metadata_items()
+        .expect("required metadata items");
+    v.validate_log().expect("log");
+}
+
+/// 测试 ParentChainInfo 可从 crate root 导入且公共字段可访问。
+#[test]
+fn test_parent_chain_info_import_and_fields() {
+    use std::path::PathBuf;
+    use vhdx_rs::ParentChainInfo;
+
+    let info = ParentChainInfo {
+        child: PathBuf::from("/child.vhdx"),
+        parent: PathBuf::from("/parent.vhdx"),
+        linkage_matched: true,
+    };
+    assert_eq!(info.child, PathBuf::from("/child.vhdx"));
+    assert_eq!(info.parent, PathBuf::from("/parent.vhdx"));
+    assert!(info.linkage_matched);
+}
+
+/// 测试 validate_parent_chain 对非差分盘返回错误（failure path）。
+#[test]
+fn test_validate_parent_chain_non_diff_disk_returns_error() {
+    use vhdx_rs::{Error, File};
+
+    let path = temp_vhdx_path();
+    let file = File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    let err = file
+        .validator()
+        .validate_parent_chain()
+        .expect_err("Expected error for non-diff disk");
+
+    match err {
+        Error::InvalidParameter(msg) => {
+            assert!(
+                msg.contains("differencing"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// 测试 LogReplayPolicy 全部 4 个变体可从 crate root 导入且值可匹配。
+#[test]
+fn test_log_replay_policy_variants_accessible() {
+    use vhdx_rs::LogReplayPolicy;
+
+    let policies = [
+        LogReplayPolicy::Require,
+        LogReplayPolicy::Auto,
+        LogReplayPolicy::InMemoryOnReadOnly,
+        LogReplayPolicy::ReadOnlyNoReplay,
+    ];
+    assert_eq!(policies.len(), 4);
+    // 验证 Require 和 Auto 不相等
+    assert_ne!(LogReplayPolicy::Require, LogReplayPolicy::Auto);
+}
+
+/// 测试以 Require 策略打开（无日志时应正常完成，不会触发 LogReplayRequired）。
+#[test]
+fn test_open_with_require_policy_no_pending_logs() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    // 新创建的磁盘无 pending logs，Require 策略不应报错
+    let _file = File::open(&path)
+        .log_replay(LogReplayPolicy::Require)
+        .finish()
+        .expect("Open with Require policy should succeed when no pending logs");
+}
+
+/// 测试以 ReadOnlyNoReplay 策略只读打开。
+#[test]
+fn test_open_with_read_only_no_replay_policy() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    // 新创建的磁盘无 pending logs，ReadOnlyNoReplay 策略不应报错
+    let _file = File::open(&path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("Open with ReadOnlyNoReplay policy should succeed");
+}
+
+// ── T9: ParentLocator / LocatorHeader / KeyValueEntry 签名收口测试 ──
+
+/// 测试 LocatorHeader 公共字段可访问：locator_type、reserved、key_value_count、raw。
+#[test]
+fn test_locator_header_public_fields_accessible() {
+    use vhdx_rs::section::{KeyValueEntry, ParentLocator};
+
+    // ParentLocator::new 需要 >= 20 字节
+    let mut buf = vec![0u8; 20];
+    buf[18..20].copy_from_slice(&(0u16.to_le_bytes()));
+    let locator = ParentLocator::new(&buf).expect("ParentLocator should parse");
+
+    // header 返回 LocatorHeader，公共字段可访问
+    let header = locator.header();
+    assert_eq!(header.key_value_count, 0);
+
+    // raw getter 可调用
+    let _raw: &[u8] = header.raw();
+
+    // KeyValueEntry 可手动构造（利用公共字段）
+    let kv = KeyValueEntry {
+        key_offset: 0,
+        value_offset: 0,
+        key_length: 0,
+        value_length: 0,
+        raw: &[0u8; 12],
+    };
+    assert_eq!(kv.key_offset, 0);
+}
+
+/// 测试 KeyValueEntry 公共字段可访问：key_offset、value_offset、key_length、value_length、raw。
+#[test]
+fn test_key_value_entry_public_fields_accessible() {
+    use vhdx_rs::section::KeyValueEntry;
+
+    let mut entry_bytes = [0u8; 12];
+    entry_bytes[0..4].copy_from_slice(&10u32.to_le_bytes());
+    entry_bytes[4..8].copy_from_slice(&20u32.to_le_bytes());
+    entry_bytes[8..10].copy_from_slice(&8u16.to_le_bytes());
+    entry_bytes[10..12].copy_from_slice(&12u16.to_le_bytes());
+
+    let entry = KeyValueEntry::new(&entry_bytes).expect("KeyValueEntry::new should succeed");
+
+    assert_eq!(entry.key_offset, 10);
+    assert_eq!(entry.value_offset, 20);
+    assert_eq!(entry.key_length, 8);
+    assert_eq!(entry.value_length, 12);
+    assert_eq!(entry.raw.len(), 12);
+    assert_eq!(entry.raw(), entry.raw);
+}
+
+/// 测试 KeyValueEntry key/value 方法正确解码 UTF-16LE。
+#[test]
+fn test_key_value_entry_key_value_utf16_decode() {
+    use vhdx_rs::section::KeyValueEntry;
+
+    fn utf16_bytes(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
+    }
+
+    let key = "relative_path";
+    let value = r"..\parent.vhdx";
+    let key_data = utf16_bytes(key);
+    let value_data = utf16_bytes(value);
+
+    let mut kv_region = Vec::new();
+    let key_offset = 0u32;
+    kv_region.extend_from_slice(&key_data);
+    let value_offset = kv_region.len() as u32;
+    kv_region.extend_from_slice(&value_data);
+
+    let mut entry_bytes = [0u8; 12];
+    entry_bytes[0..4].copy_from_slice(&key_offset.to_le_bytes());
+    entry_bytes[4..8].copy_from_slice(&value_offset.to_le_bytes());
+    entry_bytes[8..10].copy_from_slice(&(key_data.len() as u16).to_le_bytes());
+    entry_bytes[10..12].copy_from_slice(&(value_data.len() as u16).to_le_bytes());
+
+    let entry = KeyValueEntry::new(&entry_bytes).expect("KeyValueEntry::new should succeed");
+    assert_eq!(entry.key(&kv_region), Some(key.to_string()));
+    assert_eq!(entry.value(&kv_region), Some(value.to_string()));
+}
+
+/// 测试 ParentLocator 各方法返回类型与 API.md 一致。
+#[test]
+fn test_parent_locator_api_surface() {
+    use vhdx_rs::section::{KeyValueEntry, LocatorHeader, ParentLocator};
+
+    fn utf16_bytes(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
+    }
+
+    let key = "absolute_win32_path";
+    let value = r"C:\disks\parent.vhdx";
+    let key_data = utf16_bytes(key);
+    let value_data = utf16_bytes(value);
+
+    let mut kv_region = Vec::new();
+    let k_off = kv_region.len() as u32;
+    kv_region.extend_from_slice(&key_data);
+    let v_off = kv_region.len() as u32;
+    kv_region.extend_from_slice(&value_data);
+
+    let mut buf = vec![0u8; 32];
+    buf[18..20].copy_from_slice(&(1u16).to_le_bytes());
+    buf[20..24].copy_from_slice(&k_off.to_le_bytes());
+    buf[24..28].copy_from_slice(&v_off.to_le_bytes());
+    buf[28..30].copy_from_slice(&(key_data.len() as u16).to_le_bytes());
+    buf[30..32].copy_from_slice(&(value_data.len() as u16).to_le_bytes());
+    buf.extend_from_slice(&kv_region);
+
+    let locator = ParentLocator::new(&buf).expect("ParentLocator should parse");
+
+    // header() -> LocatorHeader
+    let _header: LocatorHeader<'_> = locator.header();
+    assert_eq!(locator.header().key_value_count, 1);
+
+    // entry(0) -> Some(KeyValueEntry)
+    let e0: Option<KeyValueEntry<'_>> = locator.entry(0);
+    assert!(e0.is_some());
+    assert_eq!(e0.unwrap().key(&kv_region), Some(key.to_string()));
+
+    // entry 超界 -> None
+    assert!(locator.entry(1).is_none());
+    assert!(locator.entry(999).is_none());
+
+    // entries() -> Vec<KeyValueEntry>
+    let entries: Vec<KeyValueEntry<'_>> = locator.entries();
+    assert_eq!(entries.len(), 1);
+
+    // key_value_data() -> &[u8]
+    let kvd: &[u8] = locator.key_value_data();
+    assert!(!kvd.is_empty());
+
+    // raw() 返回完整原始数据
+    assert_eq!(locator.raw().len(), buf.len());
+
+    // resolve_parent_path() -> Some(PathBuf)
+    let resolved = locator.resolve_parent_path();
+    assert_eq!(resolved, Some(std::path::PathBuf::from(value)));
+}
+
+/// 测试 ParentLocator 空 entries 和 key_value_data 边界情况。
+#[test]
+fn test_parent_locator_empty_entries_and_data() {
+    use vhdx_rs::section::ParentLocator;
+
+    let mut buf = vec![0u8; 20];
+    buf[18..20].copy_from_slice(&0u16.to_le_bytes());
+
+    let locator = ParentLocator::new(&buf).expect("ParentLocator with 0 entries should parse");
+
+    assert_eq!(locator.header().key_value_count, 0);
+    assert!(locator.entries().is_empty());
+    assert!(locator.entry(0).is_none());
+    assert!(locator.key_value_data().is_empty());
+    assert!(locator.resolve_parent_path().is_none());
+}
+
+/// 测试 ParentLocator/LocatorHeader/KeyValueEntry 可通过 section 模块路径导入。
+#[test]
+fn test_t9_section_module_import_paths() {
+    use vhdx_rs::section::{KeyValueEntry, ParentLocator};
+
+    let mut buf = vec![0u8; 20];
+    buf[18..20].copy_from_slice(&0u16.to_le_bytes());
+    let locator = ParentLocator::new(&buf).expect("ParentLocator should parse");
+
+    let header = locator.header();
+    assert_eq!(header.key_value_count, 0);
+    let _raw: &[u8] = header.raw();
+
+    let kv = KeyValueEntry {
+        key_offset: 0,
+        value_offset: 0,
+        key_length: 0,
+        value_length: 0,
+        raw: &[0u8; 12],
+    };
+    assert_eq!(kv.key_offset, 0);
 }

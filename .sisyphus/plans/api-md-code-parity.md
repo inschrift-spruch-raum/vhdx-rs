@@ -30,6 +30,11 @@
 - 风险分层：先做表面 API 对齐（导出/可见性/命名/签名），后做高风险语义断点（open/create 行为策略）。
 - 强制每个断点做可执行验收，避免“接口对齐但语义漂移”。
 
+### Remediation Trigger（本次修订触发）
+- `issues.md` 仍有未解决项，且出现“已完成勾选但残差仍在”的闭环缺口。
+- 已确认本轮策略：**强制实施 `Sections<'a>` 生命周期模型重构**，不再延期。
+- `docs/plan/API.md` 继续作为唯一代码对齐目标；`docs/API.md` 在代码对齐后执行同步收口。
+
 ## Work Objectives
 ### Core Objective
 让 `vhdx-rs` 的实现代码与 `docs/plan/API.md` 的**库 API 部分**严格一致，并通过自动化验证证明一致性。
@@ -61,6 +66,10 @@
 - Test decision: tests-after + Rust 原生 `cargo test`。
 - QA policy: 每个任务含可执行场景（happy + failure）。
 - Evidence: `.sisyphus/evidence/task-{N}-{slug}.{ext}`。
+- Evidence quality guardrail:
+  - 命令输出必须使用原始终端流留档（例如 `2>&1 | tee ...`），禁止“重建摘要”替代原始输出。
+  - `cargo check` 证据文件最小 500B；`cargo test` 证据文件最小 2KB；低于阈值即判失败。
+  - 任务触及 `src/lib.rs` / `src/file.rs` 时，`cargo build -p vhdx-tool` 为阻断门。
 
 ## Execution Strategy
 ### Parallel Execution Waves
@@ -71,6 +80,8 @@ Wave 1: 导出/命名/可见性基础对齐（T1,T2,T4,T6,T7）
 Wave 2: File/IO/BAT/Log 的签名与行为对齐（T3,T5,T8,T9）  
 Wave 3: 缺失核心能力补齐（T13,T14）  
 Wave 4: API smoke + 测试补齐 + 最小 CLI 联动修复（T10,T11,T12）
+Wave 5: 残差实锚核对 + 生命周期重构 + 公开字段形态对齐（T15,T16,T17）
+Wave 6: 命名空间/文档同步 + 机械验收与证据重建（T18,T19,T20）
 
 ### Dependency Matrix (full, all tasks)
 - T1 blocks: T10
@@ -87,18 +98,26 @@ Wave 4: API smoke + 测试补齐 + 最小 CLI 联动修复（T10,T11,T12）
 - T12 blocked by: T10,T11
 - T13 blocked by: T3; blocks: T14,T10
 - T14 blocked by: T13; blocks: T10,T11
+- T15 blocked by: T12; blocks: T16,T17,T18,T19,T20
+- T16 blocked by: T15; blocks: T17,T19,T20
+- T17 blocked by: T16; blocks: T19,T20
+- T18 blocked by: T15; blocks: T20
+- T19 blocked by: T16,T17; blocks: T20
+- T20 blocked by: T18,T19
 
 ### Agent Dispatch Summary (wave → task count → categories)
 - Wave 1 → 5 tasks → `quick`/`unspecified-low`
 - Wave 2 → 4 tasks → `unspecified-high`/`deep`
 - Wave 3 → 2 tasks → `unspecified-high`/`deep`
 - Wave 4 → 3 tasks → `unspecified-high`
+- Wave 5 → 3 tasks → `deep`/`unspecified-high`
+- Wave 6 → 3 tasks → `unspecified-high`
 
 ## TODOs
 > Implementation + Test = ONE task. Never separate.
 > EVERY task MUST have: Agent Profile + Parallelization + QA Scenarios.
 
-- [ ] 1. Root 导出面对齐（lib.rs）
+- [x] 1. Root 导出面对齐（lib.rs）
 
   **What to do**: 在 `src/lib.rs` 对齐 `docs/plan/API.md` 的 root 导出：补齐 `SectionsConfig`、`crc32c_with_zero_field`、常量与 GUID 命名空间可访问路径；确保 `section` 命名空间与 root 导出共存且不冲突。
   **Must NOT do**: 不改业务逻辑；不引入 API.md 未声明新能力。
@@ -136,7 +155,7 @@ Wave 4: API smoke + 测试补齐 + 最小 CLI 联动修复（T10,T11,T12）
 
   **Commit**: YES | Message: `refactor(api): align root re-exports with API plan` | Files: `src/lib.rs`
 
-- [ ] 2. File 公共方法可见性与签名补齐
+- [x] 2. File 公共方法可见性与签名补齐
 
   **What to do**: 在 `src/file.rs` 为 API.md 明示项补齐/公开 `File::read`、`File::write`、`File::flush` 与相关 getter 可见性；保持底层 `*_raw` 内部路径稳定。
   **Must NOT do**: 不改变 IO 语义（仅公开包装与签名对齐），不新增文档外方法。
@@ -174,7 +193,7 @@ Wave 4: API smoke + 测试补齐 + 最小 CLI 联动修复（T10,T11,T12）
 
   **Commit**: YES | Message: `refactor(api): expose File public io methods per plan` | Files: `src/file.rs`, `tests/integration_test.rs`
 
-- [ ] 3. OpenOptions/CreateOptions API 对齐（仅 API.md 明示项）
+- [x] 3. OpenOptions/CreateOptions API 对齐（仅 API.md 明示项）
 
   **What to do**: 对齐 `OpenOptions`、`CreateOptions` 的公开链式方法与参数契约（包含 API.md 明示的 `strict`/`log_replay` 及相关参数项）；保证 API.md 示例可编译。
   **Must NOT do**: 不加入 API.md 未声明方法。
@@ -212,7 +231,7 @@ Wave 4: API smoke + 测试补齐 + 最小 CLI 联动修复（T10,T11,T12）
 
   **Commit**: YES | Message: `refactor(api): align open/create options surface with plan` | Files: `src/file.rs`, `tests/integration_test.rs`
 
-- [ ] 4. IO/Sector/PayloadBlock 可见性与命名对齐
+- [x] 4. IO/Sector/PayloadBlock 可见性与命名对齐
 
   **What to do**: 在 `src/io_module.rs` 对齐 `IO::read_sectors/write_sectors` 可见性、`Sector::block_idx/global_sector/block_sector_idx` 与字段命名，确保 API.md 调用方式成立。
   **Must NOT do**: 不重写块映射算法；仅做接口与轻量封装对齐。
@@ -250,7 +269,7 @@ Wave 4: API smoke + 测试补齐 + 最小 CLI 联动修复（T10,T11,T12）
 
   **Commit**: YES | Message: `refactor(api): align io-sector public surface` | Files: `src/io_module.rs`, `tests/integration_test.rs`
 
-- [ ] 5. BAT entries 迭代器签名对齐
+- [x] 5. BAT entries 迭代器签名对齐
 
   **What to do**: 在 `src/sections/bat.rs` 将 `Bat::entries()` 对齐为 API.md 目标返回签名 `Vec<BatEntry>`，并同步修复调用侧；如内部需要保留迭代器，仅作为内部实现细节。
   **Must NOT do**: 不改变 BAT 解析语义与 state 计算逻辑。
@@ -288,7 +307,7 @@ Wave 4: API smoke + 测试补齐 + 最小 CLI 联动修复（T10,T11,T12）
 
   **Commit**: YES | Message: `refactor(api): align BAT iterator surface with plan` | Files: `src/sections/bat.rs`, `tests/integration_test.rs`
 
-- [ ] 6. LogEntry 命名与导出对齐
+- [x] 6. LogEntry 命名与导出对齐
 
   **What to do**: 将 `Entry`（log section）对齐为 `LogEntry`（可通过重命名或 type alias），并保证导出路径符合 API.md。
   **Must NOT do**: 不改变 log descriptor/data 解析语义。
@@ -326,7 +345,7 @@ Wave 4: API smoke + 测试补齐 + 最小 CLI 联动修复（T10,T11,T12）
 
   **Commit**: YES | Message: `refactor(api): align log entry naming to API plan` | Files: `src/sections/log.rs`, `src/sections.rs`, `src/lib.rs`
 
-- [ ] 7. 常量与 GUID 子命名空间路径对齐
+- [x] 7. 常量与 GUID 子命名空间路径对齐
 
   **What to do**: 对齐 `KiB/MiB/...` 与 `region_guids`、`metadata_guids` 的可访问路径，使其与 API.md 描述一致。
   **Must NOT do**: 不改常量值本身。
@@ -364,7 +383,7 @@ Wave 4: API smoke + 测试补齐 + 最小 CLI 联动修复（T10,T11,T12）
 
   **Commit**: YES | Message: `refactor(api): align constant namespace exports` | Files: `src/lib.rs`, `src/common/mod.rs`
 
-- [ ] 8. Sections/子结构签名与可见性结构对齐（高风险）
+- [x] 8. Sections/子结构签名与可见性结构对齐（高风险）
 
   **What to do**: 对 `Sections/Header/Bat/Metadata/Log` 及相关结构体按 API.md 目标进行签名与可见性收敛（含必要生命周期/字段可见性模型），确保外部可见 API 一致。
   **Must NOT do**: 不改变已验证的底层解析逻辑输出。
@@ -402,7 +421,7 @@ Wave 4: API smoke + 测试补齐 + 最小 CLI 联动修复（T10,T11,T12）
 
   **Commit**: YES | Message: `refactor(api): align section signatures with API plan` | Files: `src/sections.rs`, `src/sections/*.rs`
 
-- [ ] 9. ParentLocator/KeyValueEntry 等细节签名收口
+- [x] 9. ParentLocator/KeyValueEntry 等细节签名收口
 
   **What to do**: 对 `ParentLocator`、`LocatorHeader`、`KeyValueEntry` 等细节方法返回签名进行 API.md 级别收口（含 `raw()` 形态差异）。
   **Must NOT do**: 不扩展 parent chain 新功能。
@@ -440,7 +459,7 @@ Wave 4: API smoke + 测试补齐 + 最小 CLI 联动修复（T10,T11,T12）
 
   **Commit**: YES | Message: `refactor(api): align parent locator signature details` | Files: `src/sections/metadata.rs`, `tests/integration_test.rs`
 
-- [ ] 13. 补齐 validation 模块与公开校验类型
+- [x] 13. 补齐 validation 模块与公开校验类型
 
   **What to do**: 按 API.md 明示项新增 `validation` 模块，提供 `SpecValidator`、`ValidationIssue` 的公开定义与最小可用实现，并在 `src/lib.rs` 完成导出。
   **Must NOT do**: 不扩展为 API.md 未声明的额外校验能力；不引入新依赖。
@@ -478,7 +497,7 @@ Wave 4: API smoke + 测试补齐 + 最小 CLI 联动修复（T10,T11,T12）
 
   **Commit**: YES | Message: `feat(api): add validation module per API plan` | Files: `src/validation.rs`, `src/lib.rs`, `tests/integration_test.rs`
 
-- [ ] 14. 补齐 LogReplayPolicy / ParentChainInfo / File::validator
+- [x] 14. 补齐 LogReplayPolicy / ParentChainInfo / File::validator
 
   **What to do**: 按 API.md 明示项在 `src/file.rs` 新增并公开 `LogReplayPolicy`、`ParentChainInfo`，并补齐 `File::validator()` 返回路径（与 T13 对接）。
   **Must NOT do**: 不改变现有日志回放核心语义（除 API.md 明示策略要求）；不引入文档外策略枚举值。
@@ -516,7 +535,7 @@ Wave 4: API smoke + 测试补齐 + 最小 CLI 联动修复（T10,T11,T12）
 
   **Commit**: YES | Message: `feat(api): add replay policy parent chain info and file validator` | Files: `src/file.rs`, `src/lib.rs`, `tests/integration_test.rs`
 
-- [ ] 10. API Surface Smoke Test（按 API.md 编译验收）
+- [x] 10. API Surface Smoke Test（按 API.md 编译验收）
 
   **What to do**: 新增 API 面 smoke 测试文件，覆盖 API.md 中的导入与最小调用路径（不做重业务断言，侧重“可导入+可调用”）。
   **Must NOT do**: 不写与 API.md 无关的扩展测试。
@@ -554,7 +573,7 @@ Wave 4: API smoke + 测试补齐 + 最小 CLI 联动修复（T10,T11,T12）
 
   **Commit**: YES | Message: `test(api): add API.md surface smoke coverage` | Files: `tests/api_surface_smoke.rs`
 
-- [ ] 11. 回归与最小 CLI 联动修复
+- [x] 11. 回归与最小 CLI 联动修复
 
   **What to do**: 运行 workspace 回归；若库 API 调整导致 CLI 编译失败，仅做最小必要修复（不扩展 CLI 功能）。
   **Must NOT do**: 不新增 CLI 文档外参数/子命令。
@@ -592,7 +611,7 @@ Wave 4: API smoke + 测试补齐 + 最小 CLI 联动修复（T10,T11,T12）
 
   **Commit**: YES | Message: `fix(api): apply minimal cli fallout fixes after api alignment` | Files: `vhdx-cli/src/**/*.rs` (if needed)
 
-- [ ] 12. 最终质量闸门（fmt/clippy/test + 证据归档）
+- [x] 12. 最终质量闸门（fmt/clippy/test + 证据归档）
 
   **What to do**: 执行最终三件套验证并归档证据索引，确保计划内全部验收项有结果文件。
   **Must NOT do**: 不在此任务引入额外代码修改（除修复验证失败）。
@@ -631,15 +650,247 @@ Wave 4: API smoke + 测试补齐 + 最小 CLI 联动修复（T10,T11,T12）
 
   **Commit**: YES | Message: `chore(api): finalize verification evidence and quality gates` | Files: `.sisyphus/evidence/*` (and minimal fixes if required)
 
+- [ ] 15. 残差实锚核对与范围收敛（issues.md 去伪存真）
+
+  **What to do**: 逐条核对 `.sisyphus/notepads/api-md-code-parity/issues.md` 条目与当前代码/`docs/plan/API.md`，将“已解决或误报项”剔除，仅保留真实未解差异并映射到 T16-T20。
+  **Must NOT do**: 不直接实施代码修复；不修改 `docs/plan/API.md`；不在本任务提前勾选后续任务完成。
+
+  **Recommended Agent Profile**:
+  - Category: `deep` - Reason: 需要跨 notepad/plan/spec/code 的一致性判定。
+  - Skills: `[]` - 无。
+  - Omitted: `quick` - 判定错误会污染后续全部任务。
+
+  **Parallelization**: Can Parallel: NO | Wave 5 | Blocks: T16,T17,T18,T19,T20 | Blocked By: T12
+
+  **References**:
+  - Pattern: `.sisyphus/notepads/api-md-code-parity/issues.md`
+  - API/Type: `docs/plan/API.md`
+  - Test: `tests/api_surface_smoke.rs`
+
+  **Acceptance Criteria**:
+  - [ ] 形成“残差清单”并标记每项状态：真实未解 / 已解决 / 误报
+  - [ ] 真实未解项全部绑定到 T16-T20（不留无归属差异）
+
+  **QA Scenarios**:
+  ```
+  Scenario: [Happy path - residual triage complete]
+    Tool: Bash
+    Steps: 依据残差清单执行 `cargo check -p vhdx-rs` 与 smoke 导入核验
+    Expected: 清单中的“已解决/误报”可被代码现状证明
+    Evidence: .sisyphus/evidence/task-15-residual-triage.txt
+
+  Scenario: [Failure/edge case - unresolved item without owner]
+    Tool: Bash
+    Steps: 检查是否存在未绑定到 T16-T20 的真实未解项
+    Expected: 若存在孤立未解项则任务失败并补齐绑定
+    Evidence: .sisyphus/evidence/task-15-residual-triage-error.txt
+  ```
+
+  **Commit**: NO | Message: `docs(plan): triage unresolved issues for remediation wave` | Files: `.sisyphus/plans/api-md-code-parity.md`, `.sisyphus/notepads/api-md-code-parity/issues.md`
+
+- [ ] 16. `Sections<'a>` 生命周期模型强制重构（结构核心）
+
+  **What to do**: 按 `docs/plan/API.md` 将 `Sections` 与相关 section 核心类型重构为生命周期借用模型（`<'a>`），消除 owned `RefCell<Option<T>>` 模式导致的形态偏差。
+  **Must NOT do**: 不改变 VHDX 解析业务语义；不引入 API.md 未声明新能力；不扩大到 CLI 功能层。
+
+  **Recommended Agent Profile**:
+  - Category: `deep` - Reason: 高风险结构改造，涉及借用模型与广泛调用面。
+  - Skills: `[]` - 无。
+  - Omitted: `unspecified-low` - 复杂度超出低强度执行范围。
+
+  **Parallelization**: Can Parallel: NO | Wave 5 | Blocks: T17,T19,T20 | Blocked By: T15
+
+  **References**:
+  - Pattern: `src/sections.rs`, `src/sections/header.rs`, `src/sections/bat.rs`, `src/sections/metadata.rs`, `src/sections/log.rs`
+  - API/Type: `docs/plan/API.md`（`Sections<'a>` 与 section 类型树）
+  - Test: `tests/integration_test.rs`, `tests/api_surface_smoke.rs`
+
+  **Acceptance Criteria**:
+  - [ ] `Sections` 与计划指定的 section 关键类型均具备 API.md 目标生命周期外形
+  - [ ] `cargo test -p vhdx-rs` 通过，且无新增借用/生命周期编译错误
+  - [ ] `cargo build -p vhdx-tool` 通过（阻断门）
+
+  **QA Scenarios**:
+  ```
+  Scenario: [Happy path - lifetime model compiles]
+    Tool: Bash
+    Steps: 运行 `cargo test -p vhdx-rs` 与 `cargo test -p vhdx-rs --test api_surface_smoke`
+    Expected: 生命周期模型相关 API 编译通过，测试通过
+    Evidence: .sisyphus/evidence/task-16-sections-lifetime.txt
+
+  Scenario: [Failure/edge case - borrow conflicts]
+    Tool: Bash
+    Steps: 执行 `cargo check -p vhdx-rs` 捕获 E0499/E0502/E0597 类借用错误
+    Expected: 无借用冲突；若出现则任务失败并修复
+    Evidence: .sisyphus/evidence/task-16-sections-lifetime-error.txt
+  ```
+
+  **Commit**: YES | Message: `refactor(api): enforce sections lifetime model per plan` | Files: `src/sections*.rs`, `tests/*`
+
+- [ ] 17. 公开字段形态与签名精对齐（RegionTable / FileParameters 等）
+
+  **What to do**: 按 `docs/plan/API.md` 对齐公开字段形态（含 `RegionTable`、`FileParameters` 及关联结构），移除“仅方法暴露但计划要求公开字段”的差异。
+  **Must NOT do**: 不以新增临时别名规避差异；不引入双轨 API（字段+不必要旧方法长期并存）。
+
+  **Recommended Agent Profile**:
+  - Category: `unspecified-high` - Reason: 公共 API 形态改造，影响外部调用契约。
+  - Skills: `[]` - 无。
+  - Omitted: `quick` - 非单点修补。
+
+  **Parallelization**: Can Parallel: NO | Wave 5 | Blocks: T19,T20 | Blocked By: T16
+
+  **References**:
+  - Pattern: `src/sections/header.rs`, `src/sections/metadata.rs`, `src/sections/log.rs`
+  - API/Type: `docs/plan/API.md`（RegionTable/FileParameters 等定义段）
+  - Test: `tests/api_surface_smoke.rs`
+
+  **Acceptance Criteria**:
+  - [ ] 目标结构在公开字段/签名层面与 `docs/plan/API.md` 一致
+  - [ ] `cargo test -p vhdx-rs --test api_surface_smoke` 通过
+  - [ ] `cargo build -p vhdx-tool` 通过（阻断门）
+
+  **QA Scenarios**:
+  ```
+  Scenario: [Happy path - field-shape parity]
+    Tool: Bash
+    Steps: 运行 smoke 测试并覆盖字段访问路径
+    Expected: 字段访问与签名调用全部可编译并通过
+    Evidence: .sisyphus/evidence/task-17-public-shape.txt
+
+  Scenario: [Failure/edge case - accessor-only residue]
+    Tool: Bash
+    Steps: 对照 API.md 检查仍仅方法可访问的目标结构
+    Expected: 不存在计划要求字段但实现仅方法暴露的残差
+    Evidence: .sisyphus/evidence/task-17-public-shape-error.txt
+  ```
+
+  **Commit**: YES | Message: `refactor(api): align public field shapes with plan` | Files: `src/sections/**/*.rs`, `tests/*`
+
+- [ ] 18. `section::` 命名空间与导出布局对齐
+
+  **What to do**: 在 `src/lib.rs` 建立并对齐 `section::` 命名空间导出（与 root 导出共存策略按计划定义执行），确保 `docs/plan/API.md` 列出的模块路径可导入。
+  **Must NOT do**: 不破坏现有已使用路径的最小兼容性；不引入计划外命名空间。
+
+  **Recommended Agent Profile**:
+  - Category: `unspecified-high` - Reason: 公共导出面变更，影响外部导入路径。
+  - Skills: `[]` - 无。
+  - Omitted: `deep` - 主要是导出布局与兼容策略收敛。
+
+  **Parallelization**: Can Parallel: NO | Wave 6 | Blocks: T20 | Blocked By: T15
+
+  **References**:
+  - Pattern: `src/lib.rs`
+  - API/Type: `docs/plan/API.md`（模块树 section 段）
+  - Test: `tests/api_surface_smoke.rs`
+
+  **Acceptance Criteria**:
+  - [ ] `section::` 路径按计划可导入
+  - [ ] 根路径与 `section::` 路径冲突为零（无 E0252/E0255）
+
+  **QA Scenarios**:
+  ```
+  Scenario: [Happy path - namespace imports compile]
+    Tool: Bash
+    Steps: 运行 smoke 导入矩阵并执行 `cargo check -p vhdx-rs`
+    Expected: `section::` 与 root 导入同时可用且无冲突
+    Evidence: .sisyphus/evidence/task-18-section-namespace.txt
+
+  Scenario: [Failure/edge case - export conflicts]
+    Tool: Bash
+    Steps: 执行 `cargo check -p vhdx-rs` 捕获导出重名冲突
+    Expected: 无导出冲突；若冲突则任务失败
+    Evidence: .sisyphus/evidence/task-18-section-namespace-error.txt
+  ```
+
+  **Commit**: YES | Message: `refactor(api): align section namespace exports` | Files: `src/lib.rs`, `tests/api_surface_smoke.rs`
+
+- [ ] 19. `docs/API.md` 与 `docs/plan/API.md` 同步收口（代码先行后文档）
+
+  **What to do**: 在代码对齐完成后，将 `docs/API.md` 与 `docs/plan/API.md` 对齐为一致口径，消除双文档冲突（仅反映既有实现，不新增能力）。
+  **Must NOT do**: 不用改文档替代代码修复；不在代码未对齐前先改文档“掩盖差异”。
+
+  **Recommended Agent Profile**:
+  - Category: `writing` - Reason: 文档一致性收敛与可审计描述。
+  - Skills: `[]` - 无。
+  - Omitted: `quick` - 需逐节比对与一致性校验。
+
+  **Parallelization**: Can Parallel: NO | Wave 6 | Blocks: T20 | Blocked By: T16,T17
+
+  **References**:
+  - Pattern: `docs/API.md`, `docs/plan/API.md`
+  - API/Type: `src/lib.rs` 实际导出面
+  - Test: `tests/api_surface_smoke.rs`
+
+  **Acceptance Criteria**:
+  - [ ] 两份 API 文档不存在相互冲突条目
+  - [ ] 文档描述与实现导出面一致（以 smoke 导入矩阵为准）
+
+  **QA Scenarios**:
+  ```
+  Scenario: [Happy path - docs parity]
+    Tool: Bash
+    Steps: 以 smoke 导入矩阵和 `cargo doc -p vhdx-rs --no-deps` 对照文档
+    Expected: 文档声明与导出面一致
+    Evidence: .sisyphus/evidence/task-19-docs-sync.txt
+
+  Scenario: [Failure/edge case - doc contradiction remains]
+    Tool: Bash
+    Steps: 抽查关键类型（Sections/RegionTable/File/IO）在两份文档中的签名与路径
+    Expected: 无冲突；若冲突则任务失败
+    Evidence: .sisyphus/evidence/task-19-docs-sync-error.txt
+  ```
+
+  **Commit**: YES | Message: `docs(api): reconcile API docs after code parity` | Files: `docs/API.md`, `docs/plan/API.md`
+
+- [ ] 20. 重跑终极机械闸门与原始证据重建（替代重建摘要）
+
+  **What to do**: 按新版对齐结果重跑机械闸门与审计闸门，使用原始终端输出重建 `.sisyphus/evidence`，替换“重建摘要证据”。
+  **Must NOT do**: 不提交空证据或摘要证据；不跳过失败场景证据。
+
+  **Recommended Agent Profile**:
+  - Category: `unspecified-high` - Reason: 全局验收与证据可信度收口。
+  - Skills: `[]` - 无。
+  - Omitted: `quick` - 包含多命令链与审计一致性复核。
+
+  **Parallelization**: Can Parallel: NO | Wave 6 | Blocks: none | Blocked By: T18,T19
+
+  **References**:
+  - Pattern: `.sisyphus/evidence/`
+  - API/Type: `docs/plan/API.md`
+  - Test: `cargo fmt --check`, `cargo clippy --workspace`, `cargo test --workspace`, `cargo build -p vhdx-tool`, `cargo test -p vhdx-rs --test api_surface_smoke`
+
+  **Acceptance Criteria**:
+  - [ ] 机械闸门全绿：fmt/clippy/test/build/smoke 全通过
+  - [ ] 任务与最终波证据均为原始终端输出（非重建摘要）
+  - [ ] `.sisyphus/evidence/` 重新建立并含 T15-T20 与 F1-F4 证据
+
+  **QA Scenarios**:
+  ```
+  Scenario: [Happy path - full gates with raw evidence]
+    Tool: Bash
+    Steps: 执行全套闸门命令并将原始输出写入对应 evidence 文件
+    Expected: 命令全通过，证据文件满足大小阈值与原始输出要求
+    Evidence: .sisyphus/evidence/task-20-final-rerun.txt
+
+  Scenario: [Failure/edge case - evidence quality violation]
+    Tool: Bash
+    Steps: 校验证据文件大小和内容是否为原始输出
+    Expected: 任一文件不达标即任务失败并重跑
+    Evidence: .sisyphus/evidence/task-20-final-rerun-error.txt
+  ```
+
+  **Commit**: YES | Message: `chore(api): rerun gates and rebuild raw evidence` | Files: `.sisyphus/evidence/*`
+
 ## Final Verification Wave (MANDATORY — after ALL implementation tasks)
 > 4 review agents run in PARALLEL. ALL must APPROVE. Present consolidated results to user and get explicit "okay" before completing.
 > **Do NOT auto-proceed after verification. Wait for user's explicit approval before marking work complete.**
 > **Never mark F1-F4 as checked before getting user's okay.** Rejection or user feedback -> fix -> re-run -> present again -> wait for okay.
+> **Verifier independence**: F1-F4 review agents MUST NOT be the same agents that implemented T15-T20.
 - [ ] F1. Plan Compliance Audit — oracle
 
-  **What to do**: 逐条比对 T1-T14 产物与本计划要求，审计是否存在遗漏任务、跳步执行或验收伪通过。
+  **What to do**: 逐条比对 T1-T20 产物与本计划要求，审计是否存在遗漏任务、跳步执行或验收伪通过。
   **Acceptance Criteria**:
-  - [ ] 覆盖 T1-T14 全任务审计结论
+  - [ ] 覆盖 T1-T20 全任务审计结论
   - [ ] 标注每条不符合项与对应修复任务
 
   **QA Scenarios**:
@@ -725,7 +976,7 @@ Wave 4: API smoke + 测试补齐 + 最小 CLI 联动修复（T10,T11,T12）
   ```
 
 ## Commit Strategy
-- 按任务簇提交（Wave 1 / Wave 2 / Wave 3 / Wave 4），每次提交前跑对应最小回归。
+- 按任务簇提交（Wave 1 / Wave 2 / Wave 3 / Wave 4 / Wave 5 / Wave 6），每次提交前跑对应最小回归。
 - 提交消息格式：`refactor(api): ...` / `test(api): ...` / `fix(api): ...`。
 
 ## Success Criteria

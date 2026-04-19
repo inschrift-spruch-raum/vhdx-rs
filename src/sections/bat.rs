@@ -83,10 +83,10 @@ impl Bat {
             .and_then(|i| self.entries.get(i).copied())
     }
 
-    /// 返回所有预解析的 BAT 条目切片
+    /// 返回所有预解析的 BAT 条目（拥有所有权的副本）
     #[must_use]
-    pub fn entries(&self) -> &[BatEntry] {
-        &self.entries
+    pub fn entries(&self) -> Vec<BatEntry> {
+        self.entries.clone()
     }
 
     /// 返回 BAT 中的条目总数
@@ -368,5 +368,76 @@ mod tests {
     fn test_calculate_payload_blocks() {
         let blocks = Bat::calculate_payload_blocks(10 * 1024 * MiB, 32 * 1024 * 1024);
         assert_eq!(blocks, 320);
+    }
+
+    /// 测试 entries() 返回 Vec<BatEntry>：验证长度、顺序和状态一致性
+    #[test]
+    fn test_entries_returns_vec_with_correct_content() {
+        // 构造 3 个 BAT 条目的原始数据
+        let mut data = vec![0u8; 3 * BAT_ENTRY_SIZE];
+        // 条目 0：FullyPresent，偏移 1 MB
+        let raw0 = (1u64 << 20) | 6u64;
+        data[0..8].copy_from_slice(&raw0.to_le_bytes());
+        // 条目 1：NotPresent（全零）
+        // 条目 2：Zero 状态，偏移 2 MB
+        let raw2 = (2u64 << 20) | 2u64;
+        data[16..24].copy_from_slice(&raw2.to_le_bytes());
+
+        let bat = Bat::new(data, 3).expect("BAT creation should succeed");
+        let entries = bat.entries();
+
+        // 返回类型为 Vec<BatEntry>，长度等于条目数
+        assert_eq!(entries.len(), 3, "entries() should return 3 entries");
+
+        // 验证条目 0 状态
+        assert!(matches!(
+            entries[0].state,
+            BatState::Payload(PayloadBlockState::FullyPresent)
+        ));
+        assert_eq!(entries[0].file_offset_mb, 1);
+
+        // 验证条目 1 状态为 NotPresent
+        assert!(matches!(
+            entries[1].state,
+            BatState::Payload(PayloadBlockState::NotPresent)
+        ));
+
+        // 验证条目 2 状态为 Zero
+        assert!(matches!(
+            entries[2].state,
+            BatState::Payload(PayloadBlockState::Zero)
+        ));
+        assert_eq!(entries[2].file_offset_mb, 2);
+    }
+
+    /// 测试空 BAT 的 entries() 不 panic 且返回空 Vec
+    #[test]
+    fn test_entries_empty_bat() {
+        let data = vec![0u8; 0];
+        let bat = Bat::new(data, 0).expect("Empty BAT creation should succeed");
+        let entries = bat.entries();
+        assert!(
+            entries.is_empty(),
+            "Empty BAT entries() should be empty Vec"
+        );
+    }
+
+    /// 测试 entries() 返回的是副本：修改返回值不影响原 BAT
+    #[test]
+    fn test_entries_returns_owned_copy() {
+        let mut data = vec![0u8; BAT_ENTRY_SIZE];
+        let raw = (1u64 << 20) | 6u64;
+        data[0..8].copy_from_slice(&raw.to_le_bytes());
+
+        let bat = Bat::new(data, 1).expect("BAT creation should succeed");
+        let mut entries = bat.entries();
+
+        // 修改返回的 Vec 不应影响原数据
+        entries.clear();
+        assert_eq!(
+            bat.entries().len(),
+            1,
+            "Original BAT should not be affected by mutation of returned Vec"
+        );
     }
 }

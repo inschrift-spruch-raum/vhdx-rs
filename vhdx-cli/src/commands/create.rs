@@ -39,13 +39,15 @@ pub fn cmd_create(
         std::process::exit(1);
     }
 
-    match File::create(path)
+    let mut builder = File::create(path)
         .size(size_bytes)
         .fixed(fixed)
-        .has_parent(has_parent)
-        .block_size(block_size_bytes)
-        .finish()
-    {
+        .block_size(block_size_bytes);
+    if let Some(parent_path) = parent {
+        builder = builder.parent_path(parent_path);
+    }
+
+    match builder.finish() {
         Ok(_) => {
             println!("Created VHDX file: {}", path.display());
             println!(

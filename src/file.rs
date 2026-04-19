@@ -3,8 +3,8 @@
 //! 本模块提供 VHDX 虚拟硬盘文件的顶层操作接口，包括：
 //! - **打开**（[`File::open`]）— 验证签名、解析头部、读取元数据、处理日志回放
 //! - **创建**（[`File::create`]）— 计算布局、写入所有结构、返回可操作的文件句柄
-//! - **读取**（[`File::read_raw`]）— 支持 Fixed 和 Dynamic 两种类型
-//! - **写入**（[`File::write_raw`]）— 支持 Fixed 直接写入和 Dynamic 块级写入
+//! - **读取**（[`File::read`]）— 支持 Fixed 和 Dynamic 两种类型
+//! - **写入**（[`File::write`]）— 支持 Fixed 直接写入和 Dynamic 块级写入
 //!
 //! # VHDX 文件类型（MS-VHDX §1.3）
 //!
@@ -33,7 +33,7 @@
 
 use std::fs::{File as StdFile, OpenOptions as StdOpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
@@ -84,12 +84,45 @@ pub struct File {
     has_pending_logs: bool,
 }
 
+/// 日志回放策略
+///
+/// 控制 `File::open(...).finish()` 在检测到未回放日志时的处理方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogReplayPolicy {
+    /// 若存在未回放日志则直接返回 `Error::LogReplayRequired`
+    Require,
+    /// 自动回放日志（只读打开时保持兼容行为，不执行磁盘写回）
+    Auto,
+    /// 只读打开时允许以内存方式回放（当前实现与只读不回放等价）
+    InMemoryOnReadOnly,
+    /// 只读打开且不回放日志
+    ///
+    /// 约束：仅允许结构读取（Header/Region/Metadata 等），
+    /// 不保证 payload 数据面的一致性读取。
+    ReadOnlyNoReplay,
+}
+
+/// 差分链校验结果
+///
+/// 包含当前子盘与解析出的父盘路径，以及父盘 GUID 一致性校验结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParentChainInfo {
+    /// 当前子盘路径
+    pub child: PathBuf,
+    /// 解析出的父盘路径
+    pub parent: PathBuf,
+    /// 是否匹配 parent_linkage / parent_linkage2
+    pub linkage_matched: bool,
+}
+
 impl File {
     /// 创建打开选项构建器，用于打开现有 VHDX 文件
     pub fn open(path: impl AsRef<Path>) -> OpenOptions {
         OpenOptions {
             path: path.as_ref().to_path_buf(),
             write: false,
+            strict: true,
+            log_replay: LogReplayPolicy::Auto,
         }
     }
 
@@ -101,7 +134,9 @@ impl File {
             fixed: false,
             has_parent: false,
             block_size: DEFAULT_BLOCK_SIZE,
-            logical_sector_size: LOGICAL_SECTOR_SIZE_512,
+            logical_sector_size: 4096,
+            physical_sector_size: 4096,
+            parent_path: None,
         }
     }
 
@@ -120,48 +155,46 @@ impl File {
         &self.inner
     }
 
+    /// 获取规范校验器（只读）
+    ///
+    /// 校验逻辑独立在 [`validation`](crate::validation) 模块中，
+    /// 避免与 File 的打开/创建职责耦合。
+    pub fn validator(&self) -> crate::validation::SpecValidator<'_> {
+        crate::validation::SpecValidator::new(self)
+    }
+
     /// 获取虚拟磁盘大小（字节）
-    pub(crate) const fn virtual_disk_size(&self) -> u64 {
+    pub const fn virtual_disk_size(&self) -> u64 {
         self.virtual_disk_size
     }
 
     /// 获取块大小（字节）
-    pub(crate) const fn block_size(&self) -> u32 {
+    pub const fn block_size(&self) -> u32 {
         self.block_size
     }
 
     /// 获取逻辑扇区大小（字节）
-    pub(crate) const fn logical_sector_size(&self) -> u32 {
+    pub const fn logical_sector_size(&self) -> u32 {
         self.logical_sector_size
     }
 
     /// 检查是否为 Fixed 类型
-    pub(crate) const fn is_fixed(&self) -> bool {
+    pub const fn is_fixed(&self) -> bool {
         self.is_fixed
     }
 
     /// 检查是否为差分磁盘
-    pub(crate) const fn has_parent(&self) -> bool {
+    pub const fn has_parent(&self) -> bool {
         self.has_parent
     }
 
     /// 检查是否存在未回放的日志条目
-    pub(crate) const fn has_pending_logs(&self) -> bool {
+    pub const fn has_pending_logs(&self) -> bool {
         self.has_pending_logs
     }
 
-    /// 内部使用的原始读取方法
-    ///
-    /// 对于 **Fixed** 类型：直接从文件的数据区域读取（跳过 1MB 头部）
-    /// 对于 **Dynamic** 类型：返回零填充（当前未实现按块读取）
-    ///
-    /// # 参数
-    /// - `offset` — 虚拟磁盘内的起始偏移量
-    /// - `buf` — 读取缓冲区
-    ///
-    /// # 返回值
-    /// 实际读取的字节数
-    pub(crate) fn read_raw(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
+    /// 内部读取实现（按虚拟偏移读取）
+    fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
         if offset >= self.virtual_disk_size {
             return Ok(0);
         }
@@ -189,6 +222,11 @@ impl File {
             }
             Ok(bytes_to_read)
         }
+    }
+
+    /// 内部使用的原始读取方法（公共 `read` 的底层实现）
+    pub(crate) fn read_raw(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
+        self.read(offset, buf)
     }
 
     /// 内部使用的原始写入方法（通过克隆文件句柄实现 &self 写入）
@@ -281,6 +319,13 @@ impl File {
     /// 6. 读取元数据，提取虚拟磁盘参数
     /// 7. 处理日志回放（如有未完成的日志条目）
     fn open_file(path: &Path, writable: bool) -> Result<Self> {
+        Self::open_file_with_options(path, writable, true, LogReplayPolicy::Auto)
+    }
+
+    /// 打开 VHDX 文件的核心实现（带策略选项）
+    fn open_file_with_options(
+        path: &Path, writable: bool, _strict: bool, log_replay: LogReplayPolicy,
+    ) -> Result<Self> {
         // 步骤 1：以共享模式打开文件
         let mut file = Self::open_file_with_share_mode(path, writable)?;
 
@@ -341,7 +386,7 @@ impl File {
 
         // 步骤 7：处理日志回放
         let has_pending_logs =
-            Self::handle_log_replay(&mut file, &sections, &current_header, writable)?;
+            Self::handle_log_replay(&mut file, &sections, &current_header, writable, log_replay)?;
 
         Ok(Self {
             inner: file,
@@ -450,37 +495,63 @@ impl File {
     fn handle_log_replay(
         file: &mut StdFile, sections: &Sections,
         current_header: &crate::sections::HeaderStructure<'_>, writable: bool,
+        policy: LogReplayPolicy,
     ) -> Result<bool> {
         // 检查日志 GUID 是否为空，非空表示存在日志条目
         if current_header.log_guid() != Guid::nil() {
             let log = sections.log()?;
             if (*log).is_replay_required() {
-                // 只读模式下标记存在未回放日志，不执行回放
-                if !writable {
-                    return Ok(true);
+                match policy {
+                    LogReplayPolicy::Require => return Err(Error::LogReplayRequired),
+                    LogReplayPolicy::Auto => {
+                        if !writable {
+                            return Ok(true);
+                        }
+                        Self::replay_log_and_clear_guid(file, current_header, &log)?;
+                    }
+                    LogReplayPolicy::InMemoryOnReadOnly => {
+                        if writable {
+                            Self::replay_log_and_clear_guid(file, current_header, &log)?;
+                        } else {
+                            return Ok(true);
+                        }
+                    }
+                    LogReplayPolicy::ReadOnlyNoReplay => {
+                        if writable {
+                            return Err(Error::InvalidParameter(
+                                "ReadOnlyNoReplay policy requires read-only open".to_string(),
+                            ));
+                        }
+                        return Ok(true);
+                    }
                 }
-                // 执行日志回放
-                (*log).replay(file)?;
-                file.sync_all()?;
-
-                // 创建新头部结构，清除日志 GUID（标记日志已处理）
-                let new_header = crate::section::HeaderStructure::create(
-                    current_header.sequence_number(),
-                    current_header.file_write_guid(),
-                    current_header.data_write_guid(),
-                    Guid::nil(), // 清除日志 GUID
-                    current_header.log_length(),
-                    current_header.log_offset(),
-                );
-                // 同时更新两个头部结构（Header 1 和 Header 2）
-                file.seek(SeekFrom::Start(64 * 1024))?;
-                file.write_all(&new_header)?;
-                file.seek(SeekFrom::Start(128 * 1024))?;
-                file.write_all(&new_header)?;
-                file.sync_all()?;
             }
         }
         Ok(false)
+    }
+
+    /// 执行日志回放并将头部日志 GUID 清零
+    fn replay_log_and_clear_guid(
+        file: &mut StdFile, current_header: &crate::sections::HeaderStructure<'_>,
+        log: &std::cell::Ref<'_, crate::sections::Log>,
+    ) -> Result<()> {
+        (*log).replay(file)?;
+        file.sync_all()?;
+
+        let new_header = crate::section::HeaderStructure::create(
+            current_header.sequence_number(),
+            current_header.file_write_guid(),
+            current_header.data_write_guid(),
+            Guid::nil(), // 清除日志 GUID
+            current_header.log_length(),
+            current_header.log_offset(),
+        );
+        file.seek(SeekFrom::Start(64 * 1024))?;
+        file.write_all(&new_header)?;
+        file.seek(SeekFrom::Start(128 * 1024))?;
+        file.write_all(&new_header)?;
+        file.sync_all()?;
+        Ok(())
     }
 
     /// 创建 VHDX 文件的核心实现
@@ -498,10 +569,15 @@ impl File {
     /// 10. 重新打开文件（通过 open_file 验证完整性）
     fn create_file(
         path: &Path, virtual_size: u64, fixed: bool, has_parent: bool, block_size: u32,
-        logical_sector_size: u32,
+        logical_sector_size: u32, physical_sector_size: u32,
     ) -> Result<Self> {
         // 步骤 1：验证创建参数
-        Self::validate_create_params(virtual_size, block_size, logical_sector_size)?;
+        Self::validate_create_params(
+            virtual_size,
+            block_size,
+            logical_sector_size,
+            physical_sector_size,
+        )?;
 
         // 确保文件不存在（防止意外覆盖）
         if path.exists() {
@@ -551,6 +627,7 @@ impl File {
             virtual_size,
             block_size,
             logical_sector_size,
+            physical_sector_size,
             fixed,
             has_parent,
             data_write_guid,
@@ -619,11 +696,18 @@ impl File {
     /// - 块大小必须是 2 的幂且在 [`MIN_BLOCK_SIZE`]..[`MAX_BLOCK_SIZE`] 范围内
     /// - 逻辑扇区大小必须为 512 或 4096
     fn validate_create_params(
-        virtual_size: u64, block_size: u32, logical_sector_size: u32,
+        virtual_size: u64, block_size: u32, logical_sector_size: u32, physical_sector_size: u32,
     ) -> Result<()> {
+        const MAX_VIRTUAL_SIZE_64_TIB: u64 = 64_u64 * 1024 * 1024 * 1024 * 1024;
+
         if virtual_size == 0 {
             return Err(Error::InvalidParameter(
                 "Virtual size cannot be zero".to_string(),
+            ));
+        }
+        if virtual_size > MAX_VIRTUAL_SIZE_64_TIB {
+            return Err(Error::InvalidParameter(
+                "Virtual size must be less than or equal to 64 TiB".to_string(),
             ));
         }
         if !block_size.is_power_of_two() || !(MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE).contains(&block_size)
@@ -635,6 +719,22 @@ impl File {
         if logical_sector_size != 512 && logical_sector_size != 4096 {
             return Err(Error::InvalidParameter(
                 "Logical sector size must be 512 or 4096".to_string(),
+            ));
+        }
+        if physical_sector_size != 512 && physical_sector_size != 4096 {
+            return Err(Error::InvalidParameter(
+                "Physical sector size must be 512 or 4096".to_string(),
+            ));
+        }
+        if physical_sector_size < logical_sector_size {
+            return Err(Error::InvalidParameter(
+                "Physical sector size must be greater than or equal to logical sector size"
+                    .to_string(),
+            ));
+        }
+        if !virtual_size.is_multiple_of(u64::from(logical_sector_size)) {
+            return Err(Error::InvalidParameter(
+                "Virtual size must be a multiple of logical sector size".to_string(),
             ));
         }
         Ok(())
@@ -729,6 +829,10 @@ pub struct OpenOptions {
     path: std::path::PathBuf,
     /// 是否以写入模式打开
     write: bool,
+    /// 是否启用严格模式
+    strict: bool,
+    /// 日志回放策略
+    log_replay: LogReplayPolicy,
 }
 
 impl OpenOptions {
@@ -738,9 +842,24 @@ impl OpenOptions {
         self
     }
 
+    /// 设置严格模式
+    ///
+    /// strict=true 时遇到 required 未知项应视为错误。
+    /// 当前版本仅保留该选项以对齐公开 API。
+    pub const fn strict(mut self, strict: bool) -> Self {
+        self.strict = strict;
+        self
+    }
+
+    /// 设置日志回放策略
+    pub const fn log_replay(mut self, policy: LogReplayPolicy) -> Self {
+        self.log_replay = policy;
+        self
+    }
+
     /// 完成选项配置并打开 VHDX 文件
     pub fn finish(self) -> Result<File> {
-        File::open_file(&self.path, self.write)
+        File::open_file_with_options(&self.path, self.write, self.strict, self.log_replay)
     }
 }
 
@@ -770,10 +889,14 @@ pub struct CreateOptions {
     fixed: bool,
     /// 是否为差分磁盘（有父磁盘引用）
     has_parent: bool,
+    /// 差分磁盘父路径
+    parent_path: Option<std::path::PathBuf>,
     /// 块大小（字节）
     block_size: u32,
     /// 逻辑扇区大小（512 或 4096）
     logical_sector_size: u32,
+    /// 物理扇区大小（512 或 4096）
+    physical_sector_size: u32,
 }
 
 impl CreateOptions {
@@ -789,15 +912,28 @@ impl CreateOptions {
         self
     }
 
-    /// 设置是否为差分磁盘（具有父磁盘引用）
-    pub const fn has_parent(mut self, has_parent: bool) -> Self {
-        self.has_parent = has_parent;
-        self
-    }
-
     /// 设置块大小（字节），默认 32MB，必须是 2 的幂且在合法范围内
     pub const fn block_size(mut self, block_size: u32) -> Self {
         self.block_size = block_size;
+        self
+    }
+
+    /// 设置逻辑扇区大小（字节）
+    pub const fn logical_sector_size(mut self, logical_sector_size: u32) -> Self {
+        self.logical_sector_size = logical_sector_size;
+        self
+    }
+
+    /// 设置物理扇区大小（字节）
+    pub const fn physical_sector_size(mut self, physical_sector_size: u32) -> Self {
+        self.physical_sector_size = physical_sector_size;
+        self
+    }
+
+    /// 设置父磁盘路径（设置后自动标记为差分磁盘）
+    pub fn parent_path(mut self, path: impl AsRef<Path>) -> Self {
+        self.parent_path = Some(path.as_ref().to_path_buf());
+        self.has_parent = true;
         self
     }
 
@@ -807,13 +943,24 @@ impl CreateOptions {
             .size
             .ok_or_else(|| Error::InvalidParameter("Virtual disk size is required".to_string()))?;
 
+        if let Some(parent_path) = &self.parent_path {
+            if !parent_path.exists() {
+                return Err(Error::ParentNotFound {
+                    path: parent_path.clone(),
+                });
+            }
+        }
+
+        let has_parent = self.has_parent || self.parent_path.is_some();
+
         File::create_file(
             &self.path,
             size,
             self.fixed,
-            self.has_parent,
+            has_parent,
             self.block_size,
             self.logical_sector_size,
+            self.physical_sector_size,
         )
     }
 }
@@ -825,8 +972,8 @@ impl CreateOptions {
 /// - 表项数组：每个条目包含 GUID、偏移、大小和标志位
 /// - 数据区域：按表项描述的顺序存储实际数据
 fn create_metadata(
-    virtual_size: u64, block_size: u32, logical_sector_size: u32, fixed: bool, has_parent: bool,
-    disk_id: Guid,
+    virtual_size: u64, block_size: u32, logical_sector_size: u32, physical_sector_size: u32,
+    fixed: bool, has_parent: bool, disk_id: Guid,
 ) -> Vec<u8> {
     use crate::common::metadata_guids;
 
@@ -914,8 +1061,8 @@ fn create_metadata(
     // 逻辑扇区大小
     data.extend_from_slice(&logical_sector_size.to_le_bytes());
 
-    // 物理扇区大小（使用与逻辑扇区大小相同的值）
-    data.extend_from_slice(&logical_sector_size.to_le_bytes());
+    // 物理扇区大小
+    data.extend_from_slice(&physical_sector_size.to_le_bytes());
 
     data
 }

@@ -13,9 +13,40 @@
 //! 包含一个固定 32 字节的表头和多个 32 字节的表项，
 //! 每个表项通过 GUID 标识元数据类型，并指向表后的变长数据。
 
+use std::path::PathBuf;
+
 use crate::common::constants::{METADATA_TABLE_SIZE, metadata_guids};
 use crate::error::{Error, Result};
 use crate::types::Guid;
+
+/// 从切片安全读取固定长度数组；长度不足时以 0 填充。
+fn read_array<const N: usize>(data: &[u8], start: usize) -> [u8; N] {
+    let mut out = [0u8; N];
+    if let Some(slice) = data.get(start..start + N) {
+        out.copy_from_slice(slice);
+    }
+    out
+}
+
+/// 从切片安全读取 `u16`（LE）；长度不足返回 0。
+fn read_u16(data: &[u8], start: usize) -> u16 {
+    u16::from_le_bytes(read_array::<2>(data, start))
+}
+
+/// 从切片安全读取 `u32`（LE）；长度不足返回 0。
+fn read_u32(data: &[u8], start: usize) -> u32 {
+    u32::from_le_bytes(read_array::<4>(data, start))
+}
+
+/// 从切片安全读取 `u64`（LE）；长度不足返回 0。
+fn read_u64(data: &[u8], start: usize) -> u64 {
+    u64::from_le_bytes(read_array::<8>(data, start))
+}
+
+/// 从切片安全读取 GUID；长度不足的字节按 0 填充。
+fn read_guid(data: &[u8], start: usize) -> Guid {
+    Guid::from_bytes(read_array::<16>(data, start))
+}
 
 /// VHDX 元数据区域（MS-VHDX §2.6）
 ///
@@ -120,32 +151,51 @@ impl<'a> MetadataTable<'a> {
 ///
 /// 固定 32 字节，包含签名 "metadata" 和表项数量。
 pub struct TableHeader<'a> {
-    data: &'a [u8],
+    /// 表签名（应为 "metadata"）
+    pub signature: [u8; 8],
+    /// 保留字段（2 字节）
+    pub reserved: [u8; 2],
+    /// 表项数量
+    pub entry_count: u16,
+    /// 保留字段（20 字节）
+    pub reserved2: [u8; 20],
+    /// 原始字节视图
+    pub raw: &'a [u8],
 }
 
 impl<'a> TableHeader<'a> {
     /// 从 32 字节数据创建表头部视图
     #[must_use]
-    pub const fn new(data: &'a [u8]) -> Self {
-        Self { data }
+    pub fn new(data: &'a [u8]) -> Self {
+        let signature = read_array::<8>(data, 0);
+        let reserved = read_array::<2>(data, 8);
+        let entry_count = read_u16(data, 10);
+        let reserved2 = read_array::<20>(data, 12);
+        Self {
+            signature,
+            reserved,
+            entry_count,
+            reserved2,
+            raw: data,
+        }
     }
 
     /// 返回表头部的原始字节数据
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
-        self.data
+        self.raw
     }
 
     /// 表签名 "metadata"（MS-VHDX §2.6.1.1）
     #[must_use]
-    pub fn signature(&self) -> &[u8] {
-        &self.data[0..8]
+    pub const fn signature(&self) -> &[u8; 8] {
+        &self.signature
     }
 
     /// 元数据表项数量（MS-VHDX §2.6.1.1）
     #[must_use]
-    pub fn entry_count(&self) -> u16 {
-        u16::from_le_bytes(self.data[10..12].try_into().unwrap())
+    pub const fn entry_count(&self) -> u16 {
+        self.entry_count
     }
 }
 
@@ -157,7 +207,18 @@ impl<'a> TableHeader<'a> {
 /// - Length（4 字节）— 数据长度
 /// - Flags（4 字节）— 属性标志位（IsUser / IsVirtualDisk / IsRequired）
 pub struct TableEntry<'a> {
-    data: &'a [u8],
+    /// 元数据项 GUID
+    pub item_id: Guid,
+    /// 数据偏移（相对于元数据区域起始）
+    pub offset: u32,
+    /// 数据长度（字节）
+    pub length: u32,
+    /// 原始标志位
+    pub flags: u32,
+    /// 保留字段
+    pub reserved: u32,
+    /// 原始字节视图
+    pub raw: &'a [u8],
 }
 
 impl<'a> TableEntry<'a> {
@@ -168,37 +229,44 @@ impl<'a> TableEntry<'a> {
         if data.len() != 32 {
             return Err(Error::InvalidMetadata("Entry must be 32 bytes".to_string()));
         }
-        Ok(Self { data })
+        Ok(Self {
+            item_id: read_guid(data, 0),
+            offset: read_u32(data, 16),
+            length: read_u32(data, 20),
+            flags: read_u32(data, 24),
+            reserved: read_u32(data, 28),
+            raw: data,
+        })
     }
 
     /// 返回表项的原始字节数据
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
-        self.data
+        self.raw
     }
 
     /// 元数据项的 GUID 标识符（MS-VHDX §2.6.1.2），用于查找特定元数据
     #[must_use]
-    pub fn item_id(&self) -> Guid {
-        Guid::from_bytes(self.data[0..16].try_into().unwrap())
+    pub const fn item_id(&self) -> Guid {
+        self.item_id
     }
 
     /// 元数据项数据在元数据区域中的偏移量（MS-VHDX §2.6.1.2）
     #[must_use]
-    pub fn offset(&self) -> u32 {
-        u32::from_le_bytes(self.data[16..20].try_into().unwrap())
+    pub const fn offset(&self) -> u32 {
+        self.offset
     }
 
     /// 元数据项数据的字节长度（MS-VHDX §2.6.1.2）
     #[must_use]
-    pub fn length(&self) -> u32 {
-        u32::from_le_bytes(self.data[20..24].try_into().unwrap())
+    pub const fn length(&self) -> u32 {
+        self.length
     }
 
     /// 元数据项的属性标志位（MS-VHDX §2.6.1.2）
     #[must_use]
     pub fn flags(&self) -> EntryFlags {
-        EntryFlags(u32::from_le_bytes(self.data[24..28].try_into().unwrap()))
+        EntryFlags(self.flags)
     }
 }
 
@@ -284,7 +352,7 @@ impl<'a> MetadataItems<'a> {
         if data.len() < 8 {
             return None;
         }
-        Some(u64::from_le_bytes(data[0..8].try_into().unwrap()))
+        Some(read_u64(data, 0))
     }
 
     /// 获取虚拟磁盘标识符（MS-VHDX §2.6.2.3）
@@ -296,7 +364,7 @@ impl<'a> MetadataItems<'a> {
         if data.len() < 16 {
             return None;
         }
-        Some(Guid::from_bytes(data[0..16].try_into().unwrap()))
+        Some(read_guid(data, 0))
     }
 
     /// 获取逻辑扇区大小（MS-VHDX §2.6.2.4）
@@ -308,7 +376,7 @@ impl<'a> MetadataItems<'a> {
         if data.len() < 4 {
             return None;
         }
-        Some(u32::from_le_bytes(data[0..4].try_into().unwrap()))
+        Some(read_u32(data, 0))
     }
 
     /// 获取物理扇区大小（MS-VHDX §2.6.2.5）
@@ -320,7 +388,7 @@ impl<'a> MetadataItems<'a> {
         if data.len() < 4 {
             return None;
         }
-        Some(u32::from_le_bytes(data[0..4].try_into().unwrap()))
+        Some(read_u32(data, 0))
     }
 
     /// 获取父磁盘定位器（MS-VHDX §2.6.2.6）
@@ -343,11 +411,11 @@ impl<'a> MetadataItems<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct FileParameters {
     /// 原始字节数据（8 字节）
-    raw_data: [u8; 8],
+    pub raw_data: [u8; 8],
     /// 块大小（字节），必须为 1MB 的幂次（1MB-256MB）
-    block_size: u32,
+    pub block_size: u32,
     /// 标志位（bit 0: LeaveBlockAllocated, bit 1: HasParent）
-    flags: u32,
+    pub flags: u32,
 }
 
 impl FileParameters {
@@ -360,8 +428,8 @@ impl FileParameters {
         raw_data.copy_from_slice(&data[..8]);
         Self {
             raw_data,
-            block_size: u32::from_le_bytes(data[0..4].try_into().unwrap()),
-            flags: u32::from_le_bytes(data[4..8].try_into().unwrap()),
+            block_size: read_u32(data, 0),
+            flags: read_u32(data, 4),
         }
     }
 
@@ -433,7 +501,7 @@ impl<'a> ParentLocator<'a> {
     ///
     /// 条目从偏移量 20 开始，每项固定 12 字节。
     #[must_use]
-    pub fn entry(&self, index: usize) -> Option<KeyValueEntry> {
+    pub fn entry(&self, index: usize) -> Option<KeyValueEntry<'_>> {
         let header = self.header();
         if index >= header.key_value_count() as usize {
             return None;
@@ -447,7 +515,7 @@ impl<'a> ParentLocator<'a> {
 
     /// 返回所有键值对条目（MS-VHDX §2.6.2.6.2）
     #[must_use]
-    pub fn entries(&self) -> Vec<KeyValueEntry> {
+    pub fn entries(&self) -> Vec<KeyValueEntry<'_>> {
         let count = self.header().key_value_count();
         (0..count).filter_map(|i| self.entry(i as usize)).collect()
     }
@@ -464,40 +532,73 @@ impl<'a> ParentLocator<'a> {
         }
         &self.data[entries_size..]
     }
+
+    /// 解析父盘路径（优先级：relative_path -> volume_path -> absolute_win32_path）
+    #[must_use]
+    pub fn resolve_parent_path(&self) -> Option<PathBuf> {
+        let data = self.key_value_data();
+        let entries = self.entries();
+
+        for target_key in ["relative_path", "volume_path", "absolute_win32_path"] {
+            for entry in &entries {
+                let key = entry.key(data)?;
+                if key.eq_ignore_ascii_case(target_key) {
+                    let value = entry.value(data)?;
+                    if !value.is_empty() {
+                        return Some(PathBuf::from(value));
+                    }
+                }
+            }
+        }
+
+        None
+    }
 }
 
 /// 父磁盘定位器头部（MS-VHDX §2.6.2.6.1）
 ///
 /// 固定 20 字节，包含定位器类型 GUID 和键值对数量。
 pub struct LocatorHeader<'a> {
-    data: &'a [u8],
+    /// 定位器类型 GUID
+    pub locator_type: Guid,
+    /// 保留字段
+    pub reserved: u16,
+    /// 键值对数量
+    pub key_value_count: u16,
+    /// 原始字节视图
+    pub raw: &'a [u8],
 }
 
 impl<'a> LocatorHeader<'a> {
     /// 从 20 字节数据创建定位器头部视图
     #[must_use]
-    pub const fn new(data: &'a [u8]) -> Self {
-        Self { data }
+    pub fn new(data: &'a [u8]) -> Self {
+        Self {
+            locator_type: read_guid(data, 0),
+            reserved: read_u16(data, 16),
+            key_value_count: read_u16(data, 18),
+            raw: data,
+        }
     }
 
     /// 返回定位器头部的原始字节数据
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
-        self.data
+        self.raw
     }
 
     /// 定位器类型 GUID（MS-VHDX §2.6.2.6.1）
     ///
     /// 标识定位器的类型，例如 VHDX 父磁盘定位器。
     #[must_use]
-    pub fn locator_type(&self) -> Guid {
-        Guid::from_bytes(self.data[0..16].try_into().unwrap())
+    pub const fn locator_type(&self) -> Guid {
+        self.locator_type
     }
 
     /// 键值对条目数量（MS-VHDX §2.6.2.6.1）
     #[must_use]
-    pub fn key_value_count(&self) -> u16 {
-        u16::from_le_bytes(self.data[18..20].try_into().unwrap())
+    pub const fn key_value_count(&self) -> u16 {
+        self.key_value_count
     }
 }
 
@@ -506,44 +607,42 @@ impl<'a> LocatorHeader<'a> {
 /// 每个条目固定 12 字节，描述一个键值对的偏移和长度。
 /// 键和值均以 UTF-16 LE 编码存储在定位器的数据区域中。
 #[derive(Clone, Copy, Debug)]
-pub struct KeyValueEntry {
-    /// 原始字节数据（12 字节）
-    raw_data: [u8; 12],
+pub struct KeyValueEntry<'a> {
     /// 键数据在定位器数据区域中的偏移量（字节）
-    key_offset: u32,
+    pub key_offset: u32,
     /// 值数据在定位器数据区域中的偏移量（字节）
-    value_offset: u32,
+    pub value_offset: u32,
     /// 键数据的字节长度（UTF-16 LE 编码）
-    key_length: u16,
+    pub key_length: u16,
     /// 值数据的字节长度（UTF-16 LE 编码）
-    value_length: u16,
+    pub value_length: u16,
+    /// 原始字节视图（12 字节）
+    pub raw: &'a [u8],
 }
 
-impl KeyValueEntry {
+impl<'a> KeyValueEntry<'a> {
     /// 从 12 字节数据解析键值对条目
     ///
     /// 数据布局：key_offset(4) + value_offset(4) + key_length(2) + value_length(2)
-    pub fn new(data: &[u8]) -> Result<Self> {
+    pub fn new(data: &'a [u8]) -> Result<Self> {
         if data.len() != 12 {
             return Err(Error::InvalidMetadata(
                 "Key-Value Entry must be 12 bytes".to_string(),
             ));
         }
-        let mut raw_data = [0u8; 12];
-        raw_data.copy_from_slice(data);
         Ok(Self {
-            raw_data,
-            key_offset: u32::from_le_bytes(data[0..4].try_into().unwrap()),
-            value_offset: u32::from_le_bytes(data[4..8].try_into().unwrap()),
-            key_length: u16::from_le_bytes(data[8..10].try_into().unwrap()),
-            value_length: u16::from_le_bytes(data[10..12].try_into().unwrap()),
+            key_offset: read_u32(data, 0),
+            value_offset: read_u32(data, 4),
+            key_length: read_u16(data, 8),
+            value_length: read_u16(data, 10),
+            raw: data,
         })
     }
 
     /// 返回键值对条目的原始字节数据
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
-        &self.raw_data
+        self.raw
     }
 
     /// 从定位器数据区域中读取键字符串
@@ -624,11 +723,11 @@ mod tests {
         }
 
         let entry = KeyValueEntry {
-            raw_data: [0u8; 12],
             key_offset: 0,
             value_offset: 32,
             key_length: u16::try_from(key.len() * 2).unwrap_or(0),
             value_length: u16::try_from(value.len() * 2).unwrap_or(0),
+            raw: &[0u8; 12],
         };
 
         assert_eq!(entry.key(&kv_data).unwrap(), key);
