@@ -33,7 +33,7 @@ VHDX (Virtual Hard Disk v2) 文件格式的 Rust 实现。
 cargo build
 
 # 构建 CLI 工具
-cargo build -p vhdx-cli
+cargo build -p vhdx-tool
 
 # 运行测试
 cargo test --workspace
@@ -47,7 +47,12 @@ vhdx-tool info disk.vhdx
 
 # 创建虚拟磁盘
 vhdx-tool create new.vhdx --size 10GB
-vhdx-tool create fixed.vhdx --size 20GB --disk-type fixed
+vhdx-tool create fixed.vhdx --size 20GB --type fixed
+vhdx-tool create compat.vhdx --size 20GB --disk-type fixed
+vhdx-tool create child.vhdx --size 10GB --type differencing --parent base.vhdx
+
+# 覆盖已存在文件
+vhdx-tool create existed.vhdx --size 10GB --force
 
 # 检查文件完整性
 vhdx-tool check disk.vhdx
@@ -61,6 +66,13 @@ vhdx-tool sections disk.vhdx bat
 vhdx-tool sections disk.vhdx metadata
 vhdx-tool sections disk.vhdx log
 ```
+
+### create 参数契约
+
+- `--type <DISK_TYPE>` 是主参数，`-d` 是其短选项。
+- `--disk-type <DISK_TYPE>` 是兼容别名。当 `--type` 与 `--disk-type` 同时给出时，`--type` 优先，`--disk-type` 会被忽略。
+- `DISK_TYPE` 可选值与 `--help` 一致：`dynamic`、`fixed`、`differencing`。
+- `--force` 仅表示“允许覆盖已存在的目标文件”。它不代表修复、忽略校验、或跳过父盘检查等额外能力。
 
 ## 库 API 使用
 

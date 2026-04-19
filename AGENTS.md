@@ -112,7 +112,7 @@ IO（扇区/块级读写）
 |------|--------|------|
 | Fixed | `disk_type: fixed` | 固定大小，数据连续存储，性能最佳 |
 | Dynamic | `disk_type: dynamic`（默认） | 按需分配数据块，节省空间 |
-| Differencing | `disk_type: diff` | 引用父磁盘，支持快照 |
+| Differencing | `disk_type: differencing` | 引用父磁盘，支持快照 |
 
 ## 编码约定
 
@@ -274,9 +274,11 @@ cargo test test_create     # 过滤测试名
 ```bash
 vhdx-tool info <file> [--format json|text]     # 显示文件信息
 vhdx-tool create <path> --size <SIZE>           # 创建虚拟磁盘
-  [--disk-type fixed|dynamic|diff]
+  [--type dynamic|fixed|differencing]           # 主参数，优先级最高
+  [--disk-type dynamic|fixed|differencing]      # 兼容别名，与 --type 同时给出时会被忽略
   [--block-size <SIZE>]
   [--parent <PATH>]
+  [--force]                                     # 仅允许覆盖已存在目标文件
 vhdx-tool check <file> [--repair] [--log-replay] # 检查完整性
 vhdx-tool repair <file> [--dry-run]              # 修复（日志回放）
 vhdx-tool sections <file> <section>              # 查看区域详情

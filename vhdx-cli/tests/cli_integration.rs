@@ -457,17 +457,48 @@ fn check_nonexistent_file_fails() {
         .stderr(predicate::str::contains("Error checking VHDX file"));
 }
 
-/// 测试 check 命令带 --log-replay 标志：验证输出包含日志重放相关信息。
+/// 测试 check 命令带 --log-replay 标志：验证输出报告日志回放状态。
 #[test]
 fn check_log_replay_flag() {
     let dir = create_fixed_vhdx();
     let path = dir.path().join("test.vhdx");
 
+    // --log-replay 以 InMemoryOnReadOnly 策略打开文件，
+    // 干净文件应输出 "No pending log entries"
     vhdx_tool()
         .args(["check", path.to_str().unwrap(), "--log-replay"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Log replay requested"));
+        .stdout(predicate::str::contains("No pending log entries"));
+}
+
+/// 测试 check 命令带 --repair 标志对干净文件：验证输出 "No repair needed"。
+#[test]
+fn check_repair_flag_on_clean_file() {
+    let dir = create_fixed_vhdx();
+    let path = dir.path().join("test.vhdx");
+
+    // --repair 不执行写修复，仅检测并报告修复需求
+    vhdx_tool()
+        .args(["check", path.to_str().unwrap(), "--repair"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No repair needed"));
+}
+
+/// 测试 check 命令同时使用 --log-replay 和 --repair 标志：验证两个标志共存时行为正确。
+#[test]
+fn check_log_replay_with_repair_flag() {
+    let dir = create_fixed_vhdx();
+    let path = dir.path().join("test.vhdx");
+
+    // 同时启用两个标志：内存回放 + 修复检测
+    vhdx_tool()
+        .args(["check", path.to_str().unwrap(), "--log-replay", "--repair"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No pending log entries"))
+        .stdout(predicate::str::contains("No repair needed"));
 }
 
 /// 测试 sections 命令显示头部区域内容。
@@ -510,7 +541,7 @@ fn sections_metadata_shows_metadata_section() {
         .stdout(predicate::str::contains("Metadata Section"));
 }
 
-/// 测试 sections 命令显示日志区域内容。
+/// 测试 sections 命令显示日志区域内容：验证包含标题和条目总数。
 #[test]
 fn sections_log_shows_log_section() {
     let dir = create_fixed_vhdx();
@@ -520,7 +551,24 @@ fn sections_log_shows_log_section() {
         .args(["sections", path.to_str().unwrap(), "log"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Log Section"));
+        .stdout(predicate::str::contains("Log Section"))
+        .stdout(predicate::str::contains("Total Log Entries"));
+}
+
+/// 测试 sections log 对干净文件（无日志条目）输出友好提示。
+#[test]
+fn sections_log_clean_file_shows_no_entries() {
+    let dir = create_fixed_vhdx();
+    let path = dir.path().join("test.vhdx");
+
+    vhdx_tool()
+        .args(["sections", path.to_str().unwrap(), "log"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Total Log Entries: 0"))
+        .stdout(predicate::str::contains(
+            "No log entries found. File is clean.",
+        ));
 }
 
 /// 测试 sections 命令对不存在的文件应报错。
@@ -556,6 +604,171 @@ fn diff_chain_on_non_differencing_disk() {
         .args(["diff", path.to_str().unwrap(), "chain"])
         .assert()
         .success()
+        .stdout(predicate::str::contains("Disk Chain"))
+        .stdout(predicate::str::contains("base disk"));
+}
+
+/// 测试 diff chain 子命令对差分磁盘链路的 happy path 遍历。
+///
+/// 创建 base -> child 两层链路，验证输出包含两个文件路径。
+#[test]
+fn diff_chain_happy_path() {
+    // 步骤 1：创建基础磁盘（dynamic）
+    let dir = tempfile::tempdir().unwrap();
+    let base_path = dir.path().join("base.vhdx");
+
+    vhdx_tool()
+        .args([
+            "create",
+            base_path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--disk-type",
+            "dynamic",
+        ])
+        .assert()
+        .success();
+
+    // 步骤 2：基于基础磁盘创建差分磁盘
+    let child_path = dir.path().join("child.vhdx");
+    vhdx_tool()
+        .args([
+            "create",
+            child_path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--disk-type",
+            "differencing",
+            "--parent",
+            base_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // 步骤 3：对差分磁盘执行 chain 命令
+    let assert_result = vhdx_tool()
+        .args(["diff", child_path.to_str().unwrap(), "chain"])
+        .assert()
+        .success();
+
+    // 验证输出包含链路标题、子盘路径和基础盘路径
+    assert_result
+        .stdout(predicate::str::contains("Disk Chain"))
+        .stdout(predicate::str::contains("child.vhdx"))
+        .stdout(predicate::str::contains("base.vhdx"))
+        .stdout(predicate::str::contains("base disk"));
+}
+
+/// 测试 diff chain 子命令检测缺失父盘并返回非零退出码。
+///
+/// 创建差分磁盘后删除父盘，验证 chain 命令输出错误并 exit(1)。
+#[test]
+fn diff_chain_missing_parent_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let base_path = dir.path().join("base.vhdx");
+
+    // 创建基础磁盘
+    vhdx_tool()
+        .args([
+            "create",
+            base_path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--disk-type",
+            "dynamic",
+        ])
+        .assert()
+        .success();
+
+    // 创建差分磁盘
+    let child_path = dir.path().join("child.vhdx");
+    vhdx_tool()
+        .args([
+            "create",
+            child_path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--disk-type",
+            "differencing",
+            "--parent",
+            base_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // 删除父盘以模拟缺失场景
+    std::fs::remove_file(&base_path).unwrap();
+
+    // 执行 chain 命令应失败并报告父盘缺失
+    vhdx_tool()
+        .args(["diff", child_path.to_str().unwrap(), "chain"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Parent disk not found"));
+}
+
+/// 测试 diff chain 子命令对三层链路（grandchild -> child -> base）的完整遍历。
+#[test]
+fn diff_chain_three_level_traversal() {
+    let dir = tempfile::tempdir().unwrap();
+    let base_path = dir.path().join("base.vhdx");
+
+    // 创建基础磁盘
+    vhdx_tool()
+        .args([
+            "create",
+            base_path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--disk-type",
+            "dynamic",
+        ])
+        .assert()
+        .success();
+
+    // 创建第一层差分磁盘
+    let child_path = dir.path().join("child.vhdx");
+    vhdx_tool()
+        .args([
+            "create",
+            child_path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--disk-type",
+            "differencing",
+            "--parent",
+            base_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // 创建第二层差分磁盘
+    let grandchild_path = dir.path().join("grandchild.vhdx");
+    vhdx_tool()
+        .args([
+            "create",
+            grandchild_path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--disk-type",
+            "differencing",
+            "--parent",
+            child_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // 验证三层链路输出
+    let assert_result = vhdx_tool()
+        .args(["diff", grandchild_path.to_str().unwrap(), "chain"])
+        .assert()
+        .success();
+
+    assert_result
+        .stdout(predicate::str::contains("Disk Chain"))
+        .stdout(predicate::str::contains("grandchild.vhdx"))
+        .stdout(predicate::str::contains("child.vhdx"))
+        .stdout(predicate::str::contains("base.vhdx"))
         .stdout(predicate::str::contains("base disk"));
 }
 
@@ -634,4 +847,259 @@ fn check_on_test_void_vhdx() {
         .assert()
         .success()
         .stdout(predicate::str::contains("File check completed"));
+}
+
+/// 测试 check 命令对有效文件输出结构化校验摘要：验证包含通过计数和校验项。
+#[test]
+fn check_valid_file_shows_summary() {
+    let dir = create_fixed_vhdx();
+    let path = dir.path().join("test.vhdx");
+
+    vhdx_tool()
+        .args(["check", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("passed"))
+        .stdout(predicate::str::contains("0 failed"))
+        .stdout(predicate::str::contains("✓ Header"))
+        .stdout(predicate::str::contains("✓ BAT"));
+}
+
+/// 测试 check 命令对损坏文件（非 VHDX 格式）应返回失败退出码和校验错误摘要。
+#[test]
+fn check_corrupted_file_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("corrupted.vhdx");
+
+    // 写入无效数据模拟损坏文件
+    std::fs::write(&path, b"NOT_A_VHDX_FILE_CORRUPT_DATA").unwrap();
+
+    // 损坏文件无法打开，应报告打开错误并以非零退出码退出
+    vhdx_tool()
+        .args(["check", path.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Error checking VHDX file"));
+}
+
+/// 辅助函数：向已有 VHDX 文件注入 pending log entry 并设置 log_guid。
+/// 使用 vhdx_rs 库 API 读取元数据，再通过原始 IO 写入日志条目和更新的 header。
+fn inject_pending_log_for_cli(path: &std::path::Path) {
+    use std::fs::OpenOptions;
+    use std::io::{Seek, SeekFrom, Write};
+
+    const HEADER_SECTION_SIZE: u64 = 1024 * 1024;
+    const LOG_ENTRY_HEADER_SIZE: usize = 64;
+    const DESCRIPTOR_SIZE: usize = 32;
+    const DATA_SECTOR_SIZE: usize = 4096;
+
+    // 读取 header 以获取 log_offset 和 log_length
+    let file = vhdx_rs::File::open(path)
+        .finish()
+        .expect("Failed to open file for log injection metadata");
+    let header_ref = file
+        .sections()
+        .header()
+        .expect("Failed to read header for log injection");
+    let header = header_ref
+        .header(0)
+        .expect("No active header for log injection");
+
+    let log_offset = header.log_offset();
+    let log_length = usize::try_from(header.log_length()).expect("log_length overflow");
+
+    // 构造最小可回放日志条目
+    let target_file_offset = HEADER_SECTION_SIZE + 512;
+    let entry_len = LOG_ENTRY_HEADER_SIZE + DESCRIPTOR_SIZE + DATA_SECTOR_SIZE;
+    let mut entry = vec![0u8; entry_len];
+    entry[0..4].copy_from_slice(b"loge");
+    entry[8..12].copy_from_slice(&(u32::try_from(entry_len).unwrap()).to_le_bytes());
+    entry[24..28].copy_from_slice(&1u32.to_le_bytes()); // descriptor_count = 1
+
+    let desc_off = LOG_ENTRY_HEADER_SIZE;
+    entry[desc_off..desc_off + 4].copy_from_slice(b"desc");
+    entry[desc_off + 16..desc_off + 24].copy_from_slice(&target_file_offset.to_le_bytes());
+    entry[desc_off + 24..desc_off + 32].copy_from_slice(&0u64.to_le_bytes()); // sequence = 0
+
+    let sector_off = LOG_ENTRY_HEADER_SIZE + DESCRIPTOR_SIZE;
+    entry[sector_off..sector_off + 4].copy_from_slice(b"data");
+    entry[sector_off + 4..sector_off + 8].copy_from_slice(&0u32.to_le_bytes()); // sequence_high = 0
+    entry[sector_off + 8..sector_off + 8 + 13].copy_from_slice(b"CLI_LOG_ENTRY");
+    entry[sector_off + 4092..sector_off + 4096].copy_from_slice(&0u32.to_le_bytes()); // sequence_low = 0
+
+    // 写入日志条目
+    let mut raw = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("Failed to open file for log injection write");
+
+    raw.seek(SeekFrom::Start(log_offset))
+        .expect("Failed to seek log offset");
+    raw.write_all(&entry).expect("Failed to write log entry");
+
+    let remaining = log_length.saturating_sub(entry.len());
+    if remaining > 0 {
+        raw.write_all(&vec![0u8; remaining])
+            .expect("Failed to clear log tail");
+    }
+
+    // 设置 log_guid 为非空（表示有待处理日志）
+    let log_guid = vhdx_rs::Guid::from_bytes([
+        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
+        0x22,
+    ]);
+    let updated_header = vhdx_rs::section::HeaderStructure::create(
+        header.sequence_number(),
+        header.file_write_guid(),
+        header.data_write_guid(),
+        log_guid,
+        header.log_length(),
+        header.log_offset(),
+    );
+
+    raw.seek(SeekFrom::Start(64 * 1024))
+        .expect("Failed to seek header1");
+    raw.write_all(&updated_header)
+        .expect("Failed to write header1");
+    raw.seek(SeekFrom::Start(128 * 1024))
+        .expect("Failed to seek header2");
+    raw.write_all(&updated_header)
+        .expect("Failed to write header2");
+    raw.flush().expect("Failed to flush injected log");
+}
+
+// ── T9: check --log-replay / sections log / diff chain 回归测试 ──
+
+/// 测试 check --log-replay 对含 pending log 文件应报告 pending entries。
+#[test]
+fn check_log_replay_with_pending_log_reports_entries() {
+    let dir = create_fixed_vhdx();
+    let path = dir.path().join("test.vhdx");
+
+    // 注入 pending log entry
+    inject_pending_log_for_cli(&path);
+
+    // check --log-replay 应输出 pending entries 提示
+    vhdx_tool()
+        .args(["check", path.to_str().unwrap(), "--log-replay"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("pending"));
+}
+
+/// 测试 check（不带 --log-replay）对含 pending log 文件应输出修复指引。
+#[test]
+fn check_without_replay_shows_repair_guidance_on_pending_log() {
+    let dir = create_fixed_vhdx();
+    let path = dir.path().join("test.vhdx");
+
+    inject_pending_log_for_cli(&path);
+
+    vhdx_tool()
+        .args(["check", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("pending log entries"))
+        .stdout(predicate::str::contains("vhdx-tool repair"));
+}
+
+/// 测试 check --repair 对含 pending log 文件应报告需要修复并以非零退出码退出。
+#[test]
+fn check_repair_on_pending_log_file_exits_nonzero() {
+    let dir = create_fixed_vhdx();
+    let path = dir.path().join("test.vhdx");
+
+    inject_pending_log_for_cli(&path);
+
+    vhdx_tool()
+        .args(["check", path.to_str().unwrap(), "--repair"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains(
+            "pending log entries requiring repair",
+        ));
+}
+
+/// 测试 sections log 对含 pending log 的文件应显示日志条目详情。
+#[test]
+fn sections_log_shows_pending_entry_details() {
+    let dir = create_fixed_vhdx();
+    let path = dir.path().join("test.vhdx");
+
+    inject_pending_log_for_cli(&path);
+
+    vhdx_tool()
+        .args(["sections", path.to_str().unwrap(), "log"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Log Section"))
+        .stdout(predicate::str::contains("Total Log Entries: 1"))
+        .stdout(predicate::str::contains("Entry 0:"))
+        .stdout(predicate::str::contains("Signature: loge"))
+        .stdout(predicate::str::contains("Descriptor Count: 1"))
+        .stdout(predicate::str::contains("Data Descriptors: 1"));
+}
+
+/// 测试 diff parent 对差分磁盘应显示父磁盘定位器条目。
+#[test]
+fn diff_parent_on_differencing_disk_shows_locator_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let base_path = dir.path().join("base.vhdx");
+
+    // 创建基础磁盘
+    vhdx_tool()
+        .args([
+            "create",
+            base_path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--disk-type",
+            "dynamic",
+        ])
+        .assert()
+        .success();
+
+    // 创建差分磁盘
+    let child_path = dir.path().join("child.vhdx");
+    vhdx_tool()
+        .args([
+            "create",
+            child_path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--disk-type",
+            "differencing",
+            "--parent",
+            base_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // diff parent 应显示 Parent Locator Entries
+    let assert_result = vhdx_tool()
+        .args(["diff", child_path.to_str().unwrap(), "parent"])
+        .assert()
+        .success();
+
+    assert_result
+        .stdout(predicate::str::contains("Parent Locator Entries:"))
+        .stdout(predicate::str::contains("parent_linkage"))
+        .stdout(predicate::str::contains("relative_path"));
+}
+
+/// 测试 sections log 对含 pending log 文件应显示 stderr 上的 pending log 警告。
+#[test]
+fn sections_log_warns_about_pending_log_on_stderr() {
+    let dir = create_fixed_vhdx();
+    let path = dir.path().join("test.vhdx");
+
+    inject_pending_log_for_cli(&path);
+
+    vhdx_tool()
+        .args(["sections", path.to_str().unwrap(), "header"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("pending log entries"))
+        .stderr(predicate::str::contains("vhdx-tool repair"));
 }

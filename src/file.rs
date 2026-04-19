@@ -48,7 +48,10 @@ use crate::common::region_guids;
 use crate::error::{Error, Result};
 use crate::io_module::IO;
 use crate::sections::Bat;
-use crate::sections::{FileTypeIdentifier, Header, HeaderStructure, Sections, SectionsConfig};
+use crate::sections::{
+    BatState, FileTypeIdentifier, Header, HeaderStructure, PayloadBlockState, Sections,
+    SectionsConfig,
+};
 use crate::types::Guid;
 
 /// VHDX 虚拟硬盘文件句柄
@@ -247,10 +250,56 @@ impl File {
             }
             Ok(bytes_read)
         } else {
-            // Dynamic 类型：当前返回零填充（按块读取尚未实现）
-            for item in buf.iter_mut().take(bytes_to_read) {
-                *item = 0;
+            // Dynamic 类型：按 BAT 语义读取
+            // - FullyPresent/Undefined/PartiallyPresent 且 file_offset 非零：从 payload 读取
+            // - NotPresent/Zero/Unmapped/无条目/无效偏移：返回零
+            let block_size = u64::from(self.block_size);
+            let mut file = self.inner.try_clone()?;
+
+            let mut processed = 0usize;
+            while processed < bytes_to_read {
+                let current_virtual_offset =
+                    offset + u64::try_from(processed).unwrap_or(u64::MAX - offset);
+                let block_idx = current_virtual_offset / block_size;
+                let block_offset = current_virtual_offset % block_size;
+
+                let remaining = bytes_to_read - processed;
+                let bytes_in_block =
+                    usize::try_from(block_size - block_offset).unwrap_or(remaining);
+                let chunk_len = remaining.min(bytes_in_block);
+
+                let dst = &mut buf[processed..processed + chunk_len];
+                dst.fill(0);
+
+                let should_read_payload =
+                    self.sections
+                        .bat()?
+                        .entry(block_idx)
+                        .and_then(|entry| match entry.state {
+                            BatState::Payload(state)
+                                if matches!(
+                                    state,
+                                    PayloadBlockState::FullyPresent
+                                        | PayloadBlockState::Undefined
+                                        | PayloadBlockState::PartiallyPresent
+                                ) && entry.file_offset() > 0 =>
+                            {
+                                Some(entry.file_offset() + block_offset)
+                            }
+                            _ => None,
+                        });
+
+                if let Some(file_offset) = should_read_payload {
+                    file.seek(SeekFrom::Start(file_offset))?;
+                    file.read_exact(dst)?;
+                    if let Some(overlay) = &self.replay_overlay {
+                        Self::apply_replay_overlay(overlay, file_offset, dst);
+                    }
+                }
+
+                processed += chunk_len;
             }
+
             Ok(bytes_to_read)
         }
     }
@@ -304,25 +353,58 @@ impl File {
         let block_idx = offset / block_size;
         let block_offset = offset % block_size;
 
+        // Dynamic BAT 按 chunk 交错排列：每 chunk_ratio 个 payload 条目后插入 1 个 sector bitmap 条目。
+        // 因此 payload block N 对应 BAT 索引 = N + floor(N / chunk_ratio)。
+        let chunk_ratio = u64::from(Bat::calculate_chunk_ratio(
+            self.logical_sector_size,
+            self.block_size,
+        ));
+        if chunk_ratio == 0 {
+            return Err(Error::InvalidParameter(
+                "Invalid dynamic BAT chunk ratio: 0".to_string(),
+            ));
+        }
+
+        let bat_payload_index = block_idx + (block_idx / chunk_ratio);
+
         let bat = self.sections.bat()?;
-        let bat_entry = bat.entry(block_idx);
+        let bat_entry = bat.entry(bat_payload_index);
 
         // 根据 BAT 条目状态确定写入位置
         let file_offset = if let Some(entry) = bat_entry {
-            if entry.file_offset() > 0 {
-                // 块已分配：在块偏移基础上加上块内偏移
-                entry.file_offset() + block_offset
-            } else {
-                // 块未分配（BAT 条目存在但偏移为零）
-                return Err(Error::InvalidParameter(
-                    "Dynamic block allocation not yet fully implemented".to_string(),
-                ));
+            match entry.state {
+                BatState::Payload(state) => match state {
+                    PayloadBlockState::FullyPresent
+                    | PayloadBlockState::Undefined
+                    | PayloadBlockState::PartiallyPresent => {
+                        if entry.file_offset() > 0 {
+                            // 块已分配：在块偏移基础上加上块内偏移
+                            entry.file_offset() + block_offset
+                        } else {
+                            return Err(Error::InvalidParameter(format!(
+                                "Dynamic write requires allocated payload offset for state {state:?} at block {block_idx}"
+                            )));
+                        }
+                    }
+                    PayloadBlockState::NotPresent
+                    | PayloadBlockState::Zero
+                    | PayloadBlockState::Unmapped => {
+                        return Err(Error::InvalidParameter(format!(
+                            "Dynamic write does not support automatic allocation for payload state {state:?} at block {block_idx}"
+                        )));
+                    }
+                },
+                BatState::SectorBitmap(state) => {
+                    return Err(Error::InvalidParameter(format!(
+                        "Dynamic write expects payload BAT entry but got sector bitmap state {state:?} at BAT index {bat_payload_index}"
+                    )));
+                }
             }
         } else {
             // 块索引超出 BAT 范围
-            return Err(Error::InvalidParameter(
-                "Dynamic block allocation beyond current entries not yet implemented".to_string(),
-            ));
+            return Err(Error::InvalidParameter(format!(
+                "Dynamic write BAT payload index {bat_payload_index} out of range"
+            )));
         };
 
         let mut file = self.inner.try_clone()?;

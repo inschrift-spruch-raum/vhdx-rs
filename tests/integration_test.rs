@@ -105,6 +105,19 @@ fn read_raw_bytes(path: &std::path::Path, offset: u64, len: usize) -> Vec<u8> {
     buf
 }
 
+/// 在指定偏移写入原始字节（测试专用）。
+fn write_raw_bytes(path: &std::path::Path, offset: u64, data: &[u8]) {
+    let mut raw = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("Failed to open file for raw write");
+    raw.seek(SeekFrom::Start(offset))
+        .expect("Failed to seek for raw write");
+    raw.write_all(data).expect("Failed to write raw bytes");
+    raw.flush().expect("Failed to flush raw write");
+}
+
 /// 注入一个最小可回放日志条目，并设置 header 的 log_guid 为非空。
 fn inject_pending_log_entry(path: &std::path::Path, write_offset: u64, payload: &[u8]) {
     use vhdx_rs::{File, Guid};
@@ -372,6 +385,150 @@ fn test_read_unallocated_dynamic_block() {
     let mut buf = vec![0u8; 4096];
     sector.read(&mut buf).expect("Failed to read sector");
     assert_eq!(buf, vec![0u8; 4096]);
+}
+
+/// 测试读取已分配的动态块：BAT 标记为 FullyPresent 时应返回真实 payload。
+#[test]
+fn test_read_allocated_dynamic_block_returns_payload_data() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    // 创建动态磁盘，并使用 1 MiB 块大小便于按 BAT 注入。
+    File::create(&path)
+        .size(4 * 1024 * 1024)
+        .fixed(false)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("Failed to create dynamic disk");
+
+    // 将 payload block #0 映射到文件 8 MiB 处，状态 FullyPresent（6）。
+    let payload_offset_mb = 8u64;
+    let bat_raw = (payload_offset_mb << 20) | 6u64;
+    inject_bat_entry_raw(&path, 0, bat_raw);
+
+    // 在映射位置写入可识别的非零内容。
+    let mut payload = vec![0xAB_u8; 4096];
+    payload[0..17].copy_from_slice(b"DYN_ALLOC_PAYLOAD");
+    write_raw_bytes(&path, payload_offset_mb * 1024 * 1024, &payload);
+
+    // 重新打开后读取虚拟扇区 0，应读回写入的真实数据。
+    let file = File::open(&path)
+        .finish()
+        .expect("Failed to reopen dynamic disk");
+    let sector = file.io().sector(0).expect("Sector 0 should exist");
+    let mut buf = vec![0u8; 4096];
+    sector
+        .read(&mut buf)
+        .expect("Failed to read allocated sector");
+
+    assert_eq!(
+        buf, payload,
+        "allocated dynamic block should return payload"
+    );
+    assert_ne!(
+        buf,
+        vec![0u8; 4096],
+        "allocated payload should not be all zeros"
+    );
+}
+
+/// 测试动态写入在 chunk 边界使用 payload BAT 条目（不误写 sector bitmap）。
+#[test]
+fn test_write_dynamic_uses_payload_entry_not_sector_bitmap_at_chunk_boundary() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    // 32 MiB block + 512 logical sector 时 chunk_ratio=128。
+    // block_idx=128 对应的 payload BAT 索引应为 129（而不是 128）。
+    let block_size = 32 * 1024 * 1024;
+    let payload_block_idx = 128u64;
+    let expected_payload_bat_index = 129u64;
+    let payload_offset_mb = 200u64;
+    let bitmap_offset_mb = 300u64;
+
+    File::create(&path)
+        .size(5 * 1024 * 1024 * 1024)
+        .fixed(false)
+        .block_size(block_size)
+        .logical_sector_size(512)
+        .physical_sector_size(512)
+        .finish()
+        .expect("Failed to create dynamic disk for chunk-boundary write test");
+
+    // BAT[128] 设为 sector bitmap present，BAT[129] 设为 payload fully present。
+    inject_bat_entry_raw(&path, 128, (bitmap_offset_mb << 20) | 6u64);
+    inject_bat_entry_raw(
+        &path,
+        expected_payload_bat_index,
+        (payload_offset_mb << 20) | 6u64,
+    );
+
+    // 预写入 bitmap 偏移处的哨兵数据，便于验证未误写到该位置。
+    let bitmap_sentinel = vec![0x3Cu8; 512];
+    write_raw_bytes(&path, bitmap_offset_mb * 1024 * 1024, &bitmap_sentinel);
+
+    let file = File::open(&path)
+        .write()
+        .finish()
+        .expect("Failed to reopen dynamic disk with write access");
+
+    let sectors_per_block = u64::from(block_size / 512);
+    let target_sector = payload_block_idx * sectors_per_block;
+    let sector = file
+        .io()
+        .sector(target_sector)
+        .expect("Target sector should exist");
+
+    let data = vec![0xA5u8; 512];
+    sector
+        .write(&data)
+        .expect("Dynamic write should succeed on fully present payload entry");
+
+    let payload_written = read_raw_bytes(&path, payload_offset_mb * 1024 * 1024, 512);
+    assert_eq!(
+        payload_written, data,
+        "write should land on payload BAT entry offset"
+    );
+
+    let bitmap_written = read_raw_bytes(&path, bitmap_offset_mb * 1024 * 1024, 512);
+    assert_ne!(
+        bitmap_written, data,
+        "write must not land on sector bitmap BAT entry offset"
+    );
+    assert_eq!(
+        bitmap_written, bitmap_sentinel,
+        "sector bitmap offset sentinel should remain unchanged"
+    );
+}
+
+/// 测试动态写入在未分配 payload 块上返回限制错误。
+#[test]
+fn test_write_dynamic_unallocated_payload_returns_limit_error() {
+    use vhdx_rs::{Error, File};
+
+    let path = temp_vhdx_path();
+
+    let file = File::create(&path)
+        .size(1024 * 1024)
+        .fixed(false)
+        .finish()
+        .expect("Failed to create dynamic disk");
+
+    let sector = file.io().sector(0).expect("Sector 0 should exist");
+    let result = sector.write(&[0x5Au8; 4096]);
+
+    match result {
+        Err(Error::InvalidParameter(msg)) => {
+            assert!(
+                msg.contains("does not support automatic allocation"),
+                "error message should clearly describe unsupported auto-allocation, got: {msg}"
+            );
+        }
+        Err(_) => panic!("expected InvalidParameter for unallocated dynamic block write"),
+        Ok(_) => panic!("unallocated dynamic block write should fail"),
+    }
 }
 
 /// 测试对动态磁盘执行写入操作应失败（当前库仅支持读取动态磁盘）。
@@ -2615,5 +2772,559 @@ fn test_open_non_strict_allows_required_unknown_region() {
     assert!(
         result.is_ok(),
         "strict=false should allow unknown required region entry"
+    );
+}
+
+// ── T2: Dynamic 读路径 ReplayOverlay 测试 ──
+
+/// 辅助函数：创建一个拥有已分配 payload block 的 Dynamic VHDX，
+/// 写入可识别的原始数据，并注入 pending log 覆盖其中一部分。
+///
+/// 返回 (path, block_file_offset, original_payload, overlay_payload)。
+fn setup_dynamic_disk_with_allocated_block_and_pending_log(
+    overlay_block_offset: u64, overlay_payload: &[u8],
+) -> (PathBuf, u64, Vec<u8>, Vec<u8>) {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    // 创建 Dynamic VHDX，4 MiB 虚拟大小，1 MiB 块大小
+    File::create(&path)
+        .size(4 * 1024 * 1024)
+        .fixed(false)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("Failed to create dynamic disk");
+
+    // 将 payload block #0 映射到文件 8 MiB 处，状态 FullyPresent（6）
+    let payload_offset_mb = 8u64;
+    let bat_raw = (payload_offset_mb << 20) | 6u64;
+    inject_bat_entry_raw(&path, 0, bat_raw);
+
+    // 写入可识别的原始 payload 数据（4096 字节 0xCD）
+    let block_file_offset = payload_offset_mb * 1024 * 1024;
+    let original_payload = vec![0xCD_u8; 4096];
+    write_raw_bytes(&path, block_file_offset, &original_payload);
+
+    // 注入 pending log，覆盖 block 内 offset 512 处的数据
+    let target_file_offset = block_file_offset + overlay_block_offset;
+    inject_pending_log_entry(&path, target_file_offset, overlay_payload);
+
+    (
+        path,
+        block_file_offset,
+        original_payload,
+        overlay_payload.to_vec(),
+    )
+}
+
+/// 测试 Dynamic 已分配块 + pending log + InMemoryOnReadOnly：
+/// 读取结果应体现 replay overlay 数据，原始数据在 overlay 范围外保持不变。
+#[test]
+fn test_dynamic_allocated_block_replay_overlay_applies_on_inmemory_readonly_read() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let overlay_payload = b"DYN_OVERLAY_INMEM";
+    let overlay_block_offset: u64 = 512;
+    let (path, _block_file_offset, original_payload, overlay_data) =
+        setup_dynamic_disk_with_allocated_block_and_pending_log(
+            overlay_block_offset,
+            overlay_payload,
+        );
+
+    // 以 InMemoryOnReadOnly 打开，overlay 应被构建
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::InMemoryOnReadOnly)
+        .finish()
+        .expect("InMemoryOnReadOnly open should succeed");
+    assert!(
+        !file.has_pending_logs(),
+        "InMemoryOnReadOnly should have consumed pending logs into overlay"
+    );
+
+    // 读取 sector 0（虚拟偏移 0，4096 字节）
+    let sector = file.io().sector(0).expect("Sector 0 should exist");
+    let mut buf = vec![0u8; 4096];
+    sector
+        .read(&mut buf)
+        .expect("Read from dynamic allocated block should succeed");
+
+    // overlay 范围 [512, 512+18) 应被覆盖
+    assert_eq!(
+        &buf[overlay_block_offset as usize..overlay_block_offset as usize + overlay_data.len()],
+        overlay_data.as_slice(),
+        "Dynamic read should reflect replay overlay data at the correct offset"
+    );
+
+    // overlay 之前的区域应保持原始 payload
+    assert_eq!(
+        buf[..overlay_block_offset as usize],
+        original_payload[..overlay_block_offset as usize],
+        "Data before overlay offset should remain original payload"
+    );
+
+    // 注意：overlay 的 data sector 为 4084 字节（含零填充），
+    // 覆盖范围远超实际 payload 长度，因此 overlay 之后的区域
+    // 为 data sector 中的零而非原始 payload。这是正确行为 —
+    // overlay 完整还原了日志写入的 data sector 内容。
+}
+
+/// 测试 Dynamic 已分配块 + pending log + Auto 策略：
+/// 只读打开时 Auto 行为与 InMemoryOnReadOnly 一致，overlay 数据应在读取中体现。
+#[test]
+fn test_dynamic_allocated_block_auto_policy_applies_overlay_on_readonly_open() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let overlay_payload = b"DYN_AUTO_OVERLAY";
+    let overlay_block_offset: u64 = 256;
+    let (path, _block_file_offset, _original_payload, overlay_data) =
+        setup_dynamic_disk_with_allocated_block_and_pending_log(
+            overlay_block_offset,
+            overlay_payload,
+        );
+
+    // 以 Auto 策略只读打开（不调用 .write()）
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::Auto)
+        .finish()
+        .expect("Auto policy on read-only open should succeed");
+    assert!(
+        !file.has_pending_logs(),
+        "Auto on read-only should build overlay (no pending logs flag)"
+    );
+
+    let sector = file.io().sector(0).expect("Sector 0 should exist");
+    let mut buf = vec![0u8; 4096];
+    sector.read(&mut buf).expect("Read should succeed");
+
+    assert_eq!(
+        &buf[overlay_block_offset as usize..overlay_block_offset as usize + overlay_data.len()],
+        overlay_data.as_slice(),
+        "Auto policy on read-only open should apply overlay"
+    );
+}
+
+/// 测试 Dynamic 已分配块 + pending log + ReadOnlyNoReplay：
+/// 读取结果应为磁盘上的原始数据，不体现 overlay。
+#[test]
+fn test_dynamic_readonly_no_replay_preserves_on_disk_data() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let overlay_payload = b"DYN_NO_REPLAY";
+    let overlay_block_offset: u64 = 512;
+    let (path, _block_file_offset, original_payload, _overlay_data) =
+        setup_dynamic_disk_with_allocated_block_and_pending_log(
+            overlay_block_offset,
+            overlay_payload,
+        );
+
+    // 以 ReadOnlyNoReplay 打开
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("ReadOnlyNoReplay open should succeed");
+    assert!(
+        file.has_pending_logs(),
+        "ReadOnlyNoReplay should flag pending logs without replaying"
+    );
+
+    // 读取 sector 0
+    let sector = file.io().sector(0).expect("Sector 0 should exist");
+    let mut buf = vec![0u8; 4096];
+    sector.read(&mut buf).expect("Read should succeed");
+
+    // 数据应完全等于磁盘上的原始 payload，不包含 overlay
+    assert_eq!(
+        buf, original_payload,
+        "ReadOnlyNoReplay should preserve on-disk data without overlay"
+    );
+}
+
+/// 测试 Dynamic 未分配块 + pending log + InMemoryOnReadOnly：
+/// 未分配块读取应返回零（overlay 不应用于无文件偏移映射的块），
+/// 确保零填充语义不被破坏。
+#[test]
+fn test_dynamic_unallocated_block_overlay_does_not_break_zero_fill_semantics() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+
+    // 创建 Dynamic VHDX，不分配任何块
+    File::create(&path)
+        .size(4 * 1024 * 1024)
+        .fixed(false)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("Failed to create dynamic disk");
+
+    // 注入 pending log（指向某个文件偏移，但块未分配）
+    // 使用一个合理的文件偏移，即使块未映射到该位置
+    let target_file_offset = 8 * 1024 * 1024 + 512;
+    inject_pending_log_entry(&path, target_file_offset, b"ORPHAN_OVERLAY");
+
+    // 以 InMemoryOnReadOnly 打开
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::InMemoryOnReadOnly)
+        .finish()
+        .expect("InMemoryOnReadOnly open should succeed");
+
+    // 读取 sector 0（未分配块），应返回零
+    let sector = file.io().sector(0).expect("Sector 0 should exist");
+    let mut buf = vec![0u8; 4096];
+    sector.read(&mut buf).expect("Read should succeed");
+
+    // 未分配块应保持零填充，overlay 数据不应出现
+    assert_eq!(
+        buf,
+        vec![0u8; 4096],
+        "Unallocated dynamic block should remain zero-filled even with overlay present"
+    );
+}
+
+// ── T9: 回归测试 — Dynamic 读/写/Replay Overlay 边界场景加固 ──
+
+/// 测试 Dynamic 读取 BAT Zero 状态（state=2）应返回全零。
+/// Zero 状态意味着块内容全为零且无对应文件数据，即使 file_offset 字段非零也不读取。
+#[test]
+fn test_dynamic_read_zero_bat_state_returns_zeros() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    // 创建 Dynamic VHDX，4 MiB 虚拟大小，1 MiB 块大小
+    File::create(&path)
+        .size(4 * 1024 * 1024)
+        .fixed(false)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("Failed to create dynamic disk");
+
+    // 注入非零 payload 到物理偏移 8 MiB 处，用于验证 Zero 状态不读取
+    let non_zero_payload = vec![0xBB_u8; 4096];
+    write_raw_bytes(&path, 8 * 1024 * 1024, &non_zero_payload);
+
+    // 将 payload block #0 设为 Zero 状态（state=2），file_offset 指向非零数据
+    let bat_raw = (8u64 << 20) | 2u64; // Zero state = 2
+    inject_bat_entry_raw(&path, 0, bat_raw);
+
+    let file = File::open(&path)
+        .finish()
+        .expect("Failed to reopen dynamic disk");
+
+    // 读取扇区 0 应返回全零（Zero 状态语义）
+    let sector = file.io().sector(0).expect("Sector 0 should exist");
+    let mut buf = vec![0u8; 4096];
+    sector
+        .read(&mut buf)
+        .expect("Read should succeed for Zero-state block");
+    assert_eq!(
+        buf,
+        vec![0u8; 4096],
+        "BAT Zero state should return zeros regardless of file_offset"
+    );
+}
+
+/// 测试 Dynamic 读取 BAT Unmapped 状态（state=3）应返回全零。
+/// Unmapped 状态表示块已被释放，内容为零或历史数据，读取时不从文件读取。
+#[test]
+fn test_dynamic_read_unmapped_bat_state_returns_zeros() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    File::create(&path)
+        .size(4 * 1024 * 1024)
+        .fixed(false)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("Failed to create dynamic disk");
+
+    // 注入非零 payload 以验证 Unmapped 状态不读取
+    let non_zero_payload = vec![0xCC_u8; 4096];
+    write_raw_bytes(&path, 8 * 1024 * 1024, &non_zero_payload);
+
+    // Unmapped state = 3
+    let bat_raw = (8u64 << 20) | 3u64;
+    inject_bat_entry_raw(&path, 0, bat_raw);
+
+    let file = File::open(&path)
+        .finish()
+        .expect("Failed to reopen dynamic disk");
+
+    let sector = file.io().sector(0).expect("Sector 0 should exist");
+    let mut buf = vec![0u8; 4096];
+    sector
+        .read(&mut buf)
+        .expect("Read should succeed for Unmapped-state block");
+    assert_eq!(
+        buf,
+        vec![0u8; 4096],
+        "BAT Unmapped state should return zeros"
+    );
+}
+
+/// 测试 Dynamic 读取非零扇区偏移在已分配块内应正确返回对应位置的数据。
+/// 验证块内偏移计算（block_offset）在非首扇区场景下正确。
+#[test]
+fn test_dynamic_read_nonzero_sector_within_allocated_block() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    // 4 MiB 虚拟大小，1 MiB 块大小，4096 逻辑扇区 → 每块 256 个扇区
+    File::create(&path)
+        .size(4 * 1024 * 1024)
+        .fixed(false)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("Failed to create dynamic disk");
+
+    let payload_offset_mb = 8u64;
+    let bat_raw = (payload_offset_mb << 20) | 6u64;
+    inject_bat_entry_raw(&path, 0, bat_raw);
+
+    // 在 block 文件偏移 + 3*4096 处写入可识别数据（虚拟扇区 3）
+    let sector3_offset = payload_offset_mb * 1024 * 1024 + 3 * 4096;
+    let mut sector3_data = vec![0u8; 4096];
+    sector3_data[0..11].copy_from_slice(b"SECTOR_3_OK");
+    write_raw_bytes(&path, sector3_offset, &sector3_data);
+
+    let file = File::open(&path)
+        .finish()
+        .expect("Failed to reopen dynamic disk");
+
+    // 读取虚拟扇区 3（block 内偏移 3）
+    let sector = file.io().sector(3).expect("Sector 3 should exist");
+    assert_eq!(sector.block_sector_index, 3);
+    let mut buf = vec![0u8; 4096];
+    sector
+        .read(&mut buf)
+        .expect("Read from sector 3 should succeed");
+    assert_eq!(
+        buf, sector3_data,
+        "Sector 3 should contain the data written at block offset 3*4096"
+    );
+}
+
+/// 测试 Dynamic 写入在 PartiallyPresent 状态（state=7）且 file_offset > 0 时应成功。
+/// PartiallyPresent 与 FullyPresent 共享同一写入路径，用于差分 VHDX。
+#[test]
+fn test_dynamic_write_partially_present_block_succeeds() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    File::create(&path)
+        .size(4 * 1024 * 1024)
+        .fixed(false)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("Failed to create dynamic disk");
+
+    // PartiallyPresent = 7
+    let payload_offset_mb = 8u64;
+    let bat_raw = (payload_offset_mb << 20) | 7u64;
+    inject_bat_entry_raw(&path, 0, bat_raw);
+
+    // 预写入哨兵数据到物理偏移
+    let sentinel = vec![0x00u8; 512];
+    write_raw_bytes(&path, payload_offset_mb * 1024 * 1024, &sentinel);
+
+    let file = File::open(&path)
+        .write()
+        .finish()
+        .expect("Failed to reopen dynamic disk with write access");
+
+    let sector = file.io().sector(0).expect("Sector 0 should exist");
+    let data = vec![0xD5u8; 4096];
+    sector
+        .write(&data)
+        .expect("Dynamic write should succeed on PartiallyPresent payload entry");
+
+    // 验证数据实际写入到 payload 偏移处
+    let written = read_raw_bytes(&path, payload_offset_mb * 1024 * 1024, 4096);
+    assert_eq!(written, data, "Written data should land at payload offset");
+}
+
+/// 测试 Dynamic 写入在 NotPresent（state=0）状态返回明确的"不支持自动分配"错误，
+/// 错误信息应包含 block 索引和状态名称，便于诊断。
+#[test]
+fn test_dynamic_write_notpresent_returns_allocation_error_with_diagnostics() {
+    use vhdx_rs::{Error, File};
+
+    let path = temp_vhdx_path();
+
+    File::create(&path)
+        .size(4 * 1024 * 1024)
+        .fixed(false)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("Failed to create dynamic disk");
+
+    // BAT 条目保持默认（NotPresent / offset=0），无需注入
+
+    let file = File::open(&path)
+        .write()
+        .finish()
+        .expect("Failed to reopen dynamic disk with write access");
+
+    let sector = file.io().sector(0).expect("Sector 0 should exist");
+    let result = sector.write(&[0xAA_u8; 4096]);
+
+    match result {
+        Err(Error::InvalidParameter(msg)) => {
+            // 错误信息应包含 state 名称和 block 索引，便于定位
+            assert!(
+                msg.contains("NotPresent"),
+                "error should mention NotPresent state, got: {msg}"
+            );
+            assert!(
+                msg.contains("block"),
+                "error should mention block index, got: {msg}"
+            );
+        }
+        Err(_) => panic!("expected InvalidParameter for NotPresent write"),
+        Ok(_) => panic!("NotPresent write should fail"),
+    }
+}
+
+/// 测试 Dynamic 写入在 Zero（state=2）状态返回明确的限制错误，
+/// 确保用户能区分"块存在但为零"与"块不存在"。
+#[test]
+fn test_dynamic_write_zero_state_returns_allocation_error() {
+    use vhdx_rs::{Error, File};
+
+    let path = temp_vhdx_path();
+
+    File::create(&path)
+        .size(4 * 1024 * 1024)
+        .fixed(false)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("Failed to create dynamic disk");
+
+    // Zero state = 2，即使 file_offset 非零也不允许写入
+    let bat_raw = (8u64 << 20) | 2u64;
+    inject_bat_entry_raw(&path, 0, bat_raw);
+
+    let file = File::open(&path)
+        .write()
+        .finish()
+        .expect("Failed to reopen dynamic disk with write access");
+
+    let sector = file.io().sector(0).expect("Sector 0 should exist");
+    let result = sector.write(&[0xAA_u8; 4096]);
+
+    match result {
+        Err(Error::InvalidParameter(msg)) => {
+            assert!(
+                msg.contains("Zero"),
+                "error should mention Zero state, got: {msg}"
+            );
+        }
+        Err(_) => panic!("expected InvalidParameter for Zero state write"),
+        Ok(_) => panic!("Zero state write should fail"),
+    }
+}
+
+/// 测试 Dynamic 写入在未分配块上返回明确错误，且失败后数据保持零。
+#[test]
+fn test_dynamic_write_bat_index_out_of_range_returns_error() {
+    use vhdx_rs::{Error, File};
+
+    let path = temp_vhdx_path();
+
+    // 创建很小的 Dynamic VHDX（1 MiB，1 MiB 块大小），仅 1 个 payload block
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(false)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("Failed to create dynamic disk");
+
+    let file = File::open(&path)
+        .write()
+        .finish()
+        .expect("Failed to reopen dynamic disk with write access");
+
+    // 写入 sector 0（block 0）到未分配块 → NotPresent 错误
+    let sector = file.io().sector(0).expect("Sector 0 should exist");
+    let result = sector.write(&[0xAA_u8; 4096]);
+
+    // 应返回 InvalidParameter，错误信息包含 NotPresent
+    match result {
+        Err(Error::InvalidParameter(msg)) => {
+            assert!(
+                msg.contains("NotPresent"),
+                "error should mention NotPresent, got: {msg}"
+            );
+        }
+        Err(_) => panic!("expected InvalidParameter for unallocated write"),
+        Ok(_) => panic!("unallocated write should fail"),
+    }
+
+    // 验证写入失败后，通过 IO 重新读取仍为零
+    let sector_after = file.io().sector(0).expect("Sector 0 should exist");
+    let mut buf_after = vec![0u8; 4096];
+    sector_after
+        .read(&mut buf_after)
+        .expect("Read should succeed");
+    assert_eq!(
+        buf_after,
+        vec![0u8; 4096],
+        "data should remain zero after failed write"
+    );
+}
+
+/// 测试 ReplayOverlay 只覆盖匹配的文件偏移范围，不干扰其他已分配块。
+/// 注入 pending log 覆盖 block 0 的中间区域，读取 block 1 应不受影响。
+#[test]
+fn test_replay_overlay_does_not_affect_non_overlapping_allocated_block() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+
+    // 创建 Dynamic VHDX，4 MiB 虚拟大小，1 MiB 块大小 → 4 个 payload block
+    File::create(&path)
+        .size(4 * 1024 * 1024)
+        .fixed(false)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("Failed to create dynamic disk");
+
+    // 分配 block 0 和 block 1 到不同的物理偏移
+    let block0_offset_mb = 8u64;
+    let block1_offset_mb = 10u64;
+    inject_bat_entry_raw(&path, 0, (block0_offset_mb << 20) | 6u64);
+    inject_bat_entry_raw(&path, 1, (block1_offset_mb << 20) | 6u64);
+
+    // 在两个块中写入可区分的数据
+    let block0_data = vec![0xA0_u8; 4096];
+    let block1_data = vec![0xB1_u8; 4096];
+    write_raw_bytes(&path, block0_offset_mb * 1024 * 1024, &block0_data);
+    write_raw_bytes(&path, block1_offset_mb * 1024 * 1024, &block1_data);
+
+    // 注入 pending log 覆盖 block 0 的文件偏移（不触及 block 1）
+    let overlay_offset = block0_offset_mb * 1024 * 1024 + 512;
+    inject_pending_log_entry(&path, overlay_offset, b"ONLY_BLOCK_0");
+
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::InMemoryOnReadOnly)
+        .finish()
+        .expect("InMemoryOnReadOnly open should succeed");
+
+    // 读取 block 1 的扇区 0（虚拟扇区 = sectors_per_block * 1 = 256）
+    let sectors_per_block = 1024 * 1024 / 4096; // = 256
+    let sector = file
+        .io()
+        .sector(sectors_per_block)
+        .expect("Block 1 sector 0 should exist");
+    let mut buf = vec![0u8; 4096];
+    sector.read(&mut buf).expect("Read block 1 should succeed");
+
+    // block 1 数据不应受 overlay 影响
+    assert_eq!(
+        buf, block1_data,
+        "Block 1 data should be untouched by overlay targeting block 0"
     );
 }

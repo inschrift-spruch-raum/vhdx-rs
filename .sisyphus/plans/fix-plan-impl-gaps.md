@@ -101,7 +101,7 @@ Wave 4: T10（全量回归与结果归档）
 > Implementation + Test = ONE task. Never separate.
 > EVERY task MUST have: Agent Profile + Parallelization + QA Scenarios.
 
-- [ ] 1. 修复 Dynamic 读路径按 BAT 读取已分配块
+- [x] 1. 修复 Dynamic 读路径按 BAT 读取已分配块
 
   **What to do**:
   - 在 `src/file.rs` 中替换当前 Dynamic 分支零填充逻辑，按 `offset/len` 跨块读取。
@@ -150,7 +150,7 @@ Wave 4: T10（全量回归与结果归档）
 
   **Commit**: YES | Message: `fix(core): implement BAT-backed dynamic reads` | Files: `src/file.rs`, `tests/integration_test.rs`
 
-- [ ] 2. 让 ReplayOverlay 在 Dynamic 读路径生效
+- [x] 2. 让 ReplayOverlay 在 Dynamic 读路径生效
 
   **What to do**:
   - 在 `src/file.rs` Dynamic 读取分支完成真实读取/零填充后，应用 `apply_replay_overlay`（与 Fixed 路径一致）。
@@ -192,7 +192,7 @@ Wave 4: T10（全量回归与结果归档）
 
   **Commit**: YES | Message: `fix(core): apply replay overlay to dynamic reads` | Files: `src/file.rs`, `tests/integration_test.rs`
 
-- [ ] 3. 修正 Dynamic 写路径对 BAT payload entry 的索引与状态处理
+- [x] 3. 修正 Dynamic 写路径对 BAT payload entry 的索引与状态处理
 
   **What to do**:
   - 在 `src/file.rs::write_dynamic` 中确保按 payload block 语义解析 BAT 条目，避免误用 sector bitmap entry。
@@ -236,7 +236,7 @@ Wave 4: T10（全量回归与结果归档）
 
   **Commit**: YES | Message: `fix(core): correct dynamic write BAT entry handling` | Files: `src/file.rs`, `tests/integration_test.rs`
 
-- [ ] 4. 实现 `check` 命令真实校验流程（接入 SpecValidator）
+- [x] 4. 实现 `check` 命令真实校验流程（接入 SpecValidator）
 
   **What to do**:
   - 在 `vhdx-cli/src/commands/check.rs` 将“仅打开即成功”改为真实校验：调用 `vhdx_file.validator().validate_file()`。
@@ -280,7 +280,7 @@ Wave 4: T10（全量回归与结果归档）
 
   **Commit**: YES | Message: `feat(cli): run spec validator in check command` | Files: `vhdx-cli/src/commands/check.rs`, `vhdx-cli/tests/cli_integration.rs`
 
-- [ ] 5. 落地 `check --log-replay` 与 `check --repair` 语义（去除 not implemented）
+- [x] 5. 落地 `check --log-replay` 与 `check --repair` 语义（去除 not implemented）
 
   **What to do**:
   - `--log-replay`：在 check 流中执行可验证的 replay 路径（建议使用明确 policy），并报告 replay 结果。
@@ -324,7 +324,7 @@ Wave 4: T10（全量回归与结果归档）
 
   **Commit**: YES | Message: `fix(cli): define check replay and repair semantics` | Files: `vhdx-cli/src/commands/check.rs`, `vhdx-cli/tests/cli_integration.rs`
 
-- [ ] 6. 实现 `sections log` 真实输出
+- [x] 6. 实现 `sections log` 真实输出
 
   **What to do**:
   - 在 `vhdx-cli/src/commands/sections_cmd.rs` 中读取 `sections().log()` 并展示：entry 数量、关键 header 字段、descriptor 概要。
@@ -366,7 +366,7 @@ Wave 4: T10（全量回归与结果归档）
 
   **Commit**: YES | Message: `feat(cli): implement sections log output` | Files: `vhdx-cli/src/commands/sections_cmd.rs`, `vhdx-cli/tests/cli_integration.rs`
 
-- [ ] 7. 实现 `diff chain` 真实链路遍历
+- [x] 7. 实现 `diff chain` 真实链路遍历
 
   **What to do**:
   - 在 `vhdx-cli/src/commands/diff.rs` 中基于 metadata parent locator 递归/迭代打开父盘，打印完整链。
@@ -408,7 +408,7 @@ Wave 4: T10（全量回归与结果归档）
 
   **Commit**: YES | Message: `feat(cli): implement diff chain traversal` | Files: `vhdx-cli/src/commands/diff.rs`, `vhdx-cli/tests/cli_integration.rs`
 
-- [ ] 8. 对齐 README 与 CLI 契约文档（包名/参数/值）
+- [x] 8. 对齐 README 与 CLI 契约文档（包名/参数/值）
 
   **What to do**:
   - 修正 README 中 `cargo build -p vhdx-cli` 为 `cargo build -p vhdx-tool`。
@@ -451,7 +451,7 @@ Wave 4: T10（全量回归与结果归档）
 
   **Commit**: YES | Message: `docs(cli): align package and option contracts` | Files: `README.md`, `AGENTS.md`
 
-- [ ] 9. 补齐/更新回归测试（库 + CLI）
+- [x] 9. 补齐/更新回归测试（库 + CLI）
 
   **What to do**:
   - 在 `tests/integration_test.rs` 新增 Dynamic 已分配块读取、overlay 可见性、写路径限制明确性测试。
@@ -496,7 +496,7 @@ Wave 4: T10（全量回归与结果归档）
 
   **Commit**: YES | Message: `test(regression): cover dynamic and cli parity scenarios` | Files: `tests/integration_test.rs`, `vhdx-cli/tests/cli_integration.rs`
 
-- [ ] 10. 全量回归、构建与证据归档
+- [x] 10. 全量回归、构建与证据归档
 
   **What to do**:
   - 运行 `cargo fmt --check`, `cargo clippy --workspace`, `cargo test --workspace`, `cargo build -p vhdx-tool`。
@@ -543,10 +543,10 @@ Wave 4: T10（全量回归与结果归档）
 > 4 review agents run in PARALLEL. ALL must APPROVE. Present consolidated results to user and get explicit "okay" before completing.
 > **Do NOT auto-proceed after verification. Wait for user's explicit approval before marking work complete.**
 > **Never mark F1-F4 as checked before getting user's okay.** Rejection or user feedback -> fix -> re-run -> present again -> wait for okay.
-- [ ] F1. Plan Compliance Audit — oracle
-- [ ] F2. Code Quality Review — unspecified-high
-- [ ] F3. Real Manual QA — unspecified-high (+ playwright if UI)
-- [ ] F4. Scope Fidelity Check — deep
+- [x] F1. Plan Compliance Audit — oracle
+- [x] F2. Code Quality Review — unspecified-high
+- [x] F3. Real Manual QA — unspecified-high (+ playwright if UI)
+- [x] F4. Scope Fidelity Check — deep
 
 ## Commit Strategy
 - Commit 1: `fix(core): correct dynamic read path and replay overlay behavior`

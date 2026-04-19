@@ -95,11 +95,53 @@ pub fn cmd_sections(file: &Path, section: &SectionCommand) {
                         }
                     }
                 }
-                // 查看日志区域（尚未实现）
+                // 查看日志区域
                 SectionCommand::Log => {
                     println!("Log Section");
                     println!("===========");
-                    println!("Note: Log viewing not yet implemented");
+                    match vhdx_file.sections().log() {
+                        Ok(log) => {
+                            let entries = log.entries();
+                            let total = entries.len();
+                            println!("Total Log Entries: {total}");
+
+                            if total == 0 {
+                                println!("\nNo log entries found. File is clean.");
+                            }
+
+                            for (i, entry) in entries.iter().enumerate() {
+                                let header = entry.header();
+                                // 将签名字节转为可读字符串
+                                let sig = String::from_utf8_lossy(header.signature());
+                                println!("\nEntry {i}:");
+                                println!("  Signature: {sig}");
+                                println!("  Sequence Number: {}", header.sequence_number());
+                                println!("  Entry Length: {} bytes", header.entry_length());
+                                println!("  Descriptor Count: {}", header.descriptor_count());
+                                println!("  Checksum: 0x{:08X}", header.checksum());
+                                println!("  Log GUID: {}", header.log_guid());
+                                println!("  Flushed File Offset: {}", header.flushed_file_offset());
+                                println!("  Last File Offset: {}", header.last_file_offset());
+
+                                // 描述符概要
+                                let descriptors = entry.descriptors();
+                                let data_count = descriptors
+                                    .iter()
+                                    .filter(|d| matches!(d, vhdx_rs::section::Descriptor::Data(_)))
+                                    .count();
+                                let zero_count = descriptors
+                                    .iter()
+                                    .filter(|d| matches!(d, vhdx_rs::section::Descriptor::Zero(_)))
+                                    .count();
+                                println!("  Data Descriptors: {data_count}");
+                                println!("  Zero Descriptors: {zero_count}");
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error parsing log section: {e}");
+                            std::process::exit(1);
+                        }
+                    }
                 }
             }
         }
