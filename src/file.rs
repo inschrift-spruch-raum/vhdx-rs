@@ -69,7 +69,7 @@ pub struct File {
     /// 底层操作系统文件句柄
     inner: StdFile,
     /// 各 VHDX 区域的延迟加载容器
-    sections: Sections,
+    sections: Sections<'static>,
     /// 虚拟磁盘大小（字节）
     virtual_disk_size: u64,
     /// 块大小（字节），用于 Dynamic 类型
@@ -141,7 +141,7 @@ impl File {
     }
 
     /// 获取 VHDX 区域容器的引用
-    pub const fn sections(&self) -> &Sections {
+    pub const fn sections(&self) -> &Sections<'_> {
         &self.sections
     }
 
@@ -493,7 +493,7 @@ impl File {
 
     /// 处理日志回放，如有未完成的日志条目则回放并更新头部
     fn handle_log_replay(
-        file: &mut StdFile, sections: &Sections,
+        file: &mut StdFile, sections: &Sections<'_>,
         current_header: &crate::sections::HeaderStructure<'_>, writable: bool,
         policy: LogReplayPolicy,
     ) -> Result<bool> {

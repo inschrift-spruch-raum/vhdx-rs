@@ -18,6 +18,7 @@ use crate::common::constants::{
 };
 use crate::error::{Error, Result};
 use crate::types::Guid;
+use std::marker::PhantomData;
 
 /// 从切片安全读取固定长度数组；长度不足时以 0 填充。
 fn read_array<const N: usize>(data: &[u8], start: usize) -> [u8; N] {
@@ -47,16 +48,20 @@ fn read_guid(data: &[u8], start: usize) -> Guid {
 ///
 /// 包装日志区域的原始数据，提供对日志条目的解析和回放功能。
 /// 日志区域在文件中由头部结构的 `log_offset` 和 `log_length` 字段定位。
-pub struct Log {
+pub struct Log<'a> {
     /// 日志区域的原始字节数据
     raw_data: Vec<u8>,
+    marker: PhantomData<&'a [u8]>,
 }
 
-impl Log {
+impl<'a> Log<'a> {
     /// 从原始数据创建日志实例
     #[must_use]
     pub const fn new(data: Vec<u8>) -> Self {
-        Self { raw_data: data }
+        Self {
+            raw_data: data,
+            marker: PhantomData,
+        }
     }
 
     /// 返回日志区域的原始字节数据

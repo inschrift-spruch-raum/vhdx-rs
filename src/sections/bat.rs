@@ -13,22 +13,24 @@
 
 use crate::common::constants::{BAT_ENTRY_SIZE, CHUNK_RATIO_CONSTANT, MiB};
 use crate::error::{Error, Result};
+use std::marker::PhantomData;
 
 /// 块分配表（BAT）（MS-VHDX §2.5）
 ///
 /// 包装 BAT 的原始数据和条目计数。
 /// BAT 条目按 Payload Block 和 Sector Bitmap Block 交错排列，
 /// 总条目数 = Payload Block 数 + Sector Bitmap Block 数。
-pub struct Bat {
+pub struct Bat<'a> {
     /// BAT 的原始字节数据
     raw_data: Vec<u8>,
     /// BAT 条目总数（Payload + Sector Bitmap）
     entry_count: usize,
     /// 预解析的 BAT 条目列表
     entries: Vec<BatEntry>,
+    marker: PhantomData<&'a [u8]>,
 }
 
-impl Bat {
+impl<'a> Bat<'a> {
     /// 从原始数据创建 BAT 实例，验证数据长度是否足够容纳指定数量的条目
     pub fn new(data: Vec<u8>, entry_count: u64) -> Result<Self> {
         let entry_count: usize = entry_count.try_into().map_err(|_| {
@@ -66,6 +68,7 @@ impl Bat {
             raw_data: data,
             entry_count,
             entries,
+            marker: PhantomData,
         })
     }
 

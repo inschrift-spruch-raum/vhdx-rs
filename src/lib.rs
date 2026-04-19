@@ -44,7 +44,7 @@ pub mod validation;
 /// - [`Bat`] / [`BatEntry`] — 块分配表
 /// - [`Header`] / [`HeaderStructure`] — 头部结构
 /// - [`Metadata`] / [`MetadataTable`] / [`FileParameters`] — 元数据
-/// - [`Log`] / [`LogEntry`] / [`LogEntryHeader`] — 日志
+/// - [`Log`] / [`LogEntry`] / [`Entry`] / [`LogEntryHeader`] — 日志
 /// - 以及所有关联的描述符、标志位和辅助类型
 pub mod section {
     pub use crate::sections::{
@@ -54,6 +54,9 @@ pub mod section {
         PayloadBlockState, RegionTable, RegionTableEntry, RegionTableHeader, Sections,
         SectorBitmapState, TableEntry, TableHeader, ZeroDescriptor,
     };
+
+    /// API.md 兼容别名：[`Entry`] 等价于 [`LogEntry`]
+    pub use crate::sections::LogEntry as Entry;
 }
 
 // IO 抽象类型

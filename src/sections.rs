@@ -16,6 +16,7 @@
 
 use std::cell::RefCell;
 use std::io::{Read, Seek, SeekFrom};
+use std::marker::PhantomData;
 
 use crate::common::constants::HEADER_SECTION_SIZE;
 use crate::error::{Error, Result};
@@ -41,12 +42,12 @@ pub use metadata::{
 ///
 /// 包装内部的元数据实现，提供统一的外部接口。
 /// 注意：此类型与子模块中的 `Metadata` 同名但不同。
-pub struct Metadata {
+pub struct Metadata<'a> {
     /// 内部元数据实现
-    inner: metadata::Metadata,
+    inner: metadata::Metadata<'a>,
 }
 
-impl Metadata {
+impl<'a> Metadata<'a> {
     /// 从原始字节数据创建元数据包装实例
     ///
     /// 将数据传递给内部 `metadata::Metadata::new()` 进行解析。
@@ -83,12 +84,12 @@ impl Metadata {
 ///
 /// 包装内部的日志实现，提供统一的外部接口。
 /// 注意：此类型与子模块中的 `Log` 同名但不同。
-pub struct Log {
+pub struct Log<'a> {
     /// 内部日志实现
-    inner: log::Log,
+    inner: log::Log<'a>,
 }
 
-impl Log {
+impl<'a> Log<'a> {
     /// 从原始字节数据创建日志包装实例
     ///
     /// 直接将数据传递给内部 `log::Log::new()`，不进行解析
@@ -167,18 +168,18 @@ pub struct SectionsConfig {
 ///
 /// 注意：此类型不是线程安全的（使用 `RefCell` 而非 `Mutex`），
 /// 因为 VHDX 文件操作通常是单线程的。
-pub struct Sections {
+pub struct Sections<'a> {
     /// VHDX 文件句柄（用于按需读取区域数据）
     file: std::fs::File,
 
     /// 头部区域（延迟加载，首次访问时从文件读取）
-    header: RefCell<Option<Header>>,
+    header: RefCell<Option<Header<'static>>>,
     /// BAT 区域（延迟加载）
-    bat: RefCell<Option<Bat>>,
+    bat: RefCell<Option<Bat<'static>>>,
     /// 元数据区域（延迟加载）
-    metadata: RefCell<Option<Metadata>>,
+    metadata: RefCell<Option<Metadata<'static>>>,
     /// 日志区域（延迟加载）
-    log: RefCell<Option<Log>>,
+    log: RefCell<Option<Log<'static>>>,
 
     /// BAT 区域在文件中的偏移量
     bat_offset: u64,
@@ -195,9 +196,12 @@ pub struct Sections {
 
     /// BAT 条目总数
     entry_count: u64,
+
+    /// 生命周期标记
+    marker: PhantomData<&'a [u8]>,
 }
 
-impl Sections {
+impl<'a> Sections<'a> {
     /// 从配置创建 Sections 实例，所有区域初始化为未加载状态
     ///
     /// 仅保存配置信息（偏移量、大小等），不执行任何文件 I/O。
@@ -218,6 +222,7 @@ impl Sections {
             log_offset: config.log_offset,
             log_size: config.log_size,
             entry_count: config.entry_count,
+            marker: PhantomData,
         }
     }
 
@@ -225,20 +230,21 @@ impl Sections {
     ///
     /// 首次调用时从文件读取 1MB 头部区域数据并缓存。
     /// 后续调用直接返回缓存的引用。
-    pub fn header(&self) -> Result<std::cell::Ref<'_, Header>> {
+    pub fn header(&self) -> Result<std::cell::Ref<'_, Header<'a>>> {
         if self.header.borrow().is_none() {
             // 从文件起始位置读取完整的头部区域（1MB）
             let header_data = self.read_header_section()?;
             *self.header.borrow_mut() = Some(Header::new(header_data)?);
         }
         // 将 Option<Header> 映射为 &Header，解包安全（刚确认是 Some）
-        Ok(std::cell::Ref::map(self.header.borrow(), |h| {
-            h.as_ref().unwrap()
-        }))
+        Ok(std::cell::Ref::map(
+            self.header.borrow(),
+            |h| -> &Header<'a> { h.as_ref().unwrap() },
+        ))
     }
 
     /// 获取 BAT 区域（延迟加载），首次调用时从文件读取并缓存
-    pub fn bat(&self) -> Result<std::cell::Ref<'_, Bat>> {
+    pub fn bat(&self) -> Result<std::cell::Ref<'_, Bat<'a>>> {
         if self.bat.borrow().is_none() {
             // 将 u64 大小转换为 usize，防止溢出
             let bat_size: usize = self.bat_size.try_into().map_err(|_| {
@@ -247,13 +253,13 @@ impl Sections {
             let bat_data = self.read_section(self.bat_offset, bat_size)?;
             *self.bat.borrow_mut() = Some(Bat::new(bat_data, self.entry_count)?);
         }
-        Ok(std::cell::Ref::map(self.bat.borrow(), |b| {
+        Ok(std::cell::Ref::map(self.bat.borrow(), |b| -> &Bat<'a> {
             b.as_ref().unwrap()
         }))
     }
 
     /// 获取元数据区域（延迟加载），首次调用时从文件读取并缓存
-    pub fn metadata(&self) -> Result<std::cell::Ref<'_, Metadata>> {
+    pub fn metadata(&self) -> Result<std::cell::Ref<'_, Metadata<'a>>> {
         if self.metadata.borrow().is_none() {
             // 将 u64 大小转换为 usize，防止溢出
             let metadata_size: usize = self.metadata_size.try_into().map_err(|_| {
@@ -265,13 +271,14 @@ impl Sections {
             let metadata_data = self.read_section(self.metadata_offset, metadata_size)?;
             *self.metadata.borrow_mut() = Some(Metadata::new(metadata_data)?);
         }
-        Ok(std::cell::Ref::map(self.metadata.borrow(), |m| {
-            m.as_ref().unwrap()
-        }))
+        Ok(std::cell::Ref::map(
+            self.metadata.borrow(),
+            |m| -> &Metadata<'a> { m.as_ref().unwrap() },
+        ))
     }
 
     /// 获取日志区域（延迟加载），首次调用时从文件读取并缓存
-    pub fn log(&self) -> Result<std::cell::Ref<'_, Log>> {
+    pub fn log(&self) -> Result<std::cell::Ref<'_, Log<'a>>> {
         if self.log.borrow().is_none() {
             // 将 u64 大小转换为 usize，防止溢出
             let log_size: usize = self.log_size.try_into().map_err(|_| {
@@ -281,7 +288,7 @@ impl Sections {
             // Log::new 是 const fn，不会失败
             *self.log.borrow_mut() = Some(Log::new(log_data));
         }
-        Ok(std::cell::Ref::map(self.log.borrow(), |l| {
+        Ok(std::cell::Ref::map(self.log.borrow(), |l| -> &Log<'a> {
             l.as_ref().unwrap()
         }))
     }

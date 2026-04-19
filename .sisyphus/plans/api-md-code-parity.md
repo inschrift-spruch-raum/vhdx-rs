@@ -650,7 +650,7 @@ Wave 6: 命名空间/文档同步 + 机械验收与证据重建（T18,T19,T20）
 
   **Commit**: YES | Message: `chore(api): finalize verification evidence and quality gates` | Files: `.sisyphus/evidence/*` (and minimal fixes if required)
 
-- [ ] 15. 残差实锚核对与范围收敛（issues.md 去伪存真）
+- [x] 15. 残差实锚核对与范围收敛（issues.md 去伪存真）
 
   **What to do**: 逐条核对 `.sisyphus/notepads/api-md-code-parity/issues.md` 条目与当前代码/`docs/plan/API.md`，将“已解决或误报项”剔除，仅保留真实未解差异并映射到 T16-T20。
   **Must NOT do**: 不直接实施代码修复；不修改 `docs/plan/API.md`；不在本任务提前勾选后续任务完成。
@@ -688,7 +688,7 @@ Wave 6: 命名空间/文档同步 + 机械验收与证据重建（T18,T19,T20）
 
   **Commit**: NO | Message: `docs(plan): triage unresolved issues for remediation wave` | Files: `.sisyphus/plans/api-md-code-parity.md`, `.sisyphus/notepads/api-md-code-parity/issues.md`
 
-- [ ] 16. `Sections<'a>` 生命周期模型强制重构（结构核心）
+- [x] 16. `Sections<'a>` 生命周期模型强制重构（结构核心）
 
   **What to do**: 按 `docs/plan/API.md` 将 `Sections` 与相关 section 核心类型重构为生命周期借用模型（`<'a>`），消除 owned `RefCell<Option<T>>` 模式导致的形态偏差。
   **Must NOT do**: 不改变 VHDX 解析业务语义；不引入 API.md 未声明新能力；不扩大到 CLI 功能层。
@@ -727,7 +727,7 @@ Wave 6: 命名空间/文档同步 + 机械验收与证据重建（T18,T19,T20）
 
   **Commit**: YES | Message: `refactor(api): enforce sections lifetime model per plan` | Files: `src/sections*.rs`, `tests/*`
 
-- [ ] 17. 公开字段形态与签名精对齐（RegionTable / FileParameters 等）
+- [x] 17. 公开字段形态与签名精对齐（RegionTable / FileParameters 等）
 
   **What to do**: 按 `docs/plan/API.md` 对齐公开字段形态（含 `RegionTable`、`FileParameters` 及关联结构），移除“仅方法暴露但计划要求公开字段”的差异。
   **Must NOT do**: 不以新增临时别名规避差异；不引入双轨 API（字段+不必要旧方法长期并存）。
@@ -766,7 +766,7 @@ Wave 6: 命名空间/文档同步 + 机械验收与证据重建（T18,T19,T20）
 
   **Commit**: YES | Message: `refactor(api): align public field shapes with plan` | Files: `src/sections/**/*.rs`, `tests/*`
 
-- [ ] 18. `section::` 命名空间与导出布局对齐
+- [x] 18. `section::` 命名空间与导出布局对齐
 
   **What to do**: 在 `src/lib.rs` 建立并对齐 `section::` 命名空间导出（与 root 导出共存策略按计划定义执行），确保 `docs/plan/API.md` 列出的模块路径可导入。
   **Must NOT do**: 不破坏现有已使用路径的最小兼容性；不引入计划外命名空间。
@@ -804,7 +804,7 @@ Wave 6: 命名空间/文档同步 + 机械验收与证据重建（T18,T19,T20）
 
   **Commit**: YES | Message: `refactor(api): align section namespace exports` | Files: `src/lib.rs`, `tests/api_surface_smoke.rs`
 
-- [ ] 19. `docs/API.md` 与 `docs/plan/API.md` 同步收口（代码先行后文档）
+- [x] 19. `docs/API.md` 与 `docs/plan/API.md` 同步收口（代码先行后文档）
 
   **What to do**: 在代码对齐完成后，将 `docs/API.md` 与 `docs/plan/API.md` 对齐为一致口径，消除双文档冲突（仅反映既有实现，不新增能力）。
   **Must NOT do**: 不用改文档替代代码修复；不在代码未对齐前先改文档“掩盖差异”。
@@ -842,7 +842,7 @@ Wave 6: 命名空间/文档同步 + 机械验收与证据重建（T18,T19,T20）
 
   **Commit**: YES | Message: `docs(api): reconcile API docs after code parity` | Files: `docs/API.md`, `docs/plan/API.md`
 
-- [ ] 20. 重跑终极机械闸门与原始证据重建（替代重建摘要）
+- [x] 20. 重跑终极机械闸门与原始证据重建（替代重建摘要）
 
   **What to do**: 按新版对齐结果重跑机械闸门与审计闸门，使用原始终端输出重建 `.sisyphus/evidence`，替换“重建摘要证据”。
   **Must NOT do**: 不提交空证据或摘要证据；不跳过失败场景证据。
@@ -886,7 +886,7 @@ Wave 6: 命名空间/文档同步 + 机械验收与证据重建（T18,T19,T20）
 > **Do NOT auto-proceed after verification. Wait for user's explicit approval before marking work complete.**
 > **Never mark F1-F4 as checked before getting user's okay.** Rejection or user feedback -> fix -> re-run -> present again -> wait for okay.
 > **Verifier independence**: F1-F4 review agents MUST NOT be the same agents that implemented T15-T20.
-- [ ] F1. Plan Compliance Audit — oracle
+- [x] F1. Plan Compliance Audit — oracle
 
   **What to do**: 逐条比对 T1-T20 产物与本计划要求，审计是否存在遗漏任务、跳步执行或验收伪通过。
   **Acceptance Criteria**:
@@ -908,7 +908,7 @@ Wave 6: 命名空间/文档同步 + 机械验收与证据重建（T18,T19,T20）
     Evidence: .sisyphus/evidence/f1-plan-compliance-error.txt
   ```
 
-- [ ] F2. Code Quality Review — unspecified-high
+- [x] F2. Code Quality Review — unspecified-high
 
   **What to do**: 对变更文件做质量审查（接口一致性、错误处理、可维护性、无 AI slop 模式）。
   **Acceptance Criteria**:
@@ -930,7 +930,7 @@ Wave 6: 命名空间/文档同步 + 机械验收与证据重建（T18,T19,T20）
     Evidence: .sisyphus/evidence/f2-code-quality-error.txt
   ```
 
-- [ ] F3. Real Manual QA — unspecified-high (+ playwright if UI)
+- [x] F3. Real Manual QA — unspecified-high (+ playwright if UI)
 
   **What to do**: 执行真实命令级验收，覆盖 API smoke、workspace tests、CLI 构建联动。
   **Acceptance Criteria**:
@@ -953,7 +953,7 @@ Wave 6: 命名空间/文档同步 + 机械验收与证据重建（T18,T19,T20）
     Evidence: .sisyphus/evidence/f3-manual-qa-error.txt
   ```
 
-- [ ] F4. Scope Fidelity Check — deep
+- [x] F4. Scope Fidelity Check — deep
 
   **What to do**: 检查最终变更是否严格限定在“代码对齐 API.md”，确认无越界功能（尤其伪缺口项）。
   **Acceptance Criteria**:

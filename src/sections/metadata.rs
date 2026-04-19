@@ -13,6 +13,7 @@
 //! 包含一个固定 32 字节的表头和多个 32 字节的表项，
 //! 每个表项通过 GUID 标识元数据类型，并指向表后的变长数据。
 
+use std::marker::PhantomData;
 use std::path::PathBuf;
 
 use crate::common::constants::{METADATA_TABLE_SIZE, metadata_guids};
@@ -51,12 +52,13 @@ fn read_guid(data: &[u8], start: usize) -> Guid {
 /// VHDX 元数据区域（MS-VHDX §2.6）
 ///
 /// 包装元数据区域的原始数据，提供对元数据表和类型化元数据项的访问。
-pub struct Metadata {
+pub struct Metadata<'a> {
     /// 元数据区域的原始字节数据
     raw_data: Vec<u8>,
+    marker: PhantomData<&'a [u8]>,
 }
 
-impl Metadata {
+impl<'a> Metadata<'a> {
     /// 从原始字节数据创建元数据区域实例
     ///
     /// 数据长度必须至少为 `METADATA_TABLE_SIZE`（64KB），否则返回错误。
@@ -68,7 +70,10 @@ impl Metadata {
                 data.len()
             )));
         }
-        Ok(Self { raw_data: data })
+        Ok(Self {
+            raw_data: data,
+            marker: PhantomData,
+        })
     }
 
     /// 返回元数据区域的原始字节数据引用
@@ -310,13 +315,13 @@ impl EntryFlags {
 /// 提供对已知元数据项的便捷类型化访问。
 /// 每个方法通过 GUID 查找对应的元数据表项，然后解析数据。
 pub struct MetadataItems<'a> {
-    metadata: &'a Metadata,
+    metadata: &'a Metadata<'a>,
 }
 
 impl<'a> MetadataItems<'a> {
     /// 从元数据区域引用创建类型化访问器
     #[must_use]
-    pub const fn new(metadata: &'a Metadata) -> Self {
+    pub const fn new(metadata: &'a Metadata<'a>) -> Self {
         Self { metadata }
     }
 
@@ -335,7 +340,7 @@ impl<'a> MetadataItems<'a> {
     ///
     /// 返回块大小和标志位等基本文件配置参数。
     #[must_use]
-    pub fn file_parameters(&self) -> Option<FileParameters> {
+    pub fn file_parameters(&self) -> Option<FileParameters<'a>> {
         let data = self.get_item_data(&metadata_guids::FILE_PARAMETERS)?;
         if data.len() < 8 {
             return None;
@@ -409,27 +414,25 @@ impl<'a> MetadataItems<'a> {
 ///   - bit 0: LeaveBlockAllocated — 删除块时是否保留空间
 ///   - bit 1: HasParent — 是否为差分磁盘（有父磁盘）
 #[derive(Clone, Copy, Debug)]
-pub struct FileParameters {
-    /// 原始字节数据（8 字节）
-    pub raw_data: [u8; 8],
+pub struct FileParameters<'a> {
     /// 块大小（字节），必须为 1MB 的幂次（1MB-256MB）
     pub block_size: u32,
     /// 标志位（bit 0: LeaveBlockAllocated, bit 1: HasParent）
     pub flags: u32,
+    /// 原始字节视图
+    pub raw: &'a [u8],
 }
 
-impl FileParameters {
+impl<'a> FileParameters<'a> {
     /// 从原始字节数据解析文件参数（MS-VHDX §2.6.2.1）
     ///
     /// 数据必须至少 8 字节：前 4 字节为块大小，后 4 字节为标志位。
     #[must_use]
-    pub fn from_bytes(data: &[u8]) -> Self {
-        let mut raw_data = [0u8; 8];
-        raw_data.copy_from_slice(&data[..8]);
+    pub fn from_bytes(data: &'a [u8]) -> Self {
         Self {
-            raw_data,
             block_size: read_u32(data, 0),
             flags: read_u32(data, 4),
+            raw: data,
         }
     }
 
@@ -460,7 +463,7 @@ impl FileParameters {
     /// 返回文件参数的原始字节数据
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
-        &self.raw_data
+        self.raw
     }
 }
 

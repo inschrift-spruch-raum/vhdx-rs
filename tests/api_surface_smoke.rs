@@ -185,7 +185,7 @@ fn smoke_section_metadata_types_import() {
     let _ = std::marker::PhantomData::<Metadata>;
     let _ = std::marker::PhantomData::<MetadataTable<'_>>;
     let _ = std::marker::PhantomData::<MetadataItems<'_>>;
-    let _ = std::marker::PhantomData::<FileParameters>;
+    let _ = std::marker::PhantomData::<FileParameters<'_>>;
     let _ = std::marker::PhantomData::<ParentLocator<'_>>;
     let _ = std::marker::PhantomData::<LocatorHeader<'_>>;
     let _ = std::marker::PhantomData::<KeyValueEntry<'_>>;
@@ -203,11 +203,13 @@ fn smoke_section_metadata_types_import() {
 #[test]
 fn smoke_section_log_types_import() {
     use vhdx_rs::section::{
-        DataDescriptor, DataSector, Descriptor, Log, LogEntry, LogEntryHeader, ZeroDescriptor,
+        DataDescriptor, DataSector, Descriptor, Entry, Log, LogEntry, LogEntryHeader,
+        ZeroDescriptor,
     };
 
     let _ = std::marker::PhantomData::<Log>;
     let _ = std::marker::PhantomData::<LogEntry<'_>>;
+    let _ = std::marker::PhantomData::<Entry<'_>>;
     let _ = std::marker::PhantomData::<LogEntryHeader<'_>>;
     let _ = std::marker::PhantomData::<Descriptor<'_>>;
     let _ = std::marker::PhantomData::<DataDescriptor<'_>>;
@@ -486,6 +488,12 @@ fn smoke_header_substructure_fields_accessible() {
 
     // RegionTable + entries
     let rt = header.region_table(0).expect("smoke: region table");
+
+    // RegionTable 公共字段可访问
+    let _hdr_field: vhdx_rs::section::RegionTableHeader<'_> = rt.header;
+    let _entries_field: &[vhdx_rs::section::RegionTableEntry<'_>] = &rt.entries;
+
+    // RegionTable 方法也可调用
     let rth = rt.header();
     let _sig: [u8; 4] = rth.signature;
     let _checksum: u32 = rth.checksum;

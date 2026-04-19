@@ -15,6 +15,7 @@ use crate::common::constants::{
 use crate::error::{Error, Result};
 use crate::sections::crc32c_with_zero_field;
 use crate::types::Guid;
+use std::marker::PhantomData;
 
 /// 从切片安全读取固定长度数组；长度不足时以 0 填充。
 fn read_array<const N: usize>(data: &[u8], start: usize) -> [u8; N] {
@@ -56,11 +57,12 @@ fn read_guid(data: &[u8], start: usize) -> Guid {
 /// - `[128KB, 132KB)` — 头部结构 2
 /// - `[192KB, 256KB)` — 区域表 1
 /// - `[256KB, 320KB)` — 区域表 2
-pub struct Header {
+pub struct Header<'a> {
     raw_data: Vec<u8>,
+    marker: PhantomData<&'a [u8]>,
 }
 
-impl Header {
+impl<'a> Header<'a> {
     /// 从原始数据创建头部区域实例，验证数据长度必须为 1MB
     pub fn new(data: Vec<u8>) -> Result<Self> {
         if data.len() != HEADER_SECTION_SIZE {
@@ -70,7 +72,10 @@ impl Header {
                 data.len()
             )));
         }
-        Ok(Self { raw_data: data })
+        Ok(Self {
+            raw_data: data,
+            marker: PhantomData,
+        })
     }
 
     /// 返回头部区域的原始字节数据
@@ -401,11 +406,18 @@ impl<'a> HeaderStructure<'a> {
 /// 描述 VHDX 文件中各区域（如 BAT、元数据）的位置和大小。
 /// VHDX 文件包含两个冗余的区域表副本。
 pub struct RegionTable<'a> {
+    /// 原始字节数据（私有，供 raw() 方法向后兼容）
     data: &'a [u8],
+    /// 区域表头部（MS-VHDX §2.2.3.1）
+    pub header: RegionTableHeader<'a>,
+    /// 区域表条目列表（MS-VHDX §2.2.3.2）
+    pub entries: Vec<RegionTableEntry<'a>>,
 }
 
 impl<'a> RegionTable<'a> {
     /// 从原始字节数据创建区域表实例，验证数据长度必须为 64KB
+    ///
+    /// 解析时立即提取头部和所有条目，存为公开字段。
     pub fn new(data: &'a [u8]) -> Result<Self> {
         if data.len() != REGION_TABLE_SIZE {
             return Err(Error::InvalidRegionTable(format!(
@@ -414,7 +426,22 @@ impl<'a> RegionTable<'a> {
                 data.len()
             )));
         }
-        Ok(Self { data })
+        let header = RegionTableHeader::new(&data[0..16]);
+        let count = header.entry_count();
+        let entries: Vec<RegionTableEntry<'_>> = (0..count)
+            .filter_map(|i| {
+                let offset = 16 + i as usize * 32;
+                if offset + 32 > data.len() {
+                    return None;
+                }
+                RegionTableEntry::new(&data[offset..offset + 32]).ok()
+            })
+            .collect();
+        Ok(Self {
+            data,
+            header,
+            entries,
+        })
     }
 
     /// 返回区域表的原始字节数据
@@ -460,6 +487,7 @@ impl<'a> RegionTable<'a> {
 /// 区域表头部（MS-VHDX §2.2.3.1）
 ///
 /// 包含区域表的签名、校验和和条目数量。
+#[derive(Clone, Copy)]
 pub struct RegionTableHeader<'a> {
     /// 区域表签名（应为 "regi"）
     pub signature: [u8; 4],
@@ -528,6 +556,7 @@ impl<'a> RegionTableHeader<'a> {
 /// - 文件偏移量（8 字节）— 区域在文件中的起始位置
 /// - 长度（4 字节）— 区域大小
 /// - 必需标志（4 字节）— 是否为 VHDX 文件必需的区域
+#[derive(Clone, Copy)]
 pub struct RegionTableEntry<'a> {
     /// 区域 GUID
     pub guid: Guid,
