@@ -45,6 +45,79 @@ fn create_dynamic_vhdx() -> tempfile::TempDir {
     dir
 }
 
+/// 创建一组基础盘 + 差分盘（base.vhdx -> child.vhdx），返回临时目录和子盘路径。
+fn create_differencing_vhdx_pair() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let base_path = dir.path().join("base.vhdx");
+
+    vhdx_tool()
+        .args([
+            "create",
+            base_path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--disk-type",
+            "dynamic",
+        ])
+        .assert()
+        .success();
+
+    let child_path = dir.path().join("child.vhdx");
+    vhdx_tool()
+        .args([
+            "create",
+            child_path.to_str().unwrap(),
+            "--size",
+            "1MiB",
+            "--disk-type",
+            "differencing",
+            "--parent",
+            base_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    (dir, child_path)
+}
+
+/// 将差分盘 Parent Locator 篡改为无条目内容（测试专用）。
+fn inject_invalid_parent_locator_for_cli(path: &std::path::Path) {
+    use std::fs::OpenOptions;
+    use std::io::{Seek, SeekFrom, Write};
+
+    // 当前创建布局中 metadata 起始偏移固定为 2 * 1MiB。
+    const METADATA_OFFSET: u64 = 2 * 1024 * 1024;
+    // 第 6 个 metadata entry 为 Parent Locator（索引 5）。
+    const PARENT_LOCATOR_ENTRY_OFFSET: u64 = METADATA_OFFSET + 32 + 5 * 32;
+    const PARENT_LOCATOR_LENGTH_FIELD_OFFSET: u64 = PARENT_LOCATOR_ENTRY_OFFSET + 20;
+    const PARENT_LOCATOR_DATA_OFFSET: u64 = METADATA_OFFSET + 65_576;
+
+    // 仅写入 20 字节 locator header，entry_count=0，触发 parent_linkage 缺失。
+    let invalid_locator = vec![0u8; 20];
+
+    let mut raw = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("Failed to open child file for parent locator injection");
+
+    raw.seek(SeekFrom::Start(PARENT_LOCATOR_LENGTH_FIELD_OFFSET))
+        .expect("Failed to seek parent locator length field");
+    raw.write_all(
+        &u32::try_from(invalid_locator.len())
+            .expect("parent locator size overflow")
+            .to_le_bytes(),
+    )
+    .expect("Failed to write parent locator length");
+
+    raw.seek(SeekFrom::Start(PARENT_LOCATOR_DATA_OFFSET))
+        .expect("Failed to seek parent locator data offset");
+    raw.write_all(&invalid_locator)
+        .expect("Failed to write parent locator data");
+    raw.flush()
+        .expect("Failed to flush injected parent locator");
+}
+
 /// 获取样例文件路径，若文件不存在则返回 None（测试将跳过）。
 fn fixture_path(relative: &str) -> Option<String> {
     let p = Path::new(relative);
@@ -445,6 +518,74 @@ fn check_valid_file_success() {
         .stdout(predicate::str::contains(
             "File check completed successfully",
         ));
+}
+
+/// 测试差分盘 check 输出应包含 Parent Locator 检查项。
+#[test]
+fn check_differencing_disk_includes_parent_locator_item() {
+    let (_dir, child_path) = create_differencing_vhdx_pair();
+
+    vhdx_tool()
+        .args(["check", child_path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("✓ Parent Locator"))
+        .stdout(predicate::str::contains("0 failed"));
+}
+
+/// 测试 CLI check 在差分盘上输出 Parent Locator 检查项。
+#[test]
+fn cli_check_differencing_parent_locator_output() {
+    let (_dir, child_path) = create_differencing_vhdx_pair();
+
+    vhdx_tool()
+        .args(["check", child_path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Parent Locator"))
+        .stdout(predicate::str::contains("0 failed"));
+}
+
+/// 测试差分盘 Parent Locator 无效时，check 应报告 Parent Locator 失败。
+#[test]
+fn check_invalid_parent_locator_reports_failure() {
+    let (_dir, child_path) = create_differencing_vhdx_pair();
+    inject_invalid_parent_locator_for_cli(&child_path);
+
+    vhdx_tool()
+        .args(["check", child_path.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("✗ Parent Locator"))
+        .stdout(predicate::str::contains("parent_linkage"));
+}
+
+/// 测试 CLI check 在 Parent Locator 无效时返回失败并报告 parent_linkage。
+#[test]
+fn cli_check_invalid_parent_locator_fails() {
+    let (_dir, child_path) = create_differencing_vhdx_pair();
+    inject_invalid_parent_locator_for_cli(&child_path);
+
+    vhdx_tool()
+        .args(["check", child_path.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Parent Locator"))
+        .stdout(predicate::str::contains("parent_linkage"));
+}
+
+/// 测试非差分盘 check 不应误报 Parent Locator 失败。
+#[test]
+fn check_non_differencing_disk_no_parent_locator_false_failure() {
+    let dir = create_fixed_vhdx();
+    let path = dir.path().join("test.vhdx");
+
+    vhdx_tool()
+        .args(["check", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0 failed"))
+        .stdout(predicate::str::contains("✗ Parent Locator").not());
 }
 
 /// 测试 check 命令对不存在的文件应报错。

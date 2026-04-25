@@ -1571,6 +1571,100 @@ fn test_io_sector_out_of_range_returns_none() {
     );
 }
 
+/// 测试尾部非整扇区边界在兼容模式下可寻址且读写受边界控制。
+#[test]
+fn test_io_sector_tail_partial_boundary_behavior() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    // 先创建合法样本（创建接口要求 virtual size 必须是逻辑扇区大小的整数倍）。
+    // 再通过 metadata 原始字节注入“尾部非整扇区”虚拟大小，复现兼容模式场景。
+    let base_size = 1024 * 1024;
+    let virtual_size = base_size + 123;
+    let sector_size = 4096usize;
+    let valid_tail_len = 123usize;
+
+    File::create(&path)
+        .size(base_size)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    // metadata 区域固定布局：2MiB 起始，VIRTUAL_DISK_SIZE 数据位于数据区偏移 65536 + 8。
+    const METADATA_OFFSET: u64 = 2 * 1024 * 1024;
+    const METADATA_TABLE_SIZE: u64 = 64 * 1024;
+    const VIRTUAL_DISK_SIZE_DATA_OFFSET_IN_METADATA: u64 = METADATA_TABLE_SIZE + 8;
+    write_raw_bytes(
+        &path,
+        METADATA_OFFSET + VIRTUAL_DISK_SIZE_DATA_OFFSET_IN_METADATA,
+        &virtual_size.to_le_bytes(),
+    );
+
+    let file = File::open(&path)
+        .write()
+        .finish()
+        .expect("Failed to reopen disk after virtual size injection");
+
+    let io = file.io();
+
+    // ceil(virtual_size / sector_size) = 257，最后一个有效扇区索引为 256
+    let last_sector_idx = (virtual_size as u64).div_ceil(sector_size as u64) - 1;
+    let out_of_range_idx = last_sector_idx + 1;
+
+    let tail_sector = io
+        .sector(last_sector_idx)
+        .expect("Tail partial sector should be addressable in compatible mode");
+    assert!(
+        io.sector(out_of_range_idx).is_none(),
+        "Sector right after tail partial sector should be out of range"
+    );
+
+    // 先写入前一个完整扇区，确保尾部写入不会影响已存在完整扇区内容。
+    let prev_sector = io
+        .sector(last_sector_idx - 1)
+        .expect("Previous full sector should exist");
+    let prev_pattern = vec![0x3Cu8; sector_size];
+    prev_sector
+        .write(&prev_pattern)
+        .expect("Writing previous full sector should succeed");
+
+    // 向尾部部分扇区写入整扇区数据，期望仅前 valid_tail_len 字节生效。
+    let tail_pattern = vec![0xABu8; sector_size];
+    tail_sector
+        .write(&tail_pattern)
+        .expect("Writing tail sector should succeed with boundary truncation");
+
+    let mut tail_readback = vec![0u8; sector_size];
+    let read_size = tail_sector
+        .read(&mut tail_readback)
+        .expect("Reading tail sector should succeed");
+    assert_eq!(
+        read_size, sector_size,
+        "Sector::read should return full sector size"
+    );
+
+    // 断言：有效范围保留写入数据，越界部分被零填充。
+    assert!(
+        tail_readback[..valid_tail_len].iter().all(|&b| b == 0xAB),
+        "Valid tail bytes should preserve written pattern"
+    );
+    assert!(
+        tail_readback[valid_tail_len..].iter().all(|&b| b == 0),
+        "Out-of-range tail bytes should be zero-filled"
+    );
+
+    // 再次验证前一个完整扇区未被尾部写入破坏。
+    let mut prev_readback = vec![0u8; sector_size];
+    prev_sector
+        .read(&mut prev_readback)
+        .expect("Reading previous full sector should succeed");
+    assert_eq!(
+        prev_readback, prev_pattern,
+        "Tail partial write should not modify previous full sector"
+    );
+}
+
 /// 测试 Sector Clone/Debug/PartialEq trait 实现。
 #[test]
 fn test_sector_derive_traits() {
@@ -2497,12 +2591,33 @@ fn inject_required_unknown_region_entry(path: &std::path::Path) {
     // required 标志（4 字节，非零 = required）
     rt_data[entry_offset + 28..entry_offset + 32].copy_from_slice(&1u32.to_le_bytes());
 
+    // 变更条目后需重算整个 64KiB Region Table CRC-32C。
+    // 计算时按规范将 checksum 字段 [4..8] 置零。
+    let mut crc_input = rt_data.clone();
+    crc_input[4..8].fill(0);
+    let checksum = crc32c::crc32c(&crc_input);
+    rt_data[4..8].copy_from_slice(&checksum.to_le_bytes());
+
     // 写回文件
     raw.seek(SeekFrom::Start(RT2_OFFSET))
         .expect("Failed to seek RT2 for write");
     raw.write_all(&rt_data)
         .expect("Failed to write modified RT2");
     raw.flush().expect("Failed to flush region table injection");
+}
+
+/// 破坏当前活动 Region Table（RT2）的 checksum 字段（测试专用）。
+fn corrupt_region_table_checksum(path: &std::path::Path) {
+    const RT2_OFFSET: u64 = 256 * 1024;
+    const CHECKSUM_OFFSET_IN_HEADER: u64 = 4;
+
+    let checksum_offset = RT2_OFFSET + CHECKSUM_OFFSET_IN_HEADER;
+    let checksum_bytes = read_raw_bytes(path, checksum_offset, 4);
+    let mut corrupted = [0u8; 4];
+    corrupted.copy_from_slice(&checksum_bytes);
+    // 通过翻转最低位构造确定性错误 checksum。
+    corrupted[0] ^= 0x01;
+    write_raw_bytes(path, checksum_offset, &corrupted);
 }
 
 /// 测试 strict=true 时，Region Table 中存在 required 且未知 GUID 的区域条目应导致打开失败。
@@ -2582,6 +2697,110 @@ fn test_t6_validator_region_table_rejects_required_unknown_region() {
         }
         other => panic!("unexpected error variant: {other:?}"),
     }
+}
+
+/// 回归：Region Table checksum 损坏时，应可检测到 checksum 错误。
+#[test]
+fn test_validate_region_table_detects_corrupted_crc() {
+    use vhdx_rs::{Error, File};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    corrupt_region_table_checksum(&path);
+
+    // 以 strict=false 打开，确保样本可被读取并进入显式 checksum 校验路径。
+    let file = File::open(&path)
+        .strict(false)
+        .finish()
+        .expect("Failed to open sample with corrupted region table checksum");
+
+    let err = file
+        .validator()
+        .validate_region_table()
+        .expect_err("Expected validate_region_table to reject corrupted checksum");
+
+    match err {
+        Error::InvalidRegionTable(msg) => {
+            let lower = msg.to_ascii_lowercase();
+            assert!(
+                lower.contains("checksum") || lower.contains("crc"),
+                "unexpected region table checksum error message: {msg}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// 回归：差分盘执行 validate_file 时应覆盖 Parent Locator 校验。
+#[test]
+fn test_validate_file_includes_parent_locator_for_diff_disk() {
+    use vhdx_rs::{Error, File};
+
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    File::create(&child_path)
+        .size(1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create child differencing disk");
+
+    // 注入缺少 parent_linkage 的 locator，单独 validate_parent_locator 会失败。
+    let invalid_locator =
+        build_parent_locator(&[("relative_path", &parent_path.to_string_lossy())]);
+    inject_parent_locator(&child_path, &invalid_locator);
+
+    let file = File::open(&child_path)
+        .finish()
+        .expect("Failed to reopen child disk");
+
+    let err = file
+        .validator()
+        .validate_file()
+        .expect_err("Expected validate_file to fail on invalid differencing parent locator");
+
+    match err {
+        Error::InvalidMetadata(msg) => {
+            assert!(
+                msg.contains("parent_linkage"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// 回归：非差分盘执行 validate_file 时不应误触发 Parent Locator 失败路径。
+#[test]
+fn test_validate_file_non_differencing_disk_skips_parent_locator_path() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+    let file = File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    assert!(!file.has_parent(), "fixed disk should not have parent");
+
+    let validator = file.validator();
+    validator
+        .validate_file()
+        .expect("non-differencing disk validate_file should not fail on parent locator path");
+    validator
+        .validate_parent_locator()
+        .expect("non-differencing disk should skip parent locator validation");
 }
 
 /// T7 happy：合法样本应同时通过 BAT 与 Log 语义校验。

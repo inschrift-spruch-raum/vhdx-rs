@@ -67,7 +67,7 @@ pub fn cmd_check(file: &Path, repair: bool, log_replay: bool) {
 
             // 依次执行规范校验项
             let validator = vhdx_file.validator();
-            let results = vec![
+            let mut results = vec![
                 CheckResult {
                     name: "Header",
                     result: validator.validate_header(),
@@ -93,6 +93,14 @@ pub fn cmd_check(file: &Path, repair: bool, log_replay: bool) {
                     result: validator.validate_log(),
                 },
             ];
+
+            // 差分盘额外校验 Parent Locator；非差分盘不计入检查项。
+            if vhdx_file.has_parent() {
+                results.push(CheckResult {
+                    name: "Parent Locator",
+                    result: validator.validate_parent_locator(),
+                });
+            }
 
             let mut passed = 0u32;
             let mut failed = 0u32;

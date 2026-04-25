@@ -55,7 +55,9 @@ impl<'a> IO<'a> {
         let block_sector_index = u32::try_from(sector % sectors_per_block) // 块内扇区偏移
             .expect("sector index within block should fit in u32");
 
-        let total_sectors = self.file.virtual_disk_size() / sector_size;
+        // 使用向上取整除法（兼容模式）：即使虚拟磁盘大小不是扇区大小的整数倍，
+        // 最后一个部分扇区仍可寻址，与 File::read 的字节级边界语义一致。
+        let total_sectors = self.file.virtual_disk_size().div_ceil(sector_size);
         if sector >= total_sectors {
             return None;
         }
@@ -164,6 +166,10 @@ impl PartialEq for Sector<'_> {
 impl Sector<'_> {
     /// 读取扇区数据到缓冲区，缓冲区大小必须匹配扇区大小
     ///
+    /// 兼容模式行为：当扇区跨越虚拟磁盘末尾（尾部非整扇区）时，
+    /// 自动将越界部分零填充，仅返回虚拟磁盘范围内的有效数据。
+    /// 方法始终返回完整扇区大小（`self.size`），确保调用者无需处理部分读取。
+    ///
     /// # 错误
     /// 返回 [`Error::InvalidParameter`] 当缓冲区长度不等于扇区大小时。
     pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
@@ -178,7 +184,26 @@ impl Sector<'_> {
         let sectors_per_block = u64::from(self.file.block_size() / self.size);
         let global_sector = self.block_idx * sectors_per_block + u64::from(self.block_sector_index);
         let sector_offset = global_sector * u64::from(self.size);
-        self.file.read_raw(sector_offset, buf)
+
+        // 兼容模式：检查扇区是否跨越虚拟磁盘末尾
+        let virtual_disk_size = self.file.virtual_disk_size();
+        let sector_end = sector_offset + u64::from(self.size);
+
+        if sector_offset >= virtual_disk_size {
+            // 完全超出虚拟磁盘范围（防御性处理，正常情况下 IO::sector 已过滤）
+            buf.fill(0);
+        } else if sector_end > virtual_disk_size {
+            // 尾部非整扇区：扇区部分在虚拟磁盘范围内
+            // 先读取完整扇区数据，再将越界部分零填充
+            let valid_len = (virtual_disk_size - sector_offset) as usize;
+            self.file.read_raw(sector_offset, &mut buf[..valid_len])?;
+            buf[valid_len..].fill(0);
+        } else {
+            // 完全在虚拟磁盘范围内，正常读取
+            self.file.read_raw(sector_offset, buf)?;
+        }
+
+        Ok(self.size as usize)
     }
 
     /// 将数据写入扇区，数据长度必须匹配扇区大小
@@ -186,6 +211,9 @@ impl Sector<'_> {
     /// 写入逻辑与 [`read()`](Sector::read) 对称：
     /// 计算虚拟偏移量后通过内部写入方法完成实际 I/O。
     /// Fixed 类型直接写入文件，Dynamic 类型通过 BAT 查找块位置。
+    ///
+    /// 兼容模式行为：当扇区跨越虚拟磁盘末尾（尾部非整扇区）时，
+    /// `write_raw` 自动截断到虚拟磁盘边界，仅写入有效范围内的数据。
     ///
     /// # 错误
     /// 返回 [`Error::InvalidParameter`] 当数据长度不等于扇区大小时。

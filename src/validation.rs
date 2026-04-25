@@ -65,6 +65,9 @@ impl<'a> SpecValidator<'a> {
         self.validate_bat()?;
         self.validate_metadata()?;
         self.validate_required_metadata_items()?;
+        if self.file.has_parent() {
+            self.validate_parent_locator()?;
+        }
         self.validate_log()?;
         Ok(())
     }
@@ -130,6 +133,14 @@ impl<'a> SpecValidator<'a> {
                 "Invalid region table signature: expected '{}', found '{}'",
                 String::from_utf8_lossy(REGION_TABLE_SIGNATURE),
                 String::from_utf8_lossy(table_header.signature())
+            )));
+        }
+
+        let expected_checksum = table_header.checksum();
+        let actual_checksum = crate::sections::crc32c_with_zero_field(region_table.raw(), 4, 4);
+        if expected_checksum != actual_checksum {
+            return Err(Error::InvalidRegionTable(format!(
+                "Region table checksum mismatch: expected {expected_checksum:08x}, actual {actual_checksum:08x}"
             )));
         }
 
