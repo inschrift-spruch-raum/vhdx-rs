@@ -102,7 +102,7 @@ Wave 3: full regression hardening (8,12)
 > Implementation + Test = ONE task. Never separate.
 > EVERY task MUST have: Agent Profile + Parallelization + QA Scenarios.
 
-- [ ] 1. 建立缺口回归测试基线与夹具扩展
+- [x] 1. 建立缺口回归测试基线与夹具扩展
 
   **What to do**:
   - 在 `tests/integration_test.rs` 增加可复用夹具：构造跨 chunk BAT 场景、log entry 可控损坏场景、差分盘父链测试场景。
@@ -144,7 +144,7 @@ Wave 3: full regression hardening (8,12)
 
   **Commit**: YES | Message: `test(integration): add compliance fixture scaffolding` | Files: `tests/integration_test.rs`
 
-- [ ] 2. 修复 Dynamic 读路径 BAT payload 索引换算
+- [x] 2. 修复 Dynamic 读路径 BAT payload 索引换算
 
   **What to do**:
   - 在 `src/file.rs:274-277` 读路径引入与写路径一致的 `chunk_ratio` 与 `bat_payload_index`。
@@ -188,7 +188,7 @@ Wave 3: full regression hardening (8,12)
 
   **Commit**: YES | Message: `fix(file): align dynamic read BAT index with chunk interleaving` | Files: `src/file.rs`, `tests/integration_test.rs`
 
-- [ ] 3. 修复 Fixed BAT 生成中的 sector-bitmap 条目编码
+- [x] 3. 修复 Fixed BAT 生成中的 sector-bitmap 条目编码
 
   **What to do**:
   - 在 `src/file.rs:create_bat_data` 中区分 payload 条目与 sector-bitmap 条目。
@@ -231,7 +231,7 @@ Wave 3: full regression hardening (8,12)
 
   **Commit**: YES | Message: `fix(file): encode fixed BAT bitmap entries as not-present` | Files: `src/file.rs`, `tests/integration_test.rs`
 
-- [ ] 4. 实现日志条目 CRC 与基础有效性验证（replay 前置）
+- [x] 4. 实现日志条目 CRC 与基础有效性验证（replay 前置）
 
   **What to do**:
   - 在 `src/sections/log.rs` 增加对 entry-level CRC-32C 校验（checksum 字段置零计算）。
@@ -275,7 +275,7 @@ Wave 3: full regression hardening (8,12)
 
   **Commit**: YES | Message: `fix(log): enforce entry crc and bounds before replay` | Files: `src/sections/log.rs`, `tests/integration_test.rs`
 
-- [ ] 5. 实现日志 GUID 一致性与 replay 条目过滤
+- [x] 5. 实现日志 GUID 一致性与 replay 条目过滤
 
   **What to do**:
   - 在 replay 入口传入 current header 的 `log_guid`，仅处理匹配条目。
@@ -317,7 +317,7 @@ Wave 3: full regression hardening (8,12)
 
   **Commit**: YES | Message: `fix(log): enforce log guid matching during replay` | Files: `src/file.rs`, `src/sections/log.rs`, `tests/integration_test.rs`
 
-- [ ] 6. 修正 Data Descriptor 回放语义（leading/trailing）
+- [x] 6. 修正 Data Descriptor 回放语义（leading/trailing）
 
   **What to do**:
   - 将 Data Descriptor 应用逻辑改为规范语义：使用 data sector 有效载荷并在目标扇区内合并前后片段，而非简单零填充 leading/trailing。
@@ -358,7 +358,7 @@ Wave 3: full regression hardening (8,12)
 
   **Commit**: YES | Message: `fix(log): apply data descriptor bytes per spec semantics` | Files: `src/sections/log.rs`, `tests/integration_test.rs`
 
-- [ ] 7. 实现 active sequence 选择与 replay 顺序约束
+- [x] 7. 实现 active sequence 选择与 replay 顺序约束
 
   **What to do**:
   - 在 `src/sections/log.rs` 实现 active sequence 解析：顺序连续、tail/descriptor/data 一致性、有效 entry 链提取。
@@ -400,7 +400,7 @@ Wave 3: full regression hardening (8,12)
 
   **Commit**: YES | Message: `fix(log): replay only validated active sequence` | Files: `src/sections/log.rs`, `src/validation.rs`, `tests/integration_test.rs`
 
-- [ ] 8. 完成 replay 后文件尺寸约束与 sections 刷新
+- [x] 8. 完成 replay 后文件尺寸约束与 sections 刷新
 
   **What to do**:
   - 在 `src/file.rs` replay 流程中加入 `flushed_file_offset/last_file_offset` 约束：
@@ -443,7 +443,7 @@ Wave 3: full regression hardening (8,12)
 
   **Commit**: YES | Message: `fix(file): enforce replay offsets and refresh sections cache` | Files: `src/file.rs`, `tests/integration_test.rs`
 
-- [ ] 9. 实现差分盘 PartiallyPresent 的 sector bitmap 判定读取
+- [x] 9. 实现差分盘 PartiallyPresent 的 sector bitmap 判定读取
 
   **What to do**:
   - 在 Dynamic/Differencing 读路径中，当 payload state 为 `PartiallyPresent` 时，按 sector bitmap 决定每个扇区来源。
@@ -484,7 +484,7 @@ Wave 3: full regression hardening (8,12)
 
   **Commit**: YES | Message: `fix(file): honor sector bitmap for partially-present differencing reads` | Files: `src/file.rs`, `src/io_module.rs`, `tests/integration_test.rs`
 
-- [ ] 10. 实现差分盘父链回退读取
+- [x] 10. 实现差分盘父链回退读取
 
   **What to do**:
   - 对 `NotPresent/Zero/Unmapped/bitmap-miss` 扇区，按 parent locator 解析父盘并回退读取。
@@ -526,7 +526,7 @@ Wave 3: full regression hardening (8,12)
 
   **Commit**: YES | Message: `feat(file): add differencing parent fallback read path` | Files: `src/file.rs`, `src/sections/metadata.rs`, `tests/integration_test.rs`
 
-- [ ] 11. 实现 Dynamic 未分配块自动分配与 BAT 更新
+- [x] 11. 实现 Dynamic 未分配块自动分配与 BAT 更新
 
   **What to do**:
   - 在 `write_dynamic` 中为 `NotPresent/Zero/Unmapped` 实现自动分配：
@@ -571,7 +571,7 @@ Wave 3: full regression hardening (8,12)
 
   **Commit**: YES | Message: `feat(file): support dynamic payload auto-allocation on write` | Files: `src/file.rs`, `src/sections/bat.rs`, `tests/integration_test.rs`
 
-- [ ] 12. 全量验证收口（validator + integration regression）
+- [x] 12. 全量验证收口（validator + integration regression）
 
   **What to do**:
   - 对 `src/validation.rs` 增补与新行为一致的校验点（log entry CRC/GUID/sequence，differencing 必要约束）。
@@ -617,10 +617,10 @@ Wave 3: full regression hardening (8,12)
 > 4 review agents run in PARALLEL. ALL must APPROVE. Present consolidated results to user and get explicit "okay" before completing.
 > **Do NOT auto-proceed after verification. Wait for user's explicit approval before marking work complete.**
 > **Never mark F1-F4 as checked before getting user's okay.** Rejection or user feedback -> fix -> re-run -> present again -> wait for okay.
-- [ ] F1. Plan Compliance Audit — oracle
-- [ ] F2. Code Quality Review — unspecified-high
-- [ ] F3. Real Manual QA — unspecified-high (+ playwright if UI)
-- [ ] F4. Scope Fidelity Check — deep
+- [x] F1. Plan Compliance Audit — oracle
+- [x] F2. Code Quality Review — unspecified-high
+- [x] F3. Real Manual QA — unspecified-high (+ playwright if UI)
+- [x] F4. Scope Fidelity Check — deep
 
 ## Commit Strategy
 - 原则：每个 TODO 完成后原子提交，信息聚焦“为何修复”。

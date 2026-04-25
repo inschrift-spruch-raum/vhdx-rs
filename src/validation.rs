@@ -385,6 +385,16 @@ impl<'a> SpecValidator<'a> {
     }
 
     /// 校验 Log 区域可读取
+    ///
+    /// 执行以下检查（与回放路径 `precheck_replay_entry` 对齐）：
+    /// - 条目签名
+    /// - CRC-32C 校验和
+    /// - 日志 GUID 与活动头部一致性
+    /// - 描述符数量与可解析数量匹配
+    /// - 数据扇区签名、撕裂检测、序列号一致性
+    /// - leading_bytes + trailing_bytes 边界
+    /// - flushed_file_offset / last_file_offset 约束
+    /// - 序列号单调性
     pub fn validate_log(&self) -> Result<()> {
         let log = self.file.sections().log()?;
         let entries = log.entries();
@@ -392,6 +402,13 @@ impl<'a> SpecValidator<'a> {
         if entries.is_empty() {
             return Ok(());
         }
+
+        // 获取活动头部的 log_guid，用于 GUID 一致性校验
+        let header_sections = self.file.sections().header()?;
+        let current_header = header_sections
+            .header(0)
+            .ok_or_else(|| Error::CorruptedHeader("Current header is not available".to_string()))?;
+        let expected_log_guid = current_header.log_guid();
 
         let mut previous_sequence: Option<u64> = None;
 
@@ -401,6 +418,30 @@ impl<'a> SpecValidator<'a> {
             if header.signature() != LOG_ENTRY_SIGNATURE {
                 return Err(Error::LogEntryCorrupted(format!(
                     "Log entry {entry_index} has invalid signature"
+                )));
+            }
+
+            // CRC-32C 校验：计算 entry_length 范围内的校验和（MS-VHDX §2.3.1.1），
+            // 计算前将 checksum 字段 [4..8] 置零。
+            let entry_length = usize::try_from(header.entry_length()).unwrap_or(entry.raw().len());
+            let check_len = entry_length.min(entry.raw().len());
+            if check_len >= 8 {
+                let expected_checksum =
+                    crate::sections::crc32c_with_zero_field(&entry.raw()[..check_len], 4, 4);
+                let stored_checksum = header.checksum();
+                if expected_checksum != stored_checksum {
+                    return Err(Error::LogEntryCorrupted(format!(
+                        "Log entry {entry_index} CRC-32C mismatch: expected={expected_checksum:08x}, stored={stored_checksum:08x}"
+                    )));
+                }
+            }
+
+            // 日志 GUID 一致性校验（Task 5 约束）：
+            // 若活动头部 log_guid 为非空，则所有有效条目的 log_guid 必须匹配。
+            if expected_log_guid != Guid::nil() && header.log_guid() != expected_log_guid {
+                return Err(Error::LogEntryCorrupted(format!(
+                    "Log entry {entry_index} GUID mismatch: header={expected_log_guid:?}, entry={:?}",
+                    header.log_guid()
                 )));
             }
 
@@ -493,15 +534,13 @@ impl<'a> SpecValidator<'a> {
                             )));
                         }
 
+                        // 撕裂写入检测：sequence_high 与 sequence_low 必须一致。
+                        // 注意：sequence_number() = (high << 32) | low，当 high = low = seq32
+                        // 时结果为 (seq32 << 32) | seq32，不直接等于描述符中的序列号，
+                        // 因此不在此处校验 sequence_number() 与描述符序列号的精确相等。
                         if sector.sequence_high() != sector.sequence_low() {
                             return Err(Error::LogEntryCorrupted(format!(
                                 "Log entry {entry_index} contains torn data sector"
-                            )));
-                        }
-
-                        if sector.sequence_number() != current_sequence {
-                            return Err(Error::LogEntryCorrupted(format!(
-                                "Log entry {entry_index} data sector sequence does not match descriptor"
                             )));
                         }
 

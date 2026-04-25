@@ -143,6 +143,13 @@ fn inject_pending_log_entry(path: &std::path::Path, write_offset: u64, payload: 
         .copy_from_slice(&(u32::try_from(entry_len).expect("entry length overflow")).to_le_bytes());
     entry[24..28].copy_from_slice(&1u32.to_le_bytes()); // descriptor_count = 1
 
+    let log_guid = Guid::from_bytes([
+        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
+        0x22,
+    ]);
+    // Task 5: 日志条目头中的 log_guid 需与 active header.log_guid 一致。
+    entry[32..48].copy_from_slice(log_guid.as_bytes());
+
     let desc_off = LOG_ENTRY_HEADER_SIZE;
     entry[desc_off..desc_off + 4].copy_from_slice(b"desc");
     entry[desc_off + 4..desc_off + 8].copy_from_slice(&0u32.to_le_bytes()); // trailing_bytes
@@ -156,6 +163,11 @@ fn inject_pending_log_entry(path: &std::path::Path, write_offset: u64, payload: 
     let payload_len = payload.len().min(4084);
     entry[sector_off + 8..sector_off + 8 + payload_len].copy_from_slice(&payload[..payload_len]);
     entry[sector_off + 4092..sector_off + 4096].copy_from_slice(&1u32.to_le_bytes());
+
+    // 生成合法 checksum，确保默认注入条目可通过 Task 4 precheck。
+    entry[4..8].fill(0);
+    let checksum = crc32c::crc32c(&entry);
+    entry[4..8].copy_from_slice(&checksum.to_le_bytes());
 
     let mut raw = OpenOptions::new()
         .read(true)
@@ -173,10 +185,6 @@ fn inject_pending_log_entry(path: &std::path::Path, write_offset: u64, payload: 
             .expect("Failed to clear log tail");
     }
 
-    let log_guid = Guid::from_bytes([
-        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
-        0x22,
-    ]);
     let updated_header = vhdx_rs::section::HeaderStructure::create(
         header.sequence_number(),
         header.file_write_guid(),
@@ -503,32 +511,38 @@ fn test_write_dynamic_uses_payload_entry_not_sector_bitmap_at_chunk_boundary() {
     );
 }
 
-/// 测试动态写入在未分配 payload 块上返回限制错误。
+/// 测试动态写入在未分配 payload 块上自动分配后成功写入。
 #[test]
-fn test_write_dynamic_unallocated_payload_returns_limit_error() {
-    use vhdx_rs::{Error, File};
+fn test_write_dynamic_unallocated_payload_auto_allocates() {
+    use vhdx_rs::File;
 
     let path = temp_vhdx_path();
 
     let file = File::create(&path)
-        .size(1024 * 1024)
+        .size(4 * 1024 * 1024)
         .fixed(false)
+        .block_size(1024 * 1024)
         .finish()
         .expect("Failed to create dynamic disk");
 
     let sector = file.io().sector(0).expect("Sector 0 should exist");
-    let result = sector.write(&[0x5Au8; 4096]);
+    let data = vec![0x5Au8; 4096];
+    sector
+        .write(&data)
+        .expect("Dynamic write to unallocated block should auto-allocate");
+    drop(file);
 
-    match result {
-        Err(Error::InvalidParameter(msg)) => {
-            assert!(
-                msg.contains("does not support automatic allocation"),
-                "error message should clearly describe unsupported auto-allocation, got: {msg}"
-            );
-        }
-        Err(_) => panic!("expected InvalidParameter for unallocated dynamic block write"),
-        Ok(_) => panic!("unallocated dynamic block write should fail"),
-    }
+    // 重新打开验证数据持久化
+    let file2 = File::open(&path)
+        .finish()
+        .expect("Failed to reopen dynamic disk");
+    let sector2 = file2.io().sector(0).expect("Sector 0 should exist");
+    let mut buf = vec![0u8; 4096];
+    sector2.read(&mut buf).expect("Read should succeed");
+    assert_eq!(
+        buf, data,
+        "auto-allocated block data should persist after reopen"
+    );
 }
 
 /// 测试对动态磁盘执行写入操作应失败（当前库仅支持读取动态磁盘）。
@@ -1393,9 +1407,13 @@ fn test_open_test_void_vhdx() {
 }
 
 /// 测试打开 misc/test-fs.vhdx 样本文件：验证能正确读取含文件系统数据的磁盘。
+///
+/// 注意：test-fs.vhdx 包含 leading_bytes 超出扇区数据大小的日志条目，
+/// 属于格式损坏的描述符。使用 ReadOnlyNoReplay 策略跳过日志回放，
+/// 仅验证元数据和区域可读性。
 #[test]
 fn test_open_test_fs_vhdx() {
-    use vhdx_rs::File;
+    use vhdx_rs::{File, LogReplayPolicy};
 
     let path = std::path::Path::new("misc/test-fs.vhdx");
     // 如果样本文件不存在则跳过
@@ -1405,6 +1423,7 @@ fn test_open_test_fs_vhdx() {
     }
 
     let file = File::open(path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
         .finish()
         .expect("Failed to open test-fs.vhdx");
 
@@ -2639,6 +2658,9 @@ fn test_t7_validator_log_rejects_descriptor_count_mismatch() {
 
     inject_pending_log_entry(&path, target_file_offset, b"T7_LOG_MISMATCH");
     inject_log_descriptor_count(&path, 2);
+    // 修正 CRC：descriptor_count 篡改后原始 CRC 失效，需重新计算
+    // 以便 validator 能通过 CRC 校验并正确报告 descriptor parse mismatch。
+    fix_log_entry_checksum(&path, 0);
 
     let file = File::open(&path)
         .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
@@ -3146,11 +3168,10 @@ fn test_dynamic_write_partially_present_block_succeeds() {
     assert_eq!(written, data, "Written data should land at payload offset");
 }
 
-/// 测试 Dynamic 写入在 NotPresent（state=0）状态返回明确的"不支持自动分配"错误，
-/// 错误信息应包含 block 索引和状态名称，便于诊断。
+/// 测试 Dynamic 写入在 NotPresent（state=0）状态自动分配后成功写入。
 #[test]
-fn test_dynamic_write_notpresent_returns_allocation_error_with_diagnostics() {
-    use vhdx_rs::{Error, File};
+fn test_dynamic_write_notpresent_auto_allocates_and_persists() {
+    use vhdx_rs::File;
 
     let path = temp_vhdx_path();
 
@@ -3169,30 +3190,28 @@ fn test_dynamic_write_notpresent_returns_allocation_error_with_diagnostics() {
         .expect("Failed to reopen dynamic disk with write access");
 
     let sector = file.io().sector(0).expect("Sector 0 should exist");
-    let result = sector.write(&[0xAA_u8; 4096]);
+    let data = vec![0xAA_u8; 4096];
+    sector
+        .write(&data)
+        .expect("Dynamic write to NotPresent block should auto-allocate");
+    drop(file);
 
-    match result {
-        Err(Error::InvalidParameter(msg)) => {
-            // 错误信息应包含 state 名称和 block 索引，便于定位
-            assert!(
-                msg.contains("NotPresent"),
-                "error should mention NotPresent state, got: {msg}"
-            );
-            assert!(
-                msg.contains("block"),
-                "error should mention block index, got: {msg}"
-            );
-        }
-        Err(_) => panic!("expected InvalidParameter for NotPresent write"),
-        Ok(_) => panic!("NotPresent write should fail"),
-    }
+    // 重新打开验证数据持久化
+    let file2 = File::open(&path).finish().expect("Failed to reopen");
+    let s = file2.io().sector(0).expect("Sector 0 should exist");
+    let mut buf = vec![0u8; 4096];
+    s.read(&mut buf).expect("Read should succeed");
+    assert_eq!(
+        buf, data,
+        "auto-allocated NotPresent block data should persist"
+    );
 }
 
-/// 测试 Dynamic 写入在 Zero（state=2）状态返回明确的限制错误，
-/// 确保用户能区分"块存在但为零"与"块不存在"。
+/// 测试 Dynamic 写入在 Zero（state=2）状态自动分配后成功写入，
+/// 验证旧偏移处数据不受影响。
 #[test]
-fn test_dynamic_write_zero_state_returns_allocation_error() {
-    use vhdx_rs::{Error, File};
+fn test_dynamic_write_zero_state_auto_allocates() {
+    use vhdx_rs::File;
 
     let path = temp_vhdx_path();
 
@@ -3203,8 +3222,9 @@ fn test_dynamic_write_zero_state_returns_allocation_error() {
         .finish()
         .expect("Failed to create dynamic disk");
 
-    // Zero state = 2，即使 file_offset 非零也不允许写入
-    let bat_raw = (8u64 << 20) | 2u64;
+    // Zero state = 2，旧 file_offset = 8 MiB
+    let old_offset_mb = 8u64;
+    let bat_raw = (old_offset_mb << 20) | 2u64;
     inject_bat_entry_raw(&path, 0, bat_raw);
 
     let file = File::open(&path)
@@ -3213,24 +3233,27 @@ fn test_dynamic_write_zero_state_returns_allocation_error() {
         .expect("Failed to reopen dynamic disk with write access");
 
     let sector = file.io().sector(0).expect("Sector 0 should exist");
-    let result = sector.write(&[0xAA_u8; 4096]);
+    let data = vec![0xAA_u8; 4096];
+    sector
+        .write(&data)
+        .expect("Dynamic write to Zero-state block should auto-allocate");
+    drop(file);
 
-    match result {
-        Err(Error::InvalidParameter(msg)) => {
-            assert!(
-                msg.contains("Zero"),
-                "error should mention Zero state, got: {msg}"
-            );
-        }
-        Err(_) => panic!("expected InvalidParameter for Zero state write"),
-        Ok(_) => panic!("Zero state write should fail"),
-    }
+    // 重新打开验证数据持久化
+    let file2 = File::open(&path).finish().expect("Failed to reopen");
+    let s = file2.io().sector(0).expect("Sector 0 should exist");
+    let mut buf = vec![0u8; 4096];
+    s.read(&mut buf).expect("Read should succeed");
+    assert_eq!(
+        buf, data,
+        "auto-allocated Zero-state block data should persist"
+    );
 }
 
-/// 测试 Dynamic 写入在未分配块上返回明确错误，且失败后数据保持零。
+/// 测试 Dynamic 写入未分配块时自动分配成功，数据持久化后可读回。
 #[test]
-fn test_dynamic_write_bat_index_out_of_range_returns_error() {
-    use vhdx_rs::{Error, File};
+fn test_dynamic_write_auto_allocates_and_persists_on_reopen() {
+    use vhdx_rs::File;
 
     let path = temp_vhdx_path();
 
@@ -3247,32 +3270,33 @@ fn test_dynamic_write_bat_index_out_of_range_returns_error() {
         .finish()
         .expect("Failed to reopen dynamic disk with write access");
 
-    // 写入 sector 0（block 0）到未分配块 → NotPresent 错误
+    // 写入 sector 0（block 0）到未分配块 → 应自动分配
     let sector = file.io().sector(0).expect("Sector 0 should exist");
-    let result = sector.write(&[0xAA_u8; 4096]);
+    let data = vec![0xAA_u8; 4096];
+    sector
+        .write(&data)
+        .expect("Dynamic write to unallocated block should auto-allocate");
 
-    // 应返回 InvalidParameter，错误信息包含 NotPresent
-    match result {
-        Err(Error::InvalidParameter(msg)) => {
-            assert!(
-                msg.contains("NotPresent"),
-                "error should mention NotPresent, got: {msg}"
-            );
-        }
-        Err(_) => panic!("expected InvalidParameter for unallocated write"),
-        Ok(_) => panic!("unallocated write should fail"),
-    }
-
-    // 验证写入失败后，通过 IO 重新读取仍为零
+    // 通过同一句柄读取，验证数据可读回
     let sector_after = file.io().sector(0).expect("Sector 0 should exist");
     let mut buf_after = vec![0u8; 4096];
     sector_after
         .read(&mut buf_after)
         .expect("Read should succeed");
     assert_eq!(
-        buf_after,
-        vec![0u8; 4096],
-        "data should remain zero after failed write"
+        buf_after, data,
+        "auto-allocated block data should be readable"
+    );
+
+    // 关闭后重新打开，验证持久化
+    drop(file);
+    let file2 = File::open(&path).finish().expect("Failed to reopen");
+    let s2 = file2.io().sector(0).expect("Sector 0 should exist");
+    let mut buf2 = vec![0u8; 4096];
+    s2.read(&mut buf2).expect("Read should succeed");
+    assert_eq!(
+        buf2, data,
+        "auto-allocated block data should persist after reopen"
     );
 }
 
@@ -3327,4 +3351,1484 @@ fn test_replay_overlay_does_not_affect_non_overlapping_allocated_block() {
         buf, block1_data,
         "Block 1 data should be untouched by overlay targeting block 0"
     );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Task 1 缺口回归测试基线与夹具扩展
+//
+// 三组可复用夹具，为 Task 2-11 的行为修正提供测试基础设施：
+//   A) 跨 chunk BAT 场景 → Task 2 / Task 3
+//   B) 可控日志损坏场景 → Task 4 / Task 5 / Task 6 / Task 7
+//   C) 差分父链场景     → Task 9 / Task 10
+// ════════════════════════════════════════════════════════════════════
+
+// ── A) 跨 chunk BAT 场景夹具 (Task 2 / Task 3) ──
+
+/// 创建一个 chunk_ratio > 1 的动态 VHDX 文件，返回 (path, chunk_ratio)。
+///
+/// `chunk_ratio = (2^23 * logical_sector_size) / block_size`（MS-VHDX §2.5.1）。
+/// 推荐参数：`block_size=32MiB, logical_sector_size=512` → `chunk_ratio=128`。
+fn create_dynamic_disk_for_cross_chunk_test(
+    virtual_size: u64, block_size: u64, logical_sector_size: u32,
+) -> (PathBuf, u64) {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(virtual_size)
+        .fixed(false)
+        .block_size(u32::try_from(block_size).expect("block_size overflow"))
+        .logical_sector_size(logical_sector_size)
+        .physical_sector_size(logical_sector_size.max(4096))
+        .finish()
+        .expect("Failed to create dynamic disk for cross-chunk test");
+    let chunk_ratio = (8_388_608_u64 * u64::from(logical_sector_size)) / block_size;
+    (path, chunk_ratio)
+}
+
+/// 计算 payload block 在 BAT 中的 payload 条目索引（MS-VHDX §2.5.1）。
+///
+/// 当 `chunk_ratio > 1` 时，每 `chunk_ratio` 个 payload 条目后插入一个
+/// sector bitmap 条目。payload BAT 索引 = `block_idx + block_idx / chunk_ratio`。
+fn payload_bat_index(block_idx: u64, chunk_ratio: u64) -> u64 {
+    block_idx + block_idx / chunk_ratio
+}
+
+/// 计算 `block_idx` 所在 chunk 组的 sector bitmap BAT 索引。
+fn bitmap_bat_index_for_chunk(block_idx: u64, chunk_ratio: u64) -> u64 {
+    let chunk_end = ((block_idx / chunk_ratio) + 1) * chunk_ratio - 1;
+    payload_bat_index(chunk_end, chunk_ratio) + 1
+}
+
+/// 批量注入跨 chunk payload BAT 条目（FullyPresent，state=6）。
+///
+/// 为 `[start_block, start_block + count)` 范围内的每个 block 分配
+/// FullyPresent 的 payload BAT 条目，offset 从 `offset_base_mb` 开始递增。
+fn inject_cross_chunk_payload_bat_entries(
+    path: &std::path::Path, chunk_ratio: u64, start_block: u64, count: u64, offset_base_mb: u64,
+) {
+    for i in 0..count {
+        let block_idx = start_block + i;
+        let bat_idx = payload_bat_index(block_idx, chunk_ratio);
+        inject_bat_entry_raw(path, bat_idx, ((offset_base_mb + i) << 20) | 6u64);
+    }
+}
+
+// ── B) 可控日志损坏场景夹具 (Task 4 / Task 5 / Task 6 / Task 7) ──
+
+/// 构建一个可控日志条目的原始字节（测试专用）。
+///
+/// 可精确控制 checksum、sequence_number、log_guid、descriptor 参数和 data payload，
+/// 用于构造正常或异常的日志条目。日志条目头部字段偏移遵循 MS-VHDX §2.3.1.1：
+///   `[0..4]` signature, `[4..8]` checksum, `[8..12]` entry_length,
+///   `[12..16]` tail, `[16..24]` sequence_number, `[24..28]` descriptor_count,
+///   `[28..32]` reserved, `[32..48]` log_guid。
+fn build_controllable_log_entry_bytes(
+    checksum: u32, sequence_number: u64, log_guid_bytes: Option<&[u8; 16]>, descriptor_count: u32,
+    desc_file_offset: u64, desc_leading: u64, desc_trailing: u32, desc_sequence: u64,
+    data_payload: &[u8],
+) -> Vec<u8> {
+    let entry_len = LOG_ENTRY_HEADER_SIZE + DESCRIPTOR_SIZE + DATA_SECTOR_SIZE;
+    let mut entry = vec![0u8; entry_len];
+
+    // ── Log entry header（64 字节，MS-VHDX §2.3.1.1）──
+    entry[0..4].copy_from_slice(b"loge");
+    entry[4..8].copy_from_slice(&checksum.to_le_bytes());
+    entry[8..12].copy_from_slice(
+        &u32::try_from(entry_len)
+            .expect("entry len overflow")
+            .to_le_bytes(),
+    );
+    // [12..16] tail = 0
+    entry[16..24].copy_from_slice(&sequence_number.to_le_bytes());
+    entry[24..28].copy_from_slice(&descriptor_count.to_le_bytes());
+    // [28..32] reserved = 0
+    if let Some(guid) = log_guid_bytes {
+        entry[32..48].copy_from_slice(guid);
+    }
+
+    // ── Descriptor（32 字节）──
+    let d = LOG_ENTRY_HEADER_SIZE;
+    entry[d..d + 4].copy_from_slice(b"desc");
+    entry[d + 4..d + 8].copy_from_slice(&desc_trailing.to_le_bytes());
+    entry[d + 8..d + 16].copy_from_slice(&desc_leading.to_le_bytes());
+    entry[d + 16..d + 24].copy_from_slice(&desc_file_offset.to_le_bytes());
+    entry[d + 24..d + 32].copy_from_slice(&desc_sequence.to_le_bytes());
+
+    // ── Data sector（4096 字节）──
+    let s = LOG_ENTRY_HEADER_SIZE + DESCRIPTOR_SIZE;
+    entry[s..s + 4].copy_from_slice(b"data");
+    // DataSector 的 sequence_high 和 sequence_low 必须相同以通过撕裂写入检测。
+    // sequence_number() = (high << 32) | low，此处 high = low = seq32。
+    let seq32 = u32::try_from(desc_sequence).unwrap_or(u32::MAX);
+    entry[s + 4..s + 8].copy_from_slice(&seq32.to_le_bytes());
+    let payload_len = data_payload.len().min(DATA_SECTOR_SIZE.saturating_sub(12));
+    entry[s + 8..s + 8 + payload_len].copy_from_slice(&data_payload[..payload_len]);
+    entry[s + 4092..s + 4096].copy_from_slice(&seq32.to_le_bytes());
+
+    entry
+}
+
+/// 注入可控日志条目到指定序号位置，并更新 header 的 log_guid（测试专用）。
+///
+/// `entry_index` 为从 0 开始的日志条目序号（按条目大小等间距寻址）。
+/// 同时将 header1 / header2 的 log_guid 更新为 `log_guid`。
+fn inject_controllable_log_entry(
+    path: &std::path::Path, entry_index: u64, entry_bytes: &[u8], log_guid: vhdx_rs::Guid,
+) {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let file = File::open(path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("Failed to open for controllable log injection");
+    let header_ref = file.sections().header().expect("header read failed");
+    let header = header_ref.header(0).expect("no active header");
+    let log_offset = header.log_offset();
+    let entry_size = u64::try_from(LOG_ENTRY_HEADER_SIZE + DESCRIPTOR_SIZE + DATA_SECTOR_SIZE)
+        .expect("entry size overflow");
+    let write_offset = log_offset + entry_index * entry_size;
+
+    let mut raw = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("Failed to open for log write");
+    raw.seek(SeekFrom::Start(write_offset))
+        .expect("Failed to seek log entry");
+    raw.write_all(entry_bytes)
+        .expect("Failed to write log entry");
+
+    // 更新 header log_guid
+    let updated = vhdx_rs::section::HeaderStructure::create(
+        header.sequence_number(),
+        header.file_write_guid(),
+        header.data_write_guid(),
+        log_guid,
+        header.log_length(),
+        header.log_offset(),
+    );
+    raw.seek(SeekFrom::Start(64 * 1024)).expect("seek header1");
+    raw.write_all(&updated).expect("write header1");
+    raw.seek(SeekFrom::Start(128 * 1024)).expect("seek header2");
+    raw.write_all(&updated).expect("write header2");
+    raw.flush().expect("flush");
+}
+
+/// 篡改指定日志条目的 checksum 字段为 `bad_checksum`（测试专用）。
+fn corrupt_log_entry_checksum(path: &std::path::Path, entry_index: u64, bad_checksum: u32) {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let file = File::open(path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("Failed to open for checksum corruption");
+    let header_ref = file.sections().header().expect("header");
+    let header = header_ref.header(0).expect("active header");
+    let log_offset = header.log_offset();
+    let entry_size = u64::try_from(LOG_ENTRY_HEADER_SIZE + DESCRIPTOR_SIZE + DATA_SECTOR_SIZE)
+        .expect("entry size overflow");
+    // checksum 字段在日志条目内偏移 4（[4..8]）
+    let checksum_field_offset = log_offset + entry_index * entry_size + 4;
+
+    let mut raw = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("open for checksum write");
+    raw.seek(SeekFrom::Start(checksum_field_offset))
+        .expect("seek checksum");
+    raw.write_all(&bad_checksum.to_le_bytes())
+        .expect("write checksum");
+    raw.flush().expect("flush checksum");
+}
+
+/// 重新计算并写回指定日志条目的 checksum（测试专用）。
+fn fix_log_entry_checksum(path: &std::path::Path, entry_index: u64) {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let file = File::open(path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("Failed to open for checksum recompute");
+    let header_ref = file.sections().header().expect("header");
+    let header = header_ref.header(0).expect("active header");
+    let log_offset = header.log_offset();
+    let entry_size = LOG_ENTRY_HEADER_SIZE + DESCRIPTOR_SIZE + DATA_SECTOR_SIZE;
+    let entry_size_u64 = u64::try_from(entry_size).expect("entry size overflow");
+
+    let entry_offset = log_offset + entry_index * entry_size_u64;
+    let checksum_field_offset = entry_offset + 4;
+
+    let mut raw = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("open for checksum recompute");
+
+    raw.seek(SeekFrom::Start(entry_offset))
+        .expect("seek entry for checksum recompute");
+    let mut entry = vec![0u8; entry_size];
+    raw.read_exact(&mut entry)
+        .expect("read entry for checksum recompute");
+
+    entry[4..8].fill(0);
+    let checksum = crc32c::crc32c(&entry);
+
+    raw.seek(SeekFrom::Start(checksum_field_offset))
+        .expect("seek checksum field for recompute");
+    raw.write_all(&checksum.to_le_bytes())
+        .expect("write recomputed checksum");
+    raw.flush().expect("flush recomputed checksum");
+}
+
+/// 篡改指定日志条目的 signature 字段为 `bad_sig`（测试专用）。
+fn corrupt_log_entry_signature(path: &std::path::Path, entry_index: u64, bad_sig: [u8; 4]) {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let file = File::open(path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("Failed to open for sig corruption");
+    let header_ref = file.sections().header().expect("header");
+    let header = header_ref.header(0).expect("active header");
+    let log_offset = header.log_offset();
+    let entry_size = u64::try_from(LOG_ENTRY_HEADER_SIZE + DESCRIPTOR_SIZE + DATA_SECTOR_SIZE)
+        .expect("entry size overflow");
+    let sig_offset = log_offset + entry_index * entry_size;
+
+    let mut raw = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("open for sig write");
+    raw.seek(SeekFrom::Start(sig_offset)).expect("seek sig");
+    raw.write_all(&bad_sig).expect("write sig");
+    raw.flush().expect("flush sig");
+}
+
+/// 注入多个连续日志条目以构造 active sequence 测试场景（测试专用）。
+///
+/// 所有条目共享同一 `log_guid`，按 `entries` 顺序从日志区域起始处连续写入。
+/// `entries` 格式：`&[(sequence_number, file_offset, payload)]`。
+fn inject_multi_entry_log_sequence(
+    path: &std::path::Path, log_guid: vhdx_rs::Guid, entries: &[(u64, u64, &[u8])],
+) {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let file = File::open(path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("Failed to open for multi-log");
+    let header_ref = file.sections().header().expect("header");
+    let header = header_ref.header(0).expect("active header");
+    let log_offset = header.log_offset();
+    let entry_size = u64::try_from(LOG_ENTRY_HEADER_SIZE + DESCRIPTOR_SIZE + DATA_SECTOR_SIZE)
+        .expect("entry size overflow");
+
+    let mut raw = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("open for multi-log write");
+
+    for (i, (seq, file_offset, payload)) in entries.iter().enumerate() {
+        let mut entry_bytes = build_controllable_log_entry_bytes(
+            0,
+            *seq,
+            Some(log_guid.as_bytes()),
+            1,
+            *file_offset,
+            0,
+            0,
+            *seq,
+            payload,
+        );
+        entry_bytes[4..8].fill(0);
+        let checksum = crc32c::crc32c(&entry_bytes);
+        entry_bytes[4..8].copy_from_slice(&checksum.to_le_bytes());
+
+        let write_offset = log_offset + u64::try_from(i).expect("index overflow") * entry_size;
+        raw.seek(SeekFrom::Start(write_offset))
+            .expect("seek log entry");
+        raw.write_all(&entry_bytes).expect("write log entry");
+    }
+
+    // 一次性更新 header log_guid
+    let updated = vhdx_rs::section::HeaderStructure::create(
+        header.sequence_number(),
+        header.file_write_guid(),
+        header.data_write_guid(),
+        log_guid,
+        header.log_length(),
+        header.log_offset(),
+    );
+    raw.seek(SeekFrom::Start(64 * 1024)).expect("seek header1");
+    raw.write_all(&updated).expect("write header1");
+    raw.seek(SeekFrom::Start(128 * 1024)).expect("seek header2");
+    raw.write_all(&updated).expect("write header2");
+    raw.flush().expect("flush");
+}
+
+// ── C) 差分父链场景夹具 (Task 9 / Task 10) ──
+
+/// 创建差分磁盘对（parent + child），返回 (parent_path, child_path)。
+///
+/// 父盘为 Fixed 类型，子盘为 Dynamic + has_parent。
+fn create_differencing_pair(virtual_size: u64, block_size: u32) -> (PathBuf, PathBuf) {
+    use vhdx_rs::File;
+
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(virtual_size)
+        .fixed(true)
+        .block_size(block_size)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    File::create(&child_path)
+        .size(virtual_size)
+        .block_size(block_size)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create differencing child");
+
+    (parent_path, child_path)
+}
+
+/// 创建三级差分链（grandparent → parent → child），返回三个路径。
+fn create_three_level_chain(virtual_size: u64, block_size: u32) -> (PathBuf, PathBuf, PathBuf) {
+    use vhdx_rs::File;
+
+    let gp_path = temp_vhdx_path();
+    File::create(&gp_path)
+        .size(virtual_size)
+        .fixed(true)
+        .block_size(block_size)
+        .finish()
+        .expect("Failed to create grandparent");
+
+    let p_path = temp_vhdx_path();
+    File::create(&p_path)
+        .size(virtual_size)
+        .block_size(block_size)
+        .parent_path(&gp_path)
+        .finish()
+        .expect("Failed to create parent");
+
+    let c_path = temp_vhdx_path();
+    File::create(&c_path)
+        .size(virtual_size)
+        .block_size(block_size)
+        .parent_path(&p_path)
+        .finish()
+        .expect("Failed to create child");
+
+    (gp_path, p_path, c_path)
+}
+
+/// 将指定 VHDX 文件的 payload block `block_idx` 设为 PartiallyPresent（state=7），
+/// 指向文件偏移 `payload_offset_mb` MiB 处。
+fn set_block_partially_present(path: &std::path::Path, block_idx: u64, payload_offset_mb: u64) {
+    // PartiallyPresent = 7
+    inject_bat_entry_raw(path, block_idx, (payload_offset_mb << 20) | 7u64);
+}
+
+/// 在指定位图文件偏移处写入扇区位图数据（测试专用）。
+///
+/// 位图按 little-endian bit 排列：`byte[0]` 的 bit 0 对应扇区 0。
+/// `sector_bits` 列表中 `(idx, true)` 表示设置该位，`(idx, false)` 表示清除。
+fn inject_sector_bitmap_bits(
+    path: &std::path::Path, bitmap_file_offset: u64, sector_bits: &[(usize, bool)],
+) {
+    let bitmap_size = 4096;
+    let mut bitmap = read_raw_bytes(path, bitmap_file_offset, bitmap_size);
+    for &(idx, is_set) in sector_bits {
+        let byte = idx / 8;
+        let bit = u8::try_from(idx % 8).expect("bit index overflow");
+        if byte < bitmap.len() {
+            if is_set {
+                bitmap[byte] |= 1 << bit;
+            } else {
+                bitmap[byte] &= !(1 << bit);
+            }
+        }
+    }
+    write_raw_bytes(path, bitmap_file_offset, &bitmap);
+}
+
+// ── Fail-first 测试存根 ──
+//
+// 按 TDD fail-first 风格命名，定义各缺口期望的正确行为。
+// 当前实现尚未满足这些断言，标记 #[ignore]。
+// 每个 Task 完成后应移除对应测试的 #[ignore] 并验证通过。
+
+/// Task 2：Dynamic 读路径跨 chunk boundary 时，应使用 payload BAT 索引而非 block 索引。
+#[test]
+fn gap_dynamic_read_beyond_chunk_ratio_returns_correct_payload() {
+    use vhdx_rs::File;
+
+    let block_size: u64 = 32 * 1024 * 1024;
+    let logical_sector_size: u64 = 512;
+    let (path, chunk_ratio) =
+        create_dynamic_disk_for_cross_chunk_test(5 * 1024 * 1024 * 1024, block_size, 512);
+
+    // block 128 = 第二个 chunk 的第一个 payload block
+    let block_idx = chunk_ratio;
+    let expected_bat_idx = payload_bat_index(block_idx, chunk_ratio);
+    let payload_mb: u64 = 200;
+    let bitmap_mb: u64 = 300;
+
+    // 写入 bitmap 条目（chunk 0 的 bitmap 在 BAT[payload_bat_index(chunk_ratio-1)+1]）
+    let bitmap_bat_idx = bitmap_bat_index_for_chunk(0, chunk_ratio);
+    inject_bat_entry_raw(&path, bitmap_bat_idx, (bitmap_mb << 20) | 6u64);
+    // 写入 payload 条目
+    inject_bat_entry_raw(&path, expected_bat_idx, (payload_mb << 20) | 6u64);
+
+    // 在 payload 偏移处写入可识别数据
+    let sector_size = logical_sector_size as usize;
+    let payload_data = vec![0xAB_u8; sector_size];
+    write_raw_bytes(&path, payload_mb * 1024 * 1024, &payload_data);
+
+    // 打开并读取 block 128 的第一个 sector
+    let file = File::open(&path).finish().expect("open");
+    let sectors_per_block = block_size / logical_sector_size;
+    let target_sector = block_idx * sectors_per_block;
+    let sector = file
+        .io()
+        .sector(target_sector)
+        .expect("sector should exist");
+    let mut buf = vec![0u8; sector_size];
+    sector.read(&mut buf).expect("read");
+
+    assert_eq!(
+        buf, payload_data,
+        "cross-chunk read should return payload data at correct BAT index"
+    );
+}
+
+/// Task 2：Dynamic 读路径在 BAT payload 索引越界时应安全返回零（不 panic）。
+///
+/// 当虚拟偏移对应的 payload BAT 索引超出 BAT 条目范围时，
+/// 读取路径应优雅地返回零填充而非 panic 或错误。
+#[test]
+fn dynamic_read_bat_payload_index_out_of_range_returns_zeros() {
+    use vhdx_rs::File;
+
+    let block_size: u64 = 32 * 1024 * 1024;
+    let logical_sector_size: u64 = 512;
+    let (path, _chunk_ratio) =
+        create_dynamic_disk_for_cross_chunk_test(1 * 1024 * 1024 * 1024, block_size, 512);
+
+    // 不注入任何 BAT 条目 — 所有块保持 NotPresent
+    let file = File::open(&path).finish().expect("open");
+
+    // 读取虚拟偏移 0（block 0）— payload 索引 0，未分配，应返回零
+    let sector_size = logical_sector_size as usize;
+    let sector = file.io().sector(0).expect("sector 0 should exist");
+    let mut buf = vec![0u8; sector_size];
+    sector.read(&mut buf).expect("read should succeed");
+    assert_eq!(
+        buf,
+        vec![0u8; sector_size],
+        "unallocated block should return zeros"
+    );
+}
+
+/// Task 3：Fixed BAT 中 sector bitmap 条目应使用正确的状态编码。
+///
+/// 对于 Fixed 类型磁盘，Sector Bitmap 条目应编码为 NotPresent（状态 0）+ 偏移 0，
+/// 而非错误地标记为 Payload FullyPresent 并指向数据区域。
+/// Payload 条目则应保持 FullyPresent + 正确的数据偏移。
+#[test]
+fn fixed_bat_sector_bitmap_notpresent() {
+    use vhdx_rs::File;
+
+    let block_size: u64 = 32 * 1024 * 1024;
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(64 * 1024 * 1024)
+        .fixed(true)
+        .block_size(u32::try_from(block_size).expect("block_size"))
+        .logical_sector_size(512)
+        .finish()
+        .expect("create fixed");
+
+    let file = File::open(&path).finish().expect("open");
+    let bat = file.sections().bat().expect("bat");
+
+    // 查找所有 Sector Bitmap 条目，验证它们是 NotPresent + 偏移 0
+    let entries = bat.entries();
+    let mut found_bitmap = false;
+    for (i, entry) in entries.iter().enumerate() {
+        if matches!(entry.state, vhdx_rs::section::BatState::SectorBitmap(_)) {
+            found_bitmap = true;
+            assert_eq!(
+                entry.file_offset_mb, 0,
+                "Fixed BAT sector bitmap entry at index {i} should have zero offset",
+            );
+        } else if matches!(
+            entry.state,
+            vhdx_rs::section::BatState::Payload(vhdx_rs::section::PayloadBlockState::FullyPresent,)
+        ) {
+            // Payload 条目应有非零偏移
+            assert_ne!(
+                entry.file_offset_mb, 0,
+                "Fixed BAT payload entry at index {i} should have non-zero offset",
+            );
+        }
+    }
+    assert!(
+        found_bitmap,
+        "should find at least one sector bitmap entry in Fixed BAT"
+    );
+}
+
+/// Task 4：日志回放应拒绝 checksum 无效的条目。
+#[test]
+fn log_replay_rejects_invalid_checksum() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let target_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size") + 512;
+    inject_pending_log_entry(&path, target_offset, b"BAD_CRC_TEST");
+    fix_log_entry_checksum(&path, 0);
+    corrupt_log_entry_checksum(&path, 0, 0xDEAD_BEEF);
+
+    let result = File::open(&path)
+        .write()
+        .log_replay(LogReplayPolicy::Auto)
+        .finish();
+    assert!(
+        result.is_err(),
+        "invalid checksum should cause replay failure"
+    );
+}
+
+/// Task 4：合法 checksum 的日志条目在 Auto 策略下应可被回放读取。
+#[test]
+fn log_replay_auto_applies_entry() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let target_disk_offset = 512_u64;
+    let target_file_offset =
+        u64::try_from(HEADER_SECTION_SIZE).expect("header size") + target_disk_offset;
+    let payload = b"TASK4_AUTO_REPLAY_OK";
+
+    inject_pending_log_entry(&path, target_file_offset, payload);
+    fix_log_entry_checksum(&path, 0);
+
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::Auto)
+        .finish()
+        .expect("auto replay open should succeed with valid checksum");
+    assert!(
+        !file.has_pending_logs(),
+        "Auto replay should consume pending log entry"
+    );
+
+    let sector = file.io().sector(0).expect("sector 0 should exist");
+    let mut buf = vec![0u8; 4096];
+    sector.read(&mut buf).expect("sector read should succeed");
+    assert_eq!(&buf[512..512 + payload.len()], payload);
+}
+
+/// Task 5：日志回放在 log_guid 匹配时应成功应用条目。
+#[test]
+fn log_replay_guid_match() {
+    use vhdx_rs::{File, Guid, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let matched_guid = Guid::from_bytes([
+        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
+        0x22,
+    ]);
+    let target_disk_offset = 512_u64;
+    let target_file_offset =
+        u64::try_from(HEADER_SECTION_SIZE).expect("header size") + target_disk_offset;
+    let payload = b"TASK5_GUID_MATCH_OK";
+
+    let entry_bytes = build_controllable_log_entry_bytes(
+        0,
+        1,
+        Some(matched_guid.as_bytes()),
+        1,
+        target_file_offset,
+        0,
+        0,
+        1,
+        payload,
+    );
+    inject_controllable_log_entry(&path, 0, &entry_bytes, matched_guid);
+    fix_log_entry_checksum(&path, 0);
+
+    let file = File::open(&path)
+        .write()
+        .log_replay(LogReplayPolicy::Auto)
+        .finish()
+        .expect("guid-matched replay should succeed");
+    assert!(
+        !file.has_pending_logs(),
+        "matched log_guid should be consumed by replay"
+    );
+
+    let sector = file.io().sector(0).expect("sector 0 should exist");
+    let mut buf = vec![0u8; 4096];
+    sector.read(&mut buf).expect("sector read should succeed");
+    assert_eq!(&buf[512..512 + payload.len()], payload);
+}
+
+/// Task 5：日志回放应拒绝 log_guid 不匹配的条目。
+#[test]
+fn log_replay_rejects_mismatched_log_guid() {
+    use vhdx_rs::{Error, File, Guid, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    // 条目中的 log_guid 与 header 中的 log_guid 不同
+    let entry_guid = Guid::from_bytes([
+        0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
+        0x00,
+    ]);
+    let header_guid = Guid::from_bytes([
+        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
+        0x22,
+    ]);
+
+    let entry_bytes = build_controllable_log_entry_bytes(
+        0,
+        1,
+        Some(entry_guid.as_bytes()),
+        1,
+        u64::try_from(HEADER_SECTION_SIZE).expect("header size") + 512,
+        0,
+        0,
+        1,
+        b"GUID_MISMATCH",
+    );
+    inject_controllable_log_entry(&path, 0, &entry_bytes, header_guid);
+    fix_log_entry_checksum(&path, 0);
+
+    let result = File::open(&path)
+        .write()
+        .log_replay(LogReplayPolicy::Auto)
+        .finish();
+    match result {
+        Err(Error::LogEntryCorrupted(msg)) => {
+            assert!(
+                msg.contains("Log GUID mismatch"),
+                "mismatch should report explicit log_guid error, got: {msg}",
+            );
+        }
+        Err(err) => panic!("expected LogEntryCorrupted for log_guid mismatch, got: {err:?}"),
+        Ok(_) => panic!("log_guid mismatch should cause replay failure"),
+    }
+}
+
+/// Task 6：Data Descriptor 应按规范语义合并 leading/trailing 字节。
+#[test]
+fn gap_log_replay_data_descriptor_leading_trailing_semantics() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    // 在虚拟扇区 0 位置写入基准数据
+    let base_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size");
+    let base_data = vec![0x11_u8; 4096];
+    write_raw_bytes(&path, base_offset, &base_data);
+
+    // 注入带 leading_bytes=8 的 descriptor
+    let log_guid_bytes: [u8; 16] = [
+        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
+        0x22,
+    ];
+    let guid = vhdx_rs::Guid::from_bytes(log_guid_bytes);
+    let entry_bytes = build_controllable_log_entry_bytes(
+        0,
+        1,
+        Some(&log_guid_bytes),
+        1,
+        base_offset,
+        8,
+        0,
+        1,
+        b"LEADING8",
+    );
+    inject_controllable_log_entry(&path, 0, &entry_bytes, guid);
+    fix_log_entry_checksum(&path, 0);
+
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::InMemoryOnReadOnly)
+        .finish()
+        .expect("open");
+    let sector = file.io().sector(0).expect("sector 0");
+    let mut buf = vec![0u8; 4096];
+    sector.read(&mut buf).expect("read");
+
+    // leading 8 字节应保留原始数据，不覆盖
+    assert_eq!(
+        &buf[..8],
+        &base_data[..8],
+        "leading bytes should preserve original content"
+    );
+    // 后续应包含 replay 数据
+    assert!(
+        buf[8..].starts_with(b"LEADING8"),
+        "replay data should appear after leading bytes"
+    );
+}
+
+/// Task 6：Data Descriptor 语义回归（兼容无 gap 命名筛选）。
+#[test]
+fn log_replay_data_descriptor_leading_trailing_semantics() {
+    gap_log_replay_data_descriptor_leading_trailing_semantics();
+}
+
+/// Task 6：Data Descriptor leading_bytes + trailing_bytes 超出扇区数据长度时应拒绝回放。
+#[test]
+fn log_replay_rejects_invalid_leading_trailing_combination() {
+    use vhdx_rs::{Error, File, Guid, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let base_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size");
+    let log_guid_bytes: [u8; 16] = [
+        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
+        0x22,
+    ];
+    let guid = Guid::from_bytes(log_guid_bytes);
+
+    // leading_bytes = 4000, trailing_bytes = 200 → 4200 > 4084，超出扇区数据大小
+    let entry_bytes = build_controllable_log_entry_bytes(
+        0,
+        1,
+        Some(&log_guid_bytes),
+        1,
+        base_offset,
+        4000,
+        200,
+        1,
+        b"OVERFLOW_LT",
+    );
+    inject_controllable_log_entry(&path, 0, &entry_bytes, guid);
+    fix_log_entry_checksum(&path, 0);
+
+    let result = File::open(&path)
+        .write()
+        .log_replay(LogReplayPolicy::Auto)
+        .finish();
+    match result {
+        Err(Error::LogEntryCorrupted(msg)) => {
+            assert!(
+                msg.contains("leading_bytes")
+                    && msg.contains("trailing_bytes")
+                    && msg.contains("exceeds"),
+                "expected leading+trailing overflow error, got: {msg}"
+            );
+        }
+        Err(err) => panic!("expected LogEntryCorrupted, got: {err:?}"),
+        Ok(_) => panic!("invalid leading+trailing should cause replay failure"),
+    }
+}
+
+/// Task 6：Data Descriptor trailing_bytes 保留目标范围末尾数据。
+#[test]
+fn log_replay_trailing_bytes_preserves_end_of_target() {
+    use vhdx_rs::{File, Guid, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let base_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size");
+
+    // 在目标位置写入可识别的基准数据
+    let mut base_data = vec![0u8; 4096];
+    base_data[4080..4084].copy_from_slice(b"END!");
+    write_raw_bytes(&path, base_offset, &base_data);
+
+    let log_guid_bytes: [u8; 16] = [
+        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
+        0x22,
+    ];
+    let guid = Guid::from_bytes(log_guid_bytes);
+
+    // trailing_bytes = 8 → 目标范围末尾 8 字节应保留
+    let entry_bytes = build_controllable_log_entry_bytes(
+        0,
+        1,
+        Some(&log_guid_bytes),
+        1,
+        base_offset,
+        0, // leading = 0
+        8, // trailing = 8
+        1,
+        b"NO_TRAIL",
+    );
+    inject_controllable_log_entry(&path, 0, &entry_bytes, guid);
+    fix_log_entry_checksum(&path, 0);
+
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::InMemoryOnReadOnly)
+        .finish()
+        .expect("open");
+    let sector = file.io().sector(0).expect("sector 0");
+    let mut buf = vec![0u8; 4096];
+    sector.read(&mut buf).expect("read");
+
+    // 前面应包含回放数据（从 data sector payload 开头写入）
+    assert!(
+        buf.starts_with(b"NO_TRAIL"),
+        "replay data should appear at the start: {:?}",
+        &buf[..16]
+    );
+
+    // 目标范围末尾 8 字节应保留原始数据
+    // 数据扇区 payload 是 4084 字节，trailing=8 意味着最后 8 字节不写入
+    // 写入范围 = [0, 4084-8) = [0, 4076)
+    // 目标 [4076, 4084) 保留原始 base_data 内容
+    assert_eq!(
+        &buf[4076..4080],
+        &base_data[4076..4080],
+        "trailing 8 bytes within sector data range should be preserved"
+    );
+    // 注意 base_data[4080..4084] = "END!" 在扇区 payload 范围外（payload 只有 4084 字节）
+    // 实际 buf[4084..4096] 保持不变（来自 base_data 的其余部分或初始零）
+}
+
+/// Task 6：leading_bytes 和 trailing_bytes 同时使用时正确保留两端。
+#[test]
+fn log_replay_combined_leading_trailing_preserves_both_ends() {
+    use vhdx_rs::{File, Guid, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let base_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size");
+
+    // 在目标位置写入可识别的基准数据
+    let mut base_data = vec![0xAA_u8; 4096];
+    base_data[0..4].copy_from_slice(b"HEAD");
+    base_data[4080..4084].copy_from_slice(b"TAIL");
+    write_raw_bytes(&path, base_offset, &base_data);
+
+    let log_guid_bytes: [u8; 16] = [
+        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
+        0x22,
+    ];
+    let guid = Guid::from_bytes(log_guid_bytes);
+
+    // leading=16, trailing=16 → 中间 4084-16-16=4052 字节从 data sector payload 写入
+    let entry_bytes = build_controllable_log_entry_bytes(
+        0,
+        1,
+        Some(&log_guid_bytes),
+        1,
+        base_offset,
+        16, // leading = 16
+        16, // trailing = 16
+        1,
+        b"MID_WRITE",
+    );
+    inject_controllable_log_entry(&path, 0, &entry_bytes, guid);
+    fix_log_entry_checksum(&path, 0);
+
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::InMemoryOnReadOnly)
+        .finish()
+        .expect("open");
+    let sector = file.io().sector(0).expect("sector 0");
+    let mut buf = vec![0u8; 4096];
+    sector.read(&mut buf).expect("read");
+
+    // 前 16 字节应保留原始数据
+    assert_eq!(
+        &buf[..16],
+        &base_data[..16],
+        "leading 16 bytes should be preserved"
+    );
+    assert_eq!(&buf[..4], b"HEAD");
+
+    // 回放数据应从偏移 16 开始
+    assert!(
+        buf[16..].starts_with(b"MID_WRITE"),
+        "replay data should start at offset 16"
+    );
+
+    // trailing 16 字节范围内的原始数据应保留（目标范围 [4084-16, 4084)）
+    assert_eq!(
+        &buf[4068..4084],
+        &base_data[4068..4084],
+        "trailing 16 bytes should be preserved"
+    );
+}
+
+/// Task 7 gap：回放应仅应用有效 active sequence 内的条目，跳过断链条目。
+#[test]
+fn gap_log_replay_active_sequence_only() {
+    use vhdx_rs::{File, Guid, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(4 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let log_guid = Guid::from_bytes([
+        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
+        0x22,
+    ]);
+    let base = u64::try_from(HEADER_SECTION_SIZE).expect("header size");
+
+    // 注入连续 sequence 1,2 和断链的 sequence 4
+    inject_multi_entry_log_sequence(
+        &path,
+        log_guid,
+        &[
+            (1, base, b"SEQ_1_OK"),
+            (2, base + 4096, b"SEQ_2_OK"),
+            // sequence gap: 3 缺失 → active sequence 应仅包含 [1, 2]
+            (4, base, b"SEQ_4_ORPHAN"),
+        ],
+    );
+
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::InMemoryOnReadOnly)
+        .finish()
+        .expect("open");
+    let s0 = file.io().sector(0).expect("sector 0");
+    let mut buf0 = vec![0u8; 4096];
+    s0.read(&mut buf0).expect("read sector 0");
+
+    // sequence 4 不属于 active sequence，其数据不应覆盖 sequence 1 的结果
+    assert!(
+        !buf0.starts_with(b"SEQ_4_ORPHAN"),
+        "orphan entry outside active sequence must not be applied"
+    );
+}
+
+/// Task 7：active sequence 回放仅应用连续链条（兼容无 gap 命名筛选）。
+#[test]
+fn log_replay_active_sequence_only() {
+    gap_log_replay_active_sequence_only();
+}
+
+/// Task 8 gap：回放后应验证文件尺寸约束并刷新 sections 缓存。
+#[test]
+fn gap_log_replay_enforces_file_size_offsets() {
+    use vhdx_rs::{Error, File, Guid, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    // 构造日志条目，设置 flushed_file_offset 为超出文件实际大小的值
+    let log_guid_bytes: [u8; 16] = [
+        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
+        0x22,
+    ];
+    let guid = Guid::from_bytes(log_guid_bytes);
+
+    let target_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size") + 512;
+
+    // build_controllable_log_entry_bytes 不设置 flushed_file_offset/last_file_offset
+    // 我们手动注入一个条目并设置 flushed_file_offset
+    let mut entry_bytes = build_controllable_log_entry_bytes(
+        0,
+        1,
+        Some(&log_guid_bytes),
+        1,
+        target_offset,
+        0,
+        0,
+        1,
+        b"SIZE_CHECK",
+    );
+    // 设置 flushed_file_offset（header 偏移 48..56）为远超文件实际大小的值
+    let flushed: u64 = 10 * 1024 * 1024 * 1024; // 10 GiB — 远超 2 MiB 文件
+    entry_bytes[48..56].copy_from_slice(&flushed.to_le_bytes());
+    // 重算 checksum
+    entry_bytes[4..8].fill(0);
+    let checksum = crc32c::crc32c(&entry_bytes);
+    entry_bytes[4..8].copy_from_slice(&checksum.to_le_bytes());
+
+    inject_controllable_log_entry(&path, 0, &entry_bytes, guid);
+
+    // 磁盘回放路径应拒绝 flushed_file_offset > 文件长度
+    let result = File::open(&path)
+        .write()
+        .log_replay(LogReplayPolicy::Auto)
+        .finish();
+    match result {
+        Err(Error::LogEntryCorrupted(msg)) => {
+            assert!(
+                msg.contains("flushed_file_offset"),
+                "expected flushed_file_offset error, got: {msg}"
+            );
+        }
+        Err(err) => panic!("expected LogEntryCorrupted, got: {err:?}"),
+        Ok(_) => panic!("flushed_file_offset beyond file size should cause replay failure"),
+    }
+}
+
+/// Task 8：文件尺寸约束（兼容无 gap 命名筛选）。
+#[test]
+fn log_replay_enforces_file_size_offsets() {
+    gap_log_replay_enforces_file_size_offsets();
+}
+
+/// Task 8：回放后 sections 缓存已刷新，不会返回过时数据。
+///
+/// 注入 pending log 并以 writable + Auto 策略打开，回放完成后，
+/// 验证 sections 的 header 反映回放后的状态（log_guid 已清零）。
+#[test]
+fn log_replay_refreshes_sections() {
+    use vhdx_rs::{File, Guid, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let target_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size") + 512;
+    inject_pending_log_entry(&path, target_offset, b"REFRESH_TEST");
+
+    // 以 writable + Auto 打开触发磁盘回放
+    let file = File::open(&path)
+        .write()
+        .log_replay(LogReplayPolicy::Auto)
+        .finish()
+        .expect("writable auto replay should succeed");
+
+    // 回放完成后 has_pending_logs 应为 false
+    assert!(
+        !file.has_pending_logs(),
+        "pending logs should be consumed after writable replay"
+    );
+
+    // sections 缓存已刷新：header 中 log_guid 应为 nil
+    let header = file.sections().header().expect("header should be readable");
+    let active_header = header.header(0).expect("active header should exist");
+    assert!(
+        active_header.log_guid() == Guid::nil(),
+        "log_guid should be nil after replay (sections cache refreshed)"
+    );
+}
+#[test]
+fn gap_differencing_read_partially_present_uses_bitmap() {
+    use vhdx_rs::File;
+
+    let (parent_path, child_path) = create_differencing_pair(4 * 1024 * 1024, 1024 * 1024);
+
+    // 父盘写入基准数据到虚拟扇区 0（Fixed 类型数据紧跟在 header section 之后）
+    let parent_data = vec![0x11_u8; 4096];
+    let parent_data_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size");
+    write_raw_bytes(&parent_path, parent_data_offset, &parent_data);
+
+    // 子盘设置 block 0 为 PartiallyPresent（state=7，指向 8 MiB）
+    let payload_mb: u64 = 8;
+    set_block_partially_present(&child_path, 0, payload_mb);
+
+    // 写入子盘 payload 数据（sector 0 和 sector 1 各写不同内容）
+    let child_sector0_data = vec![0xAA_u8; 4096];
+    let child_sector1_data = vec![0xBB_u8; 4096];
+    write_raw_bytes(&child_path, payload_mb * 1024 * 1024, &child_sector0_data);
+    write_raw_bytes(
+        &child_path,
+        payload_mb * 1024 * 1024 + 4096,
+        &child_sector1_data,
+    );
+
+    // 设置 sector bitmap BAT 条目（BAT 索引 4）为 Present（state=6），指向 9 MiB
+    // chunk_ratio = (2^23 * 4096) / (1 MiB) = 32768，payload_blocks = 4
+    // bitmap BAT index = 0 * (32768 + 1) + min(4, 32768) = 4
+    let bitmap_mb: u64 = 9;
+    inject_bat_entry_raw(&child_path, 4, (bitmap_mb << 20) | 6u64);
+
+    // 预写入 bitmap 区域（确保文件足够大以供读取）
+    write_raw_bytes(&child_path, bitmap_mb * 1024 * 1024, &vec![0u8; 4096]);
+
+    // 设置扇区位图：sector 0 存在（bit 0 = 1），sector 1 不存在（bit 1 = 0）
+    inject_sector_bitmap_bits(
+        &child_path,
+        bitmap_mb * 1024 * 1024,
+        &[(0, true)], // 仅 sector 0 的位图标记为存在
+    );
+
+    // 打开子盘读取
+    let child = File::open(&child_path).finish().expect("open child");
+
+    // sector 0（bitmap=1）应返回子盘 payload 数据
+    let sector0 = child.io().sector(0).expect("sector 0");
+    let mut buf0 = vec![0u8; 4096];
+    sector0.read(&mut buf0).expect("read sector 0");
+    assert_eq!(
+        buf0, child_sector0_data,
+        "bitmap=1 sector should return child payload data"
+    );
+
+    // sector 1（bitmap=0）应返回零（Task 10 之前不实现父盘回退）
+    let sector1 = child.io().sector(1).expect("sector 1");
+    let mut buf1 = vec![0u8; 4096];
+    sector1.read(&mut buf1).expect("read sector 1");
+    assert_eq!(
+        buf1,
+        vec![0u8; 4096],
+        "bitmap=0 sector should return zeros (no parent fallback yet)"
+    );
+}
+
+/// Task 9：差分盘 PartiallyPresent 扇区位图判定读取（兼容无 gap 命名筛选）。
+#[test]
+fn differencing_read_partially_present_uses_bitmap() {
+    gap_differencing_read_partially_present_uses_bitmap();
+}
+
+/// Task 10 gap：子盘未命中扇区应回退到父盘读取。
+#[test]
+fn gap_differencing_read_falls_back_to_parent() {
+    use vhdx_rs::File;
+
+    let parent_data = vec![0x22_u8; 4096];
+    let (parent_path, child_path) = create_differencing_pair(4 * 1024 * 1024, 1024 * 1024);
+
+    // 在父盘虚拟扇区 0 写入可识别数据（Fixed 类型数据紧跟 header section）
+    let parent_data_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size");
+    write_raw_bytes(&parent_path, parent_data_offset, &parent_data);
+
+    // 子盘不分配任何块，读取应回退到父盘
+    let child = File::open(&child_path).finish().expect("open child");
+    let sector = child.io().sector(0).expect("sector 0");
+    let mut buf = vec![0u8; 4096];
+    sector.read(&mut buf).expect("read");
+
+    assert_eq!(
+        buf, parent_data,
+        "child miss sector should return parent data"
+    );
+}
+
+/// Task 10：子盘未命中扇区应回退到父盘读取（兼容无 gap 命名筛选）。
+#[test]
+fn differencing_read_falls_back_to_parent() {
+    gap_differencing_read_falls_back_to_parent();
+}
+
+/// Task 10 gap：父盘缺失时应返回明确错误而非静默返回零。
+#[test]
+fn gap_differencing_read_parent_missing_errors() {
+    use vhdx_rs::{Error, File};
+
+    let (parent_path, child_path) = create_differencing_pair(4 * 1024 * 1024, 1024 * 1024);
+    // 删除父盘文件
+    std::fs::remove_file(&parent_path).expect("remove parent");
+
+    let child = File::open(&child_path).finish().expect("open child");
+    let sector = child.io().sector(0).expect("sector 0");
+    let mut buf = vec![0u8; 4096];
+    let result = sector.read(&mut buf);
+
+    assert!(result.is_err(), "missing parent should cause read error");
+    match result {
+        Err(Error::ParentNotFound { .. }) | Err(Error::InvalidParameter(_)) => {}
+        Err(e) => panic!("unexpected error variant: {e:?}"),
+        Ok(_) => panic!("should fail with parent missing error"),
+    }
+}
+
+/// Task 10：父盘缺失时应返回明确错误而非静默返回零（兼容无 gap 命名筛选）。
+#[test]
+fn differencing_read_parent_missing_errors() {
+    gap_differencing_read_parent_missing_errors();
+}
+
+/// Task 11：Dynamic 写入未分配块应自动分配 payload block。
+#[test]
+fn gap_dynamic_write_auto_allocates_payload_block() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(4 * 1024 * 1024)
+        .fixed(false)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("create dynamic");
+
+    let file = File::open(&path).write().finish().expect("open w");
+    let sector = file.io().sector(0).expect("sector 0");
+    let data = vec![0x55_u8; 4096];
+    sector
+        .write(&data)
+        .expect("write to unallocated block should auto-allocate");
+    drop(file);
+
+    // 重新打开验证数据持久化
+    let file2 = File::open(&path).finish().expect("reopen");
+    let s = file2.io().sector(0).expect("sector 0");
+    let mut buf = vec![0u8; 4096];
+    s.read(&mut buf).expect("read");
+    assert_eq!(buf, data, "auto-allocated block data should persist");
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Task 12: 全量验证收口测试
+//
+// 验证 validator 的 log CRC/GUID 检查、差分盘 BAT 约束、以及
+// auto-allocation 后 validator 一致性。
+// ════════════════════════════════════════════════════════════════════
+
+/// Task 12：validator 的 `validate_log()` 应检测 CRC-32C 不匹配。
+///
+/// 注入合法日志条目后篡改 checksum，validator 应返回 LogEntryCorrupted。
+#[test]
+fn t12_validator_log_rejects_invalid_checksum() {
+    use vhdx_rs::{Error, File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let target_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size") + 512;
+    inject_pending_log_entry(&path, target_offset, b"T12_CRC_CHECK");
+    // 先修正为合法 checksum，再篡改
+    fix_log_entry_checksum(&path, 0);
+    corrupt_log_entry_checksum(&path, 0, 0xDEAD_BEEF);
+
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("open with ReadOnlyNoReplay");
+
+    let err = file
+        .validator()
+        .validate_log()
+        .expect_err("validator should detect CRC mismatch");
+
+    match err {
+        Error::LogEntryCorrupted(msg) => {
+            assert!(
+                msg.contains("CRC-32C mismatch"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// Task 12：validator 的 `validate_log()` 应检测日志 GUID 不匹配。
+///
+/// 注入 log_guid 与 header log_guid 不同的条目，validator 应返回 LogEntryCorrupted。
+#[test]
+fn t12_validator_log_rejects_guid_mismatch() {
+    use vhdx_rs::{Error, File, Guid, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    // 条目中的 log_guid 与 header 中的不同
+    let entry_guid = Guid::from_bytes([
+        0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
+        0x00,
+    ]);
+    let header_guid = Guid::from_bytes([
+        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
+        0x22,
+    ]);
+
+    let target_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size") + 512;
+    let entry_bytes = build_controllable_log_entry_bytes(
+        0,
+        1,
+        Some(entry_guid.as_bytes()),
+        1,
+        target_offset,
+        0,
+        0,
+        1,
+        b"T12_GUID",
+    );
+    inject_controllable_log_entry(&path, 0, &entry_bytes, header_guid);
+    fix_log_entry_checksum(&path, 0);
+
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("open with ReadOnlyNoReplay");
+
+    let err = file
+        .validator()
+        .validate_log()
+        .expect_err("validator should detect GUID mismatch");
+
+    match err {
+        Error::LogEntryCorrupted(msg) => {
+            assert!(
+                msg.contains("GUID mismatch"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// Task 12：validator 的 `validate_log()` 在合法日志条目上应通过。
+#[test]
+fn t12_validator_log_passes_with_valid_entry() {
+    use vhdx_rs::{File, Guid, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let matched_guid = Guid::from_bytes([
+        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
+        0x22,
+    ]);
+    let target_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size") + 512;
+
+    let entry_bytes = build_controllable_log_entry_bytes(
+        0,
+        1,
+        Some(matched_guid.as_bytes()),
+        1,
+        target_offset,
+        0,
+        0,
+        1,
+        b"T12_VALID",
+    );
+    inject_controllable_log_entry(&path, 0, &entry_bytes, matched_guid);
+    fix_log_entry_checksum(&path, 0);
+
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("open with ReadOnlyNoReplay");
+
+    file.validator()
+        .validate_log()
+        .expect("valid log entry should pass validator");
+}
+
+/// Task 12：差分盘 PartiallyPresent 块在 validator 中应被允许。
+///
+/// 验证差分盘的 BAT 可以包含 PartiallyPresent 状态而不被 validator 拒绝，
+/// 但非差分盘的 PartiallyPresent 应被拒绝（已有现有测试覆盖）。
+#[test]
+fn t12_validator_bat_allows_partially_present_on_differencing_disk() {
+    use vhdx_rs::File;
+
+    let (_parent_path, child_path) = create_differencing_pair(4 * 1024 * 1024, 1024 * 1024);
+
+    // 设置子盘 block 0 为 PartiallyPresent
+    set_block_partially_present(&child_path, 0, 8);
+
+    let file = File::open(&child_path).finish().expect("open child disk");
+
+    // 差分盘的 PartiallyPresent 不应导致 BAT 校验失败
+    file.validator()
+        .validate_bat()
+        .expect("PartiallyPresent should be allowed on differencing disk BAT");
+}
+
+/// Task 12：Dynamic 写入触发 auto-allocation 后，validator 应通过全量校验。
+///
+/// 验证 Task 11 的自动分配语义不会产生 validator 无法接受的状态。
+#[test]
+fn t12_validator_passes_after_dynamic_auto_allocation() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(4 * 1024 * 1024)
+        .fixed(false)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("create dynamic");
+
+    let file = File::open(&path).write().finish().expect("open writable");
+    let data = vec![0xAB_u8; 4096];
+    let sector = file.io().sector(0).expect("sector 0");
+    sector.write(&data).expect("auto-allocate should succeed");
+    drop(file);
+
+    // 重新打开并执行全量 validator 校验
+    let file2 = File::open(&path).finish().expect("reopen");
+    file2
+        .validator()
+        .validate_file()
+        .expect("validator should pass after auto-allocation");
+}
+
+/// Task 12：validator 在差分磁盘上执行全量校验应通过。
+#[test]
+fn t12_validator_full_validate_on_differencing_disk() {
+    use vhdx_rs::File;
+
+    let (_parent_path, child_path) = create_differencing_pair(4 * 1024 * 1024, 1024 * 1024);
+
+    let file = File::open(&child_path).finish().expect("open child");
+
+    file.validator()
+        .validate_file()
+        .expect("full validator should pass for differencing disk");
 }

@@ -252,6 +252,28 @@ impl BatEntry {
     }
 }
 
+impl<'a> Bat<'a> {
+    /// 更新指定索引处的 BAT 条目（同时更新内存缓存和原始数据）
+    ///
+    /// 用于 Dynamic 类型写入时自动分配 payload block 后更新 BAT 条目。
+    /// 更新 `entries` 向量和 `raw_data` 字节数组以保持两者同步。
+    pub(crate) fn update_entry(
+        &mut self, index: usize, state: BatState, file_offset_mb: u64,
+    ) -> Result<()> {
+        if index >= self.entry_count {
+            return Err(Error::InvalidParameter(format!(
+                "BAT update index {index} out of range (entry_count={})",
+                self.entry_count
+            )));
+        }
+        let entry = BatEntry::new(state, file_offset_mb);
+        self.entries[index] = entry;
+        let offset = index * BAT_ENTRY_SIZE;
+        self.raw_data[offset..offset + BAT_ENTRY_SIZE].copy_from_slice(&entry.raw().to_le_bytes());
+        Ok(())
+    }
+}
+
 /// BAT 条目的块状态（MS-VHDX §2.5.1）
 ///
 /// 根据状态值的不同，BAT 条目可能代表 Payload Block 或 Sector Bitmap Block。

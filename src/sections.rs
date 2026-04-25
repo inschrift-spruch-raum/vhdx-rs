@@ -20,6 +20,7 @@ use std::marker::PhantomData;
 
 use crate::common::constants::HEADER_SECTION_SIZE;
 use crate::error::{Error, Result};
+use crate::types::Guid;
 
 // 子模块声明：每个子模块对应 VHDX 文件的一个区域
 mod bat;
@@ -121,6 +122,13 @@ impl<'a> Log<'a> {
         self.inner.entries()
     }
 
+    /// 获取与指定日志 GUID 匹配的日志条目。
+    ///
+    /// 若发现 GUID 不匹配条目，返回错误而不是静默跳过。
+    pub fn entries_for_log_guid(&self, expected_log_guid: Guid) -> Result<Vec<LogEntry<'_>>> {
+        self.inner.entries_for_log_guid(expected_log_guid)
+    }
+
     /// 检查是否需要重放日志
     ///
     /// 根据 VHDX 规范，当日志中存在未提交的事务时需要重放。
@@ -135,6 +143,13 @@ impl<'a> Log<'a> {
     /// 用于崩溃恢复（MS-VHDX §2.3.4）。
     pub fn replay(&self, file: &mut std::fs::File) -> Result<()> {
         self.inner.replay(file)
+    }
+
+    /// 使用指定活动日志 GUID 回放日志条目。
+    pub fn replay_with_log_guid(
+        &self, file: &mut std::fs::File, expected_log_guid: Guid,
+    ) -> Result<()> {
+        self.inner.replay_with_log_guid(file, expected_log_guid)
     }
 }
 
@@ -258,6 +273,30 @@ impl<'a> Sections<'a> {
         }))
     }
 
+    /// 获取 BAT 区域的可变引用（延迟加载）
+    ///
+    /// 用于 Dynamic 类型写入时更新 BAT 条目的内存缓存。
+    /// 首次调用时从文件加载，后续调用直接返回缓存的可变引用。
+    pub(crate) fn bat_mut(&self) -> Result<std::cell::RefMut<'_, Bat<'static>>> {
+        if self.bat.borrow().is_none() {
+            let bat_size: usize = self.bat_size.try_into().map_err(|_| {
+                Error::InvalidFile(format!("BAT size {} exceeds usize::MAX", self.bat_size))
+            })?;
+            let bat_data = self.read_section(self.bat_offset, bat_size)?;
+            *self.bat.borrow_mut() = Some(Bat::new(bat_data, self.entry_count)?);
+        }
+        Ok(std::cell::RefMut::map(self.bat.borrow_mut(), |b| {
+            b.as_mut().unwrap()
+        }))
+    }
+
+    /// 获取 BAT 区域在文件中的偏移量（字节）
+    ///
+    /// 用于将更新后的 BAT 条目持久化到磁盘。
+    pub(crate) fn bat_disk_offset(&self) -> u64 {
+        self.bat_offset
+    }
+
     /// 获取元数据区域（延迟加载），首次调用时从文件读取并缓存
     pub fn metadata(&self) -> Result<std::cell::Ref<'_, Metadata<'a>>> {
         if self.metadata.borrow().is_none() {
@@ -309,6 +348,17 @@ impl<'a> Sections<'a> {
         let mut data = vec![0u8; size];
         file.read_exact(&mut data)?;
         Ok(data)
+    }
+
+    /// 清除所有延迟加载缓存，使后续访问重新从文件读取
+    ///
+    /// 在日志回放完成后调用，确保 BAT、元数据等区域反映回放后的最新状态，
+    /// 而非回放前的陈旧缓存。
+    pub fn invalidate_caches(&self) {
+        self.header.borrow_mut().take();
+        self.bat.borrow_mut().take();
+        self.metadata.borrow_mut().take();
+        self.log.borrow_mut().take();
     }
 }
 

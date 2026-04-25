@@ -916,6 +916,13 @@ fn inject_pending_log_for_cli(path: &std::path::Path) {
     entry[8..12].copy_from_slice(&(u32::try_from(entry_len).unwrap()).to_le_bytes());
     entry[24..28].copy_from_slice(&1u32.to_le_bytes()); // descriptor_count = 1
 
+    // Task 5: 条目 log_guid 必须与 active header.log_guid 一致。
+    let log_guid = vhdx_rs::Guid::from_bytes([
+        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
+        0x22,
+    ]);
+    entry[32..48].copy_from_slice(log_guid.as_bytes());
+
     let desc_off = LOG_ENTRY_HEADER_SIZE;
     entry[desc_off..desc_off + 4].copy_from_slice(b"desc");
     entry[desc_off + 16..desc_off + 24].copy_from_slice(&target_file_offset.to_le_bytes());
@@ -926,6 +933,11 @@ fn inject_pending_log_for_cli(path: &std::path::Path) {
     entry[sector_off + 4..sector_off + 8].copy_from_slice(&0u32.to_le_bytes()); // sequence_high = 0
     entry[sector_off + 8..sector_off + 8 + 13].copy_from_slice(b"CLI_LOG_ENTRY");
     entry[sector_off + 4092..sector_off + 4096].copy_from_slice(&0u32.to_le_bytes()); // sequence_low = 0
+
+    // 生成合法 checksum，满足 Task 4 replay precheck。
+    entry[4..8].fill(0);
+    let checksum = vhdx_rs::crc32c_with_zero_field(&entry, 4, 4);
+    entry[4..8].copy_from_slice(&checksum.to_le_bytes());
 
     // 写入日志条目
     let mut raw = OpenOptions::new()
@@ -944,11 +956,7 @@ fn inject_pending_log_for_cli(path: &std::path::Path) {
             .expect("Failed to clear log tail");
     }
 
-    // 设置 log_guid 为非空（表示有待处理日志）
-    let log_guid = vhdx_rs::Guid::from_bytes([
-        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
-        0x22,
-    ]);
+    // 设置 header log_guid 为非空（表示有待处理日志）
     let updated_header = vhdx_rs::section::HeaderStructure::create(
         header.sequence_number(),
         header.file_write_guid(),

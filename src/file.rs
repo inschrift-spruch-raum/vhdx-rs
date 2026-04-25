@@ -49,8 +49,8 @@ use crate::error::{Error, Result};
 use crate::io_module::IO;
 use crate::sections::Bat;
 use crate::sections::{
-    BatState, FileTypeIdentifier, Header, HeaderStructure, PayloadBlockState, Sections,
-    SectionsConfig,
+    BatEntry, BatState, FileTypeIdentifier, Header, HeaderStructure, PayloadBlockState, Sections,
+    SectionsConfig, SectorBitmapState,
 };
 use crate::types::Guid;
 
@@ -224,6 +224,54 @@ impl File {
         &self.opened_path
     }
 
+    /// 打开当前差分盘的父盘文件用于回退读取。
+    ///
+    /// 父路径解析顺序严格复用 `ParentLocator::resolve_parent_path`
+    /// （`relative_path` → `volume_path` → `absolute_win32_path`）。
+    fn open_parent_for_read(&self) -> Result<File> {
+        let metadata = self.sections.metadata()?;
+        let items = metadata.items();
+        let locator = items.parent_locator().ok_or_else(|| {
+            Error::InvalidMetadata("Missing required metadata item: parent_locator".to_string())
+        })?;
+
+        let parent_path = locator
+            .resolve_parent_path()
+            .ok_or_else(|| Error::ParentNotFound {
+                path: std::path::PathBuf::new(),
+            })?;
+
+        if !parent_path.exists() {
+            return Err(Error::ParentNotFound { path: parent_path });
+        }
+
+        File::open(&parent_path).finish()
+    }
+
+    /// 从父链读取指定虚拟偏移范围（按需懒加载父盘句柄）。
+    fn read_from_parent_chain_cached(
+        &self, parent_cache: &mut Option<File>, virtual_offset: u64, buf: &mut [u8],
+    ) -> Result<()> {
+        if !self.has_parent {
+            return Ok(());
+        }
+
+        if parent_cache.is_none() {
+            *parent_cache = Some(self.open_parent_for_read()?);
+        }
+
+        let parent = parent_cache.as_ref().ok_or_else(|| Error::ParentNotFound {
+            path: std::path::PathBuf::new(),
+        })?;
+
+        let bytes_read = parent.read_raw(virtual_offset, buf)?;
+        if bytes_read < buf.len() {
+            buf[bytes_read..].fill(0);
+        }
+
+        Ok(())
+    }
+
     /// 内部读取实现（按虚拟偏移读取）
     fn read(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
         if offset >= self.virtual_disk_size {
@@ -253,8 +301,17 @@ impl File {
             // Dynamic 类型：按 BAT 语义读取
             // - FullyPresent/Undefined/PartiallyPresent 且 file_offset 非零：从 payload 读取
             // - NotPresent/Zero/Unmapped/无条目/无效偏移：返回零
+            //
+            // BAT 按 chunk 交错排列（MS-VHDX §2.5.1）：每 chunk_ratio 个 payload 条目后
+            // 插入 1 个 sector bitmap 条目。因此 payload block N 对应 BAT 索引 =
+            // N + floor(N / chunk_ratio)，与写入路径保持一致。
             let block_size = u64::from(self.block_size);
+            let chunk_ratio = u64::from(Bat::calculate_chunk_ratio(
+                self.logical_sector_size,
+                self.block_size,
+            ));
             let mut file = self.inner.try_clone()?;
+            let mut parent_cache: Option<File> = None;
 
             let mut processed = 0usize;
             while processed < bytes_to_read {
@@ -262,6 +319,13 @@ impl File {
                     offset + u64::try_from(processed).unwrap_or(u64::MAX - offset);
                 let block_idx = current_virtual_offset / block_size;
                 let block_offset = current_virtual_offset % block_size;
+
+                // 计算 payload BAT 索引（MS-VHDX §2.5.1 chunk 交错规则）
+                let bat_payload_index = if chunk_ratio > 0 {
+                    block_idx + (block_idx / chunk_ratio)
+                } else {
+                    block_idx
+                };
 
                 let remaining = bytes_to_read - processed;
                 let bytes_in_block =
@@ -271,29 +335,177 @@ impl File {
                 let dst = &mut buf[processed..processed + chunk_len];
                 dst.fill(0);
 
-                let should_read_payload =
-                    self.sections
-                        .bat()?
-                        .entry(block_idx)
-                        .and_then(|entry| match entry.state {
-                            BatState::Payload(state)
-                                if matches!(
-                                    state,
-                                    PayloadBlockState::FullyPresent
-                                        | PayloadBlockState::Undefined
-                                        | PayloadBlockState::PartiallyPresent
-                                ) && entry.file_offset() > 0 =>
+                // 查询 BAT 条目并根据状态决定读取策略
+                let bat_entry = self.sections.bat()?.entry(bat_payload_index);
+                match bat_entry {
+                    Some(entry) => match &entry.state {
+                        BatState::Payload(state) => match state {
+                            PayloadBlockState::FullyPresent | PayloadBlockState::Undefined
+                                if entry.file_offset() > 0 =>
                             {
-                                Some(entry.file_offset() + block_offset)
+                                // FullyPresent / Undefined：从 payload 直接读取整个范围
+                                let file_offset = entry.file_offset() + block_offset;
+                                file.seek(SeekFrom::Start(file_offset))?;
+                                file.read_exact(dst)?;
+                                if let Some(overlay) = &self.replay_overlay {
+                                    Self::apply_replay_overlay(overlay, file_offset, dst);
+                                }
                             }
-                            _ => None,
-                        });
+                            PayloadBlockState::PartiallyPresent if entry.file_offset() > 0 => {
+                                // PartiallyPresent：基于扇区位图逐扇区判定读取（MS-VHDX §2.5.1）
+                                let sector_size = u64::from(self.logical_sector_size);
+                                let sectors_per_block = block_size / sector_size;
 
-                if let Some(file_offset) = should_read_payload {
-                    file.seek(SeekFrom::Start(file_offset))?;
-                    file.read_exact(dst)?;
-                    if let Some(overlay) = &self.replay_overlay {
-                        Self::apply_replay_overlay(overlay, file_offset, dst);
+                                // 计算 sector bitmap BAT 索引
+                                let chunk_number = if chunk_ratio > 0 {
+                                    block_idx / chunk_ratio
+                                } else {
+                                    0
+                                };
+                                let block_within_chunk = block_idx - chunk_number * chunk_ratio;
+                                let payload_blocks_count = Bat::calculate_payload_blocks(
+                                    self.virtual_disk_size,
+                                    self.block_size,
+                                );
+                                let payload_start = chunk_number * chunk_ratio;
+                                let remaining = payload_blocks_count.saturating_sub(payload_start);
+                                let payload_in_chunk = remaining.min(chunk_ratio);
+                                let bitmap_bat_index =
+                                    chunk_number * (chunk_ratio + 1) + payload_in_chunk;
+
+                                // 读取位图数据（若位图存在且为 Present）
+                                let bitmap_offset =
+                                    self.sections.bat()?.entry(bitmap_bat_index).and_then(|be| {
+                                        if matches!(
+                                            be.state,
+                                            BatState::SectorBitmap(SectorBitmapState::Present)
+                                        ) && be.file_offset() > 0
+                                        {
+                                            Some(be.file_offset())
+                                        } else {
+                                            None
+                                        }
+                                    });
+
+                                if let Some(bm_offset) = bitmap_offset {
+                                    // 读取当前块对应的位图字节范围
+                                    let bitmap_bit_start = block_within_chunk * sectors_per_block;
+                                    let bitmap_byte_start = bm_offset + bitmap_bit_start / 8;
+                                    let bitmap_byte_len =
+                                        usize::try_from((sectors_per_block + 7) / 8).unwrap_or(0);
+
+                                    let mut bitmap_data = vec![0u8; bitmap_byte_len];
+                                    file.seek(SeekFrom::Start(bitmap_byte_start))?;
+                                    let _ = file.read(&mut bitmap_data);
+
+                                    // 逐扇区判定读取范围
+                                    let first_sec = block_offset / sector_size;
+                                    let bytes_to_cover =
+                                        u64::try_from(chunk_len).unwrap_or(u64::MAX);
+                                    let last_sec = (block_offset
+                                        + bytes_to_cover.saturating_sub(1))
+                                        / sector_size;
+
+                                    for sec in first_sec
+                                        ..=last_sec.min(sectors_per_block.saturating_sub(1))
+                                    {
+                                        let byte_idx = usize::try_from(sec / 8).unwrap_or(0);
+                                        let bit_in_byte = (sec % 8) as u8;
+
+                                        let is_present = byte_idx < bitmap_data.len()
+                                            && (bitmap_data[byte_idx] & (1 << bit_in_byte)) != 0;
+
+                                        if is_present {
+                                            // 从子盘 payload 读取此扇区的重叠部分
+                                            let sec_start = sec * sector_size;
+                                            let sec_end = (sec + 1) * sector_size;
+                                            let overlap_start = sec_start.max(block_offset);
+                                            let overlap_end =
+                                                sec_end.min(block_offset + bytes_to_cover);
+
+                                            if overlap_start < overlap_end {
+                                                let dst_start =
+                                                    usize::try_from(overlap_start - block_offset)
+                                                        .unwrap_or(0);
+                                                let dst_end =
+                                                    usize::try_from(overlap_end - block_offset)
+                                                        .unwrap_or(chunk_len)
+                                                        .min(chunk_len);
+
+                                                if dst_start < dst_end && dst_end <= dst.len() {
+                                                    let sec_file_offset =
+                                                        entry.file_offset() + overlap_start;
+                                                    file.seek(SeekFrom::Start(sec_file_offset))?;
+                                                    file.read_exact(&mut dst[dst_start..dst_end])?;
+                                                    if let Some(overlay) = &self.replay_overlay {
+                                                        Self::apply_replay_overlay(
+                                                            overlay,
+                                                            sec_file_offset,
+                                                            &mut dst[dst_start..dst_end],
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        // bitmap=0：差分盘回退到父链读取
+                                        else if self.has_parent {
+                                            let sec_start = sec * sector_size;
+                                            let sec_end = (sec + 1) * sector_size;
+                                            let overlap_start = sec_start.max(block_offset);
+                                            let overlap_end =
+                                                sec_end.min(block_offset + bytes_to_cover);
+
+                                            if overlap_start < overlap_end {
+                                                let dst_start =
+                                                    usize::try_from(overlap_start - block_offset)
+                                                        .unwrap_or(0);
+                                                let dst_end =
+                                                    usize::try_from(overlap_end - block_offset)
+                                                        .unwrap_or(chunk_len)
+                                                        .min(chunk_len);
+
+                                                if dst_start < dst_end && dst_end <= dst.len() {
+                                                    let parent_virtual_offset =
+                                                        current_virtual_offset
+                                                            + u64::try_from(dst_start).unwrap_or(0);
+                                                    self.read_from_parent_chain_cached(
+                                                        &mut parent_cache,
+                                                        parent_virtual_offset,
+                                                        &mut dst[dst_start..dst_end],
+                                                    )?;
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else if self.has_parent {
+                                    // 位图缺失：整个范围回退父链
+                                    self.read_from_parent_chain_cached(
+                                        &mut parent_cache,
+                                        current_virtual_offset,
+                                        dst,
+                                    )?;
+                                }
+                            }
+                            _ => {
+                                // NotPresent / Zero / Unmapped / 无效偏移：差分盘回退父链
+                                self.read_from_parent_chain_cached(
+                                    &mut parent_cache,
+                                    current_virtual_offset,
+                                    dst,
+                                )?;
+                            }
+                        },
+                        BatState::SectorBitmap(_) => {
+                            // SectorBitmap 条目不应被当作 payload 读取
+                        }
+                    },
+                    None => {
+                        // BAT 条目不存在（越界）：差分盘回退父链
+                        self.read_from_parent_chain_cached(
+                            &mut parent_cache,
+                            current_virtual_offset,
+                            dst,
+                        )?;
                     }
                 }
 
@@ -345,16 +557,15 @@ impl File {
 
     /// Dynamic 类型的按块写入实现
     ///
-    /// 根据写入偏移量计算所在块索引，查找 BAT 条目获取块在文件中的物理偏移，
-    /// 然后通过克隆文件句柄将数据写入对应的块位置。
+    /// 支持跨块写入：将数据按块边界分段，对每个块独立处理。
+    /// 对于已分配的块（FullyPresent/Undefined/PartiallyPresent 且偏移非零），
+    /// 直接写入现有偏移。
+    /// 对于未分配的块（NotPresent/Zero/Unmapped），自动分配 payload block：
+    /// 1. 计算文件末尾并对齐到 1MiB 边界
+    /// 2. 将文件扩展以容纳新块
+    /// 3. 更新 BAT 条目为 FullyPresent + 新偏移并持久化到磁盘
     fn write_dynamic(&self, offset: u64, data: &[u8]) -> Result<()> {
         let block_size = u64::from(self.block_size);
-        // 计算目标块索引和块内偏移
-        let block_idx = offset / block_size;
-        let block_offset = offset % block_size;
-
-        // Dynamic BAT 按 chunk 交错排列：每 chunk_ratio 个 payload 条目后插入 1 个 sector bitmap 条目。
-        // 因此 payload block N 对应 BAT 索引 = N + floor(N / chunk_ratio)。
         let chunk_ratio = u64::from(Bat::calculate_chunk_ratio(
             self.logical_sector_size,
             self.block_size,
@@ -365,53 +576,119 @@ impl File {
             ));
         }
 
-        let bat_payload_index = block_idx + (block_idx / chunk_ratio);
+        let mut processed = 0usize;
+        while processed < data.len() {
+            let current_offset = offset + u64::try_from(processed).unwrap_or(u64::MAX - offset);
+            let block_idx = current_offset / block_size;
+            let block_offset = current_offset % block_size;
 
+            // 计算 payload BAT 索引（MS-VHDX §2.5.1 chunk 交错规则）
+            let bat_payload_index = block_idx + (block_idx / chunk_ratio);
+
+            // 计算当前块内可写入的字节数
+            let remaining = data.len() - processed;
+            let bytes_in_block = usize::try_from(block_size - block_offset).unwrap_or(remaining);
+            let chunk_len = remaining.min(bytes_in_block);
+
+            // 获取或分配 payload block 的文件偏移
+            let block_file_offset = self.get_or_allocate_block(bat_payload_index, block_idx)?;
+
+            // 写入数据到块内偏移位置
+            let mut file = self.inner.try_clone()?;
+            file.seek(SeekFrom::Start(block_file_offset + block_offset))?;
+            file.write_all(&data[processed..processed + chunk_len])?;
+
+            processed += chunk_len;
+        }
+
+        Ok(())
+    }
+
+    /// 获取 payload block 的文件偏移，若块未分配则自动分配
+    ///
+    /// 对于已分配的块（FullyPresent/Undefined/PartiallyPresent 且偏移非零），
+    /// 直接返回现有偏移。对于未分配的块（NotPresent/Zero/Unmapped），
+    /// 在文件末尾对齐到 1MiB 处分配新的 payload block 并更新 BAT。
+    fn get_or_allocate_block(&self, bat_payload_index: u64, block_idx: u64) -> Result<u64> {
         let bat = self.sections.bat()?;
-        let bat_entry = bat.entry(bat_payload_index);
-
-        // 根据 BAT 条目状态确定写入位置
-        let file_offset = if let Some(entry) = bat_entry {
-            match entry.state {
+        match bat.entry(bat_payload_index) {
+            Some(entry) => match entry.state {
                 BatState::Payload(state) => match state {
                     PayloadBlockState::FullyPresent
                     | PayloadBlockState::Undefined
-                    | PayloadBlockState::PartiallyPresent => {
-                        if entry.file_offset() > 0 {
-                            // 块已分配：在块偏移基础上加上块内偏移
-                            entry.file_offset() + block_offset
-                        } else {
-                            return Err(Error::InvalidParameter(format!(
-                                "Dynamic write requires allocated payload offset for state {state:?} at block {block_idx}"
-                            )));
-                        }
+                    | PayloadBlockState::PartiallyPresent
+                        if entry.file_offset() > 0 =>
+                    {
+                        // 块已分配：返回现有偏移
+                        Ok(entry.file_offset())
                     }
                     PayloadBlockState::NotPresent
                     | PayloadBlockState::Zero
                     | PayloadBlockState::Unmapped => {
-                        return Err(Error::InvalidParameter(format!(
-                            "Dynamic write does not support automatic allocation for payload state {state:?} at block {block_idx}"
-                        )));
+                        // 块未分配：自动分配
+                        drop(bat);
+                        self.allocate_payload_block(bat_payload_index)
                     }
+                    _ => Err(Error::InvalidParameter(format!(
+                        "Dynamic write requires allocated payload offset for state {state:?} at block {block_idx}"
+                    ))),
                 },
-                BatState::SectorBitmap(state) => {
-                    return Err(Error::InvalidParameter(format!(
-                        "Dynamic write expects payload BAT entry but got sector bitmap state {state:?} at BAT index {bat_payload_index}"
-                    )));
-                }
-            }
-        } else {
-            // 块索引超出 BAT 范围
-            return Err(Error::InvalidParameter(format!(
+                BatState::SectorBitmap(state) => Err(Error::InvalidParameter(format!(
+                    "Dynamic write expects payload BAT entry but got sector bitmap state {state:?} at BAT index {bat_payload_index}"
+                ))),
+            },
+            None => Err(Error::InvalidParameter(format!(
                 "Dynamic write BAT payload index {bat_payload_index} out of range"
-            )));
-        };
+            ))),
+        }
+    }
 
-        let mut file = self.inner.try_clone()?;
-        file.seek(SeekFrom::Start(file_offset))?;
-        file.write_all(data)?;
+    /// 为未分配的 payload block 分配文件空间并更新 BAT
+    ///
+    /// 分配策略：在文件末尾对齐到 1MiB 边界处分配 block_size 字节空间，
+    /// 将 BAT 条目更新为 FullyPresent 状态并持久化到磁盘。
+    fn allocate_payload_block(&self, bat_payload_index: u64) -> Result<u64> {
+        let block_size = u64::from(self.block_size);
 
-        Ok(())
+        // 获取当前文件大小并对齐到 1MiB
+        let file_len = self.inner.metadata()?.len();
+        let new_offset = align_1mib(file_len);
+        let new_offset_mb = new_offset / MiB;
+
+        // 扩展文件以容纳新块（写入最后一个字节使文件扩展）
+        {
+            let mut file = self.inner.try_clone()?;
+            file.seek(SeekFrom::Start(new_offset + block_size - 1))?;
+            file.write_all(&[0u8])?;
+        }
+
+        // 更新内存中的 BAT 缓存
+        let index = usize::try_from(bat_payload_index)
+            .map_err(|_| Error::InvalidParameter("BAT index overflow".to_string()))?;
+        {
+            let mut bat = self.sections.bat_mut()?;
+            bat.update_entry(
+                index,
+                BatState::Payload(PayloadBlockState::FullyPresent),
+                new_offset_mb,
+            )?;
+        }
+
+        // 将更新后的 BAT 条目持久化到磁盘
+        {
+            let bat_disk_offset = self.sections.bat_disk_offset()
+                + u64::from(BAT_ENTRY_SIZE as u32) * bat_payload_index;
+            let mut file = self.inner.try_clone()?;
+            file.seek(SeekFrom::Start(bat_disk_offset))?;
+            let raw_entry = BatEntry::new(
+                BatState::Payload(PayloadBlockState::FullyPresent),
+                new_offset_mb,
+            );
+            file.write_all(&raw_entry.raw().to_le_bytes())?;
+            file.sync_all()?;
+        }
+
+        Ok(new_offset)
     }
 
     /// 内部使用的原始刷新方法（通过克隆文件句柄实现 &self 刷新）
@@ -665,17 +942,26 @@ impl File {
         current_header: &crate::sections::HeaderStructure<'_>, writable: bool,
         policy: LogReplayPolicy,
     ) -> Result<(bool, Option<ReplayOverlay>)> {
+        let current_log_guid = current_header.log_guid();
+
         // 检查日志 GUID 是否为空，非空表示存在日志条目
-        if current_header.log_guid() != Guid::nil() {
+        if current_log_guid != Guid::nil() {
             let log = sections.log()?;
             if (*log).is_replay_required() {
                 match policy {
                     LogReplayPolicy::Require => return Err(Error::LogReplayRequired),
                     LogReplayPolicy::Auto | LogReplayPolicy::InMemoryOnReadOnly => {
                         if writable {
-                            Self::replay_log_and_clear_guid(file, current_header, &log)?;
+                            Self::replay_log_and_clear_guid(
+                                file,
+                                current_header,
+                                &log,
+                                current_log_guid,
+                            )?;
+                            // log 借用在此处（`}` 后）释放，以便 invalidate_caches
+                            // 可以再次安全地 borrow RefCell
                         } else {
-                            let overlay = Self::build_replay_overlay(&log)?;
+                            let overlay = Self::build_replay_overlay(file, &log, current_log_guid)?;
                             return Ok((false, Some(overlay)));
                         }
                     }
@@ -690,21 +976,35 @@ impl File {
                 }
             }
         }
+        // 回放修改了文件内容（BAT、metadata、header），
+        // 清除延迟加载缓存，使后续访问重新从文件读取。
+        // 此处已脱离 sections.log() 的 RefCell 借用范围，可以安全操作。
+        sections.invalidate_caches();
         Ok((false, None))
     }
 
     /// 基于日志条目构建只读内存回放覆盖层
     fn build_replay_overlay(
-        log: &std::cell::Ref<'_, crate::sections::Log>,
+        file: &StdFile, log: &std::cell::Ref<'_, crate::sections::Log>, expected_log_guid: Guid,
     ) -> Result<ReplayOverlay> {
         let mut writes = Vec::new();
 
-        for entry in (*log).entries() {
+        let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+
+        for entry in (*log).entries_for_log_guid(expected_log_guid)? {
             let header = entry.header();
             if header.signature() != crate::common::constants::LOG_ENTRY_SIGNATURE {
                 return Err(Error::LogEntryCorrupted(
                     "Invalid log entry signature".to_string(),
                 ));
+            }
+
+            // 文件尺寸约束：文件长度不得小于 flushed_file_offset
+            let flushed = header.flushed_file_offset();
+            if flushed > 0 && file_len < flushed {
+                return Err(Error::LogEntryCorrupted(format!(
+                    "File size ({file_len}) is less than flushed_file_offset ({flushed})"
+                )));
             }
 
             let descriptors = entry.descriptors();
@@ -716,38 +1016,56 @@ impl File {
                     crate::sections::Descriptor::Data(data_desc) => {
                         if data_sector_index < data_sectors.len() {
                             let sector = &data_sectors[data_sector_index];
-                            let trailing =
-                                usize::try_from(data_desc.trailing_bytes()).map_err(|_| {
-                                    Error::InvalidParameter(
-                                        "Log trailing_bytes exceeds usize::MAX".to_string(),
-                                    )
-                                })?;
                             let leading =
                                 usize::try_from(data_desc.leading_bytes()).map_err(|_| {
-                                    Error::InvalidParameter(
-                                        "Log leading_bytes exceeds usize::MAX".to_string(),
+                                    Error::LogEntryCorrupted(
+                                        "leading_bytes exceeds usize::MAX".to_string(),
+                                    )
+                                })?;
+                            let trailing =
+                                usize::try_from(data_desc.trailing_bytes()).map_err(|_| {
+                                    Error::LogEntryCorrupted(
+                                        "trailing_bytes exceeds usize::MAX".to_string(),
                                     )
                                 })?;
 
-                            let mut data = Vec::with_capacity(
-                                trailing
-                                    .saturating_add(sector.data().len())
-                                    .saturating_add(leading),
-                            );
-                            data.extend(std::iter::repeat_n(0u8, trailing));
-                            data.extend_from_slice(sector.data());
-                            data.extend(std::iter::repeat_n(0u8, leading));
+                            let sector_data = sector.data();
+
+                            // 边界安全：leading + trailing 不得超过扇区数据长度
+                            if leading
+                                .checked_add(trailing)
+                                .map_or(true, |sum| sum > sector_data.len())
+                            {
+                                return Err(Error::LogEntryCorrupted(format!(
+                                    "leading_bytes ({leading}) + trailing_bytes ({trailing}) \
+                                     exceeds sector data size ({})",
+                                    sector_data.len()
+                                )));
+                            }
+
+                            let effective_len = sector_data.len() - leading - trailing;
 
                             writes.push(ReplayWrite {
-                                file_offset: data_desc.file_offset(),
-                                data,
+                                file_offset: data_desc
+                                    .file_offset()
+                                    .checked_add(u64::try_from(leading).map_err(|_| {
+                                        Error::LogEntryCorrupted(
+                                            "file_offset + leading overflow".to_string(),
+                                        )
+                                    })?)
+                                    .ok_or_else(|| {
+                                        Error::LogEntryCorrupted(
+                                            "file_offset + leading overflow".to_string(),
+                                        )
+                                    })?,
+                                data: sector_data[..effective_len].to_vec(),
                             });
                             data_sector_index += 1;
                         }
                     }
                     crate::sections::Descriptor::Zero(zero_desc) => {
                         let zero_len = usize::try_from(zero_desc.zero_length()).map_err(|_| {
-                            Error::InvalidParameter(
+                            Error::LogEntryCorrupted(
                                 "Log zero_length exceeds usize::MAX".to_string(),
                             )
                         })?;
@@ -792,9 +1110,9 @@ impl File {
     /// 执行日志回放并将头部日志 GUID 清零
     fn replay_log_and_clear_guid(
         file: &mut StdFile, current_header: &crate::sections::HeaderStructure<'_>,
-        log: &std::cell::Ref<'_, crate::sections::Log>,
+        log: &std::cell::Ref<'_, crate::sections::Log>, expected_log_guid: Guid,
     ) -> Result<()> {
-        (*log).replay(file)?;
+        (*log).replay_with_log_guid(file, expected_log_guid)?;
         file.sync_all()?;
 
         let new_header = crate::section::HeaderStructure::create(
@@ -903,7 +1221,14 @@ impl File {
 
         // 步骤 5：写入 BAT
         file.seek(SeekFrom::Start(bat_offset))?;
-        let bat_data = Self::create_bat_data(fixed, bat_entries, payload_offset, block_size);
+        let bat_data = Self::create_bat_data(
+            fixed,
+            bat_entries,
+            payload_offset,
+            block_size,
+            logical_sector_size,
+            virtual_size,
+        );
         file.write_all(&bat_data)?;
 
         // 步骤 6：写入空的日志区域
@@ -1046,22 +1371,42 @@ impl File {
         )
     }
 
-    /// 创建 BAT 原始数据，Fixed 类型标记所有块为 FullyPresent
+    /// 创建 BAT 原始数据，Fixed 类型标记 Payload 块为 FullyPresent
     ///
     /// 每个 BAT 条目为 8 字节，编码了块状态（高 4 位）和块偏移（低 60 位）。
-    /// Fixed 类型将所有块标记为 `FullyPresent`（状态值 6），并指向连续的数据区域。
+    /// Fixed 类型将 Payload 块标记为 `FullyPresent`（状态值 6），并指向连续的数据区域。
+    /// Sector Bitmap 条目保持为零（`NotPresent` + 偏移 0），因为 Fixed 类型不需要位图。
     /// Dynamic 类型创建全零 BAT（所有块标记为 `NotPresent`）。
+    ///
+    /// BAT 条目按 chunk_ratio 个 Payload 条目后接 1 个 Sector Bitmap 条目交错排列
+    /// （MS-VHDX §2.5）。使用 `Bat::is_sector_bitmap_entry_index` 判断条目类型。
     fn create_bat_data(
         fixed: bool, bat_entries: u64, payload_offset: u64, block_size: u32,
+        logical_sector_size: u32, virtual_size: u64,
     ) -> Vec<u8> {
         if fixed {
             let mut entries = vec![0u8; usize::try_from(bat_entries).unwrap_or(0) * BAT_ENTRY_SIZE];
+            let chunk_ratio = Bat::calculate_chunk_ratio(logical_sector_size, block_size);
+            let payload_blocks = Bat::calculate_payload_blocks(virtual_size, block_size);
+            // Payload 块分配计数器：仅对 Payload 条目递增，跳过 Sector Bitmap 条目
+            let mut payload_idx: u64 = 0;
             for i in 0..bat_entries {
+                let is_bitmap = Bat::is_sector_bitmap_entry_index(
+                    usize::try_from(i).unwrap_or(0),
+                    usize::try_from(chunk_ratio).unwrap_or(0),
+                    usize::try_from(payload_blocks).unwrap_or(0),
+                );
+                if is_bitmap {
+                    // Sector Bitmap 条目：保持全零（NotPresent + 偏移 0）
+                    continue;
+                }
                 let offset = usize::try_from(i).unwrap_or(0) * BAT_ENTRY_SIZE;
                 // 将块偏移转换为 MB 单位，左移 20 位后与状态值 6（FullyPresent）组合
-                let payload_offset_mb = (payload_offset + i * u64::from(block_size)) / MiB;
+                let payload_offset_mb =
+                    (payload_offset + payload_idx * u64::from(block_size)) / MiB;
                 let state_and_offset = (payload_offset_mb << 20) | 6u64;
                 entries[offset..offset + 8].copy_from_slice(&state_and_offset.to_le_bytes());
+                payload_idx += 1;
             }
             entries
         } else {
@@ -1487,9 +1832,9 @@ mod tests {
         assert_eq!(&buf, test_data);
     }
 
-    /// 测试对动态磁盘执行写入操作应失败（当前库仅支持读取动态磁盘）
+    /// 测试对动态磁盘执行写入操作：写入未分配块应自动分配并成功
     #[test]
-    fn test_write_dynamic_disk_fails() {
+    fn test_write_dynamic_disk_auto_allocates() {
         let path = temp_vhdx_path();
 
         let file = File::create(&path)
@@ -1499,7 +1844,11 @@ mod tests {
             .expect("Failed to create dynamic disk");
 
         let result = file.write_raw(0, b"test");
-        assert!(result.is_err());
+        assert!(
+            result.is_ok(),
+            "Dynamic write to unallocated block should auto-allocate and succeed"
+        );
+        assert_eq!(result.unwrap(), 4);
     }
 
     /// 测试以写入模式打开已有文件并写入数据
