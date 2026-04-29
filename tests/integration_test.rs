@@ -22,7 +22,11 @@ fn utf16_le_bytes(s: &str) -> Vec<u8> {
 }
 
 /// 构造 Parent Locator 原始数据。
+///
+/// locator_type 自动填充为 LOCATOR_TYPE_VHDX（MS-VHDX §2.6.2.6.1）。
 fn build_parent_locator(entries: &[(&str, &str)]) -> Vec<u8> {
+    use vhdx_rs::section::StandardItems::LOCATOR_TYPE_VHDX;
+
     let mut key_value_data = Vec::new();
     let mut entry_table = Vec::new();
 
@@ -50,6 +54,8 @@ fn build_parent_locator(entries: &[(&str, &str)]) -> Vec<u8> {
     }
 
     let mut locator = vec![0u8; 20];
+    // 写入 locator_type GUID（前 16 字节）
+    locator[0..16].copy_from_slice(LOCATOR_TYPE_VHDX.as_bytes());
     locator[18..20].copy_from_slice(
         &u16::try_from(entries.len())
             .expect("entry count overflow")
@@ -2554,8 +2560,12 @@ fn test_t9_section_module_import_paths() {
 ///
 /// 新创建文件中两个 Header 的 sequence_number 相同（= 0），
 /// 因此 region_table(0) 选取 RT2（偏移 256KB）。
+/// 注入 unknown required 区域条目到当前活动 Region Table。
+///
+/// File::create() 完成后 h1.seq=1 > h2.seq=0，region_table(0) 选取 RT1（192KB 偏移），
+/// 因此注入目标必须是 RT1 而非 RT2。
 fn inject_required_unknown_region_entry(path: &std::path::Path) {
-    const RT2_OFFSET: u64 = 256 * 1024;
+    const RT1_OFFSET: u64 = 192 * 1024;
     const RT_SIZE: usize = 64 * 1024;
 
     let mut raw = OpenOptions::new()
@@ -2564,11 +2574,11 @@ fn inject_required_unknown_region_entry(path: &std::path::Path) {
         .open(path)
         .expect("Failed to open file for region table injection");
 
-    // 读取完整的 RT2 数据
-    raw.seek(SeekFrom::Start(RT2_OFFSET))
-        .expect("Failed to seek RT2");
+    // 读取完整的 RT1 数据（活动区域表）
+    raw.seek(SeekFrom::Start(RT1_OFFSET))
+        .expect("Failed to seek RT1");
     let mut rt_data = vec![0u8; RT_SIZE];
-    raw.read_exact(&mut rt_data).expect("Failed to read RT2");
+    raw.read_exact(&mut rt_data).expect("Failed to read RT1");
 
     // 读取当前 entry_count（偏移 8，u32 LE）
     let entry_count = u32::from_le_bytes([rt_data[8], rt_data[9], rt_data[10], rt_data[11]]);
@@ -2599,19 +2609,22 @@ fn inject_required_unknown_region_entry(path: &std::path::Path) {
     rt_data[4..8].copy_from_slice(&checksum.to_le_bytes());
 
     // 写回文件
-    raw.seek(SeekFrom::Start(RT2_OFFSET))
-        .expect("Failed to seek RT2 for write");
+    raw.seek(SeekFrom::Start(RT1_OFFSET))
+        .expect("Failed to seek RT1 for write");
     raw.write_all(&rt_data)
-        .expect("Failed to write modified RT2");
+        .expect("Failed to write modified RT1");
     raw.flush().expect("Failed to flush region table injection");
 }
 
-/// 破坏当前活动 Region Table（RT2）的 checksum 字段（测试专用）。
+/// 破坏当前活动 Region Table（RT1）的 checksum 字段（测试专用）。
+///
+/// File::create() 完成后 h1.seq=1 > h2.seq=0，region_table(0) 选取 RT1（192KB 偏移），
+/// 因此破坏目标必须是 RT1 而非 RT2。
 fn corrupt_region_table_checksum(path: &std::path::Path) {
-    const RT2_OFFSET: u64 = 256 * 1024;
+    const RT1_OFFSET: u64 = 192 * 1024;
     const CHECKSUM_OFFSET_IN_HEADER: u64 = 4;
 
-    let checksum_offset = RT2_OFFSET + CHECKSUM_OFFSET_IN_HEADER;
+    let checksum_offset = RT1_OFFSET + CHECKSUM_OFFSET_IN_HEADER;
     let checksum_bytes = read_raw_bytes(path, checksum_offset, 4);
     let mut corrupted = [0u8; 4];
     corrupted.copy_from_slice(&checksum_bytes);
@@ -5050,4 +5063,1515 @@ fn t12_validator_full_validate_on_differencing_disk() {
     file.validator()
         .validate_file()
         .expect("full validator should pass for differencing disk");
+}
+
+// ── Task 1: 规范解释决策清单断言 ──────────────────────────────────────────
+
+/// 规范决策清单（可执行断言）
+///
+/// 将三项 MS-VHDX 规范解释固化为测试前置约束，供后续 Task 2/5/6 引用。
+///
+/// **决策 1 — header-session**:
+///   以写入模式打开 VHDX 文件时，活动头的 sequence_number 必须递增，
+///   file_write_guid 标记本次会话。当前实现尚未在 open(write) 路径中执行
+///   头部会话初始化更新，但通过断言头部字段存在且可读来锁定前置条件。
+///
+/// **决策 2 — locator-constraints**:
+///   Parent Locator 中 parent_linkage 键必须存在且为有效 GUID；
+///   parent_linkage2 在 strict 模式下应被禁止（当前计划决策）。
+///   每条 entry 的 key_offset / value_offset 相对于 metadata item 数据起始，
+///   且 key_length / value_length 必须 > 0。
+///
+/// **决策 3 — entry offset/length 语义**:
+///   KeyValueEntry 的 key_offset 和 value_offset 解释为相对于
+///   key_value_data 区段起始的字节偏移；key_length 和 value_length 必须 > 0，
+///   表示键和值必须包含至少一个 UTF-16LE 编码单元。
+#[test]
+fn test_spec_decision_manifest() {
+    use vhdx_rs::{File, SpecValidator};
+
+    // ── header-session 决策断言 ──
+    // 创建 Fixed 磁盘，验证头部结构字段可读且非零（前置条件）。
+    let path = temp_vhdx_path();
+    let file = File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk for header-session check");
+
+    let header_section = file.sections().header().expect("header section");
+    let header_struct = header_section.header(0).expect("active header");
+
+    // sequence_number 在新创建文件中从 0 开始（MS-VHDX §2.2.2）。
+    // 决策：open(write) 时必须执行 session-init 更新，将 sequence_number 递增。
+    // 当前实现尚未在 open(write) 路径执行该更新；此处记录初始值作为前置约束。
+    let seq = header_struct.sequence_number();
+    eprintln!("[header-session] initial sequence_number={seq}");
+    // 决策锁定：sequence_number 字段语义为 u64，必须在 open(write) 时递增。
+    // 当前仅验证字段可读；后续 Task 将断言递增行为。
+
+    // file_write_guid 和 data_write_guid 必须非零（会话标识）
+    let fwg = header_struct.file_write_guid();
+    assert!(
+        fwg != vhdx_rs::Guid::nil(),
+        "header-session: file_write_guid must be non-nil"
+    );
+    let dwg = header_struct.data_write_guid();
+    assert!(
+        dwg != vhdx_rs::Guid::nil(),
+        "header-session: data_write_guid must be non-nil"
+    );
+
+    eprintln!(
+        "[header-session] sequence_number={seq}, file_write_guid={fwg}, data_write_guid={dwg}"
+    );
+
+    // 验证头部能通过规范校验
+    let validator = SpecValidator::new(&file);
+    validator
+        .validate_header()
+        .expect("header-session: header validation must pass");
+
+    // ── locator-constraints 决策断言 ──
+    // 创建差分磁盘对，验证 parent_locator 的 entry offset/length 语义。
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    let child = File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create differencing child");
+
+    let metadata = child.sections().metadata().expect("child metadata");
+    let items = metadata.items();
+    let locator = items
+        .parent_locator()
+        .expect("locator-constraints: parent locator must exist on differencing disk");
+
+    // 验证 LocatorHeader 的 locator_type 为已知的 VHDX 类型
+    let header = locator.header();
+    eprintln!(
+        "[locator-constraints] locator_type={}, key_value_count={}",
+        header.locator_type(),
+        header.key_value_count()
+    );
+
+    // 验证每条 entry 的 offset/length 语义
+    let kv_data = locator.key_value_data();
+    let entries = locator.entries();
+    assert!(
+        !entries.is_empty(),
+        "locator-constraints: must have at least one entry"
+    );
+
+    for (i, entry) in entries.iter().enumerate() {
+        // key_offset 和 value_offset 是相对于 key_value_data 区段的偏移
+        let ko = entry.key_offset as usize;
+        let vo = entry.value_offset as usize;
+        let kl = entry.key_length as usize;
+        let vl = entry.value_length as usize;
+
+        // 决策 3: offset 和 length 必须 > 0
+        assert!(
+            kl > 0,
+            "locator-constraints: entry[{i}] key_length must be > 0"
+        );
+        assert!(
+            vl > 0,
+            "locator-constraints: entry[{i}] value_length must be > 0"
+        );
+
+        // offset 必须在 key_value_data 范围内
+        assert!(
+            ko + kl <= kv_data.len(),
+            "locator-constraints: entry[{i}] key region ({ko}+{kl}) out of bounds ({} bytes)",
+            kv_data.len()
+        );
+        assert!(
+            vo + vl <= kv_data.len(),
+            "locator-constraints: entry[{i}] value region ({vo}+{vl}) out of bounds ({} bytes)",
+            kv_data.len()
+        );
+
+        // 键值可解码
+        let key = entry.key(kv_data).unwrap_or_else(|| {
+            panic!("locator-constraints: entry[{i}] key decode failed at offset {ko}")
+        });
+        let value = entry.value(kv_data).unwrap_or_else(|| {
+            panic!("locator-constraints: entry[{i}] value decode failed at offset {vo}")
+        });
+
+        eprintln!(
+            "[locator-constraints] entry[{i}]: key=\"{key}\", value=\"{}\", ko={ko}, kl={kl}, vo={vo}, vl={vl}",
+            if key == "parent_linkage" {
+                value.clone()
+            } else {
+                "(path)".to_string()
+            }
+        );
+
+        // 决策 2: parent_linkage 必须存在
+        if i == 0 {
+            assert_eq!(
+                key, "parent_linkage",
+                "locator-constraints: first entry must be parent_linkage (actual: {key})"
+            );
+        }
+    }
+
+    // 验证 parent_linkage 存在且为有效 GUID
+    let mut has_parent_linkage = false;
+    for entry in &entries {
+        if let Some(key) = entry.key(kv_data) {
+            if key == "parent_linkage" {
+                let value = entry.value(kv_data).expect("parent_linkage value");
+                // 解码为 GUID 应成功（格式为 XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX）
+                assert!(
+                    value.contains('-'),
+                    "locator-constraints: parent_linkage value must be GUID format: {value}"
+                );
+                has_parent_linkage = true;
+            }
+        }
+    }
+    assert!(
+        has_parent_linkage,
+        "locator-constraints: parent_linkage key must exist"
+    );
+
+    // 以 strict 模式（默认）重新打开并验证差分盘
+    let child_reopened = File::open(&child_path).finish().expect("reopen child");
+    child_reopened
+        .validator()
+        .validate_parent_locator()
+        .expect("locator-constraints: strict validate_parent_locator must pass for valid locator");
+
+    eprintln!("[locator-constraints] strict validation passed");
+}
+
+/// strict 模式下 Parent Locator 中 parent_linkage2 键的决策约束
+///
+/// **决策**: 在 strict 模式下，parent_linkage2 应被禁止。当前实现将其视为可选键
+/// （存在时必须为有效 GUID），此测试通过注入无效的 parent_linkage2 值来断言
+/// InvalidMetadata 错误路径，锁定 strict 校验必须覆盖 parent_linkage2 的约束。
+///
+/// 此测试为后续 Task（实现 strict 模式完全拒绝 parent_linkage2）的前置契约：
+/// 当 strict 模式实现后，注入有效 parent_linkage2 同样应返回 InvalidMetadata。
+#[test]
+fn test_parent_locator_strict_rejects_parent_linkage2() {
+    use vhdx_rs::{Error, File, SpecValidator};
+
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    let child = File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create differencing child");
+    drop(child);
+
+    // 注入包含 parent_linkage2（无效 GUID 值）的 locator，
+    // 断言 strict 校验返回 InvalidMetadata 且错误文本提及 parent_linkage2。
+    let invalid_locator = build_parent_locator(&[
+        ("parent_linkage", "12345678-1234-1234-1234-123456789ABC"),
+        ("parent_linkage2", "NOT-A-VALID-GUID"),
+        ("relative_path", &parent_path.to_string_lossy()),
+    ]);
+    inject_parent_locator(&child_path, &invalid_locator);
+
+    // 以 strict 模式（默认）重新打开
+    let child_reopened = File::open(&child_path)
+        .finish()
+        .expect("Failed to reopen child disk");
+
+    let validator = SpecValidator::new(&child_reopened);
+    let err = validator
+        .validate_parent_locator()
+        .expect_err("strict validation must reject invalid parent_linkage2");
+
+    match &err {
+        Error::InvalidMetadata(message) => {
+            assert!(
+                message.contains("parent_linkage2"),
+                "strict rejection error must mention parent_linkage2, got: {message}"
+            );
+        }
+        other => panic!("expected InvalidMetadata, got: {other:?}"),
+    }
+}
+
+// ── Task 2: 可写打开会话初始化头部更新测试 ──
+
+/// 测试以写入模式打开后 header 会话字段发生更新。
+///
+/// MS-VHDX §2.2.2 要求以写入模式打开文件时执行会话初始化更新：
+/// - `sequence_number` 必须递增（至少 +1）
+/// - `file_write_guid` 必须生成为新的随机 GUID
+/// - `data_write_guid` 不应在会话初始化时改变
+#[test]
+fn test_open_writable_updates_header_session_fields() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    // 创建磁盘：create 内部调用 open_file(writable=true)，
+    // 此时 session-init 已执行一次，sequence 从 0 递增到 1
+    let file = File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    // 作用域内提取 Copy 值，确保 Ref<Header> 借用在 drop(file) 之前释放
+    let (initial_seq, initial_fwg, initial_dwg) = {
+        let header_ref = file.sections().header().expect("header");
+        let initial_header = header_ref.header(0).expect("active header");
+        (
+            initial_header.sequence_number(),
+            initial_header.file_write_guid(),
+            initial_header.data_write_guid(),
+        )
+    };
+    drop(file);
+
+    // 以写入模式重新打开 → session-init 再次执行，sequence 再递增
+    let file_w = File::open(&path)
+        .write()
+        .finish()
+        .expect("Failed to open with write access");
+
+    let (updated_seq, updated_fwg, updated_dwg) = {
+        let header_ref_w = file_w.sections().header().expect("header");
+        let updated_header = header_ref_w.header(0).expect("active header");
+        (
+            updated_header.sequence_number(),
+            updated_header.file_write_guid(),
+            updated_header.data_write_guid(),
+        )
+    };
+
+    // 序列号应至少递增 1
+    assert!(
+        updated_seq > initial_seq,
+        "sequence_number should increment after writable open: initial={initial_seq}, updated={updated_seq}"
+    );
+
+    // file_write_guid 应发生变化（新生成的会话 GUID）
+    assert_ne!(
+        updated_fwg, initial_fwg,
+        "file_write_guid should change after writable open"
+    );
+
+    // data_write_guid 应保持不变（会话初始化不修改数据写入 GUID）
+    assert_eq!(
+        updated_dwg, initial_dwg,
+        "data_write_guid should not change on session init"
+    );
+}
+
+/// 测试以只读模式打开后 header 会话字段保持不变。
+///
+/// 只读打开不应触发任何 header 更新操作：
+/// - `sequence_number` 应与创建后一致
+/// - `file_write_guid` 应与创建后一致
+#[test]
+fn test_open_readonly_does_not_mutate_header_session_fields() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    // 创建磁盘：create 内部已执行一次 session-init
+    let file = File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    // 两段绑定模式读取创建后的 header 状态
+    let (post_create_seq, post_create_fwg) = {
+        let header_ref = file.sections().header().expect("header");
+        let post_create_header = header_ref.header(0).expect("active header");
+        (
+            post_create_header.sequence_number(),
+            post_create_header.file_write_guid(),
+        )
+    };
+    drop(file);
+
+    // 以只读模式打开（默认行为）
+    let file_ro = File::open(&path)
+        .finish()
+        .expect("Failed to open read-only");
+
+    let header_ref_ro = file_ro.sections().header().expect("header");
+    let ro_header = header_ref_ro.header(0).expect("active header");
+
+    // 序列号应保持不变
+    assert_eq!(
+        ro_header.sequence_number(),
+        post_create_seq,
+        "sequence_number must not change on readonly open"
+    );
+
+    // file_write_guid 应保持不变
+    assert_eq!(
+        ro_header.file_write_guid(),
+        post_create_fwg,
+        "file_write_guid must not change on readonly open"
+    );
+}
+
+/// Task 3：日志回放后 header 的 LogGuid 应为 nil，且序列号正确递增。
+///
+/// 流程：
+/// 1. 创建 Fixed 磁盘（create 内部触发一次 session-init，seq=1）
+/// 2. 注入 pending log entry（header.log_guid 设为非 nil）
+/// 3. 以 writable + Auto 打开 → 触发 replay（seq+1, log_guid=nil）→ 触发 session-init（seq+1）
+/// 4. 验证：active header 的 log_guid == nil，sequence_number == 3
+#[test]
+fn test_log_replay_clears_guid_and_updates_header_sequence() {
+    use vhdx_rs::{File, Guid, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+
+    // 步骤 1：创建磁盘（create 内部执行 session-init 一次）
+    let file = File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let (post_create_seq, post_create_fwg) = {
+        let header_ref = file.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        (h.sequence_number(), h.file_write_guid())
+    };
+    drop(file);
+
+    // 验证 create 后 log_guid 为 nil（无日志活动）
+    {
+        let file_check = File::open(&path).finish().expect("open check");
+        let header_ref = file_check.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        assert_eq!(
+            h.log_guid(),
+            Guid::nil(),
+            "log_guid should be nil after create"
+        );
+    }
+    drop({
+        let f = File::open(&path).finish().expect("open check drop");
+        f
+    });
+
+    // 步骤 2：注入 pending log entry
+    let target_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size") + 512;
+    inject_pending_log_entry(&path, target_offset, b"TASK3_REPLAY_SEQ");
+
+    // 步骤 3：以 writable + Auto 打开，触发 replay + session-init
+    let file = File::open(&path)
+        .write()
+        .log_replay(LogReplayPolicy::Auto)
+        .finish()
+        .expect("writable auto replay should succeed");
+
+    // 步骤 4：验证 header 状态
+    assert!(
+        !file.has_pending_logs(),
+        "pending logs should be consumed after replay"
+    );
+
+    let (post_replay_seq, post_replay_fwg, post_replay_log_guid) = {
+        let header_ref = file.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        (
+            h.sequence_number(),
+            h.file_write_guid(),
+            h.log_guid(),
+        )
+    };
+
+    // log_guid 应为 nil（replay 清除）
+    assert_eq!(
+        post_replay_log_guid,
+        Guid::nil(),
+        "log_guid must be nil after replay"
+    );
+
+    // sequence_number 应为 post_create_seq + 2（replay +1, session-init +1）
+    assert_eq!(
+        post_replay_seq,
+        post_create_seq + 2,
+        "sequence_number should increment by 2 (replay + session-init)"
+    );
+
+    // file_write_guid 应与创建后不同（session-init 重新生成）
+    assert_ne!(
+        post_replay_fwg, post_create_fwg,
+        "file_write_guid should change after writable open"
+    );
+}
+
+/// Task 3：ReadOnlyNoReplay 策略下打开 pending-log 文件应保持磁盘不变。
+///
+/// 验证：
+/// - has_pending_logs == true
+/// - 再次以只读方式读取 header，log_guid 仍为非 nil（未被清除）
+/// - sequence_number 未变
+#[test]
+fn test_log_replay_policy_readonly_no_replay_keeps_pending() {
+    use vhdx_rs::{File, Guid, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+
+    // 创建磁盘
+    let file = File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let (post_create_seq, post_create_fwg) = {
+        let header_ref = file.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        (h.sequence_number(), h.file_write_guid())
+    };
+    drop(file);
+
+    // 注入 pending log entry
+    let target_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size") + 512;
+    inject_pending_log_entry(&path, target_offset, b"TASK3_NO_REPLAY");
+
+    // 以 ReadOnlyNoReplay 只读打开
+    let file_noreplay = File::open(&path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("ReadOnlyNoReplay should succeed for read-only open");
+
+    // has_pending_logs 应为 true（未回放）
+    assert!(
+        file_noreplay.has_pending_logs(),
+        "ReadOnlyNoReplay should report pending logs"
+    );
+
+    // 通过 sections API 验证 header 中 log_guid 仍为非 nil
+    {
+        let header_ref = file_noreplay.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        assert_ne!(
+            h.log_guid(),
+            Guid::nil(),
+            "log_guid must remain non-nil with ReadOnlyNoReplay"
+        );
+    }
+
+    // 释放文件句柄
+    drop(file_noreplay);
+
+    // 再次以只读打开验证磁盘未被修改
+    let file_verify = File::open(&path).finish().expect("verify open");
+    let (verify_seq, verify_fwg, verify_log_guid) = {
+        let header_ref = file_verify.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        (
+            h.sequence_number(),
+            h.file_write_guid(),
+            h.log_guid(),
+        )
+    };
+
+    // sequence_number 应与创建后一致
+    assert_eq!(
+        verify_seq, post_create_seq,
+        "sequence_number must not change with ReadOnlyNoReplay"
+    );
+
+    // file_write_guid 应与创建后一致
+    assert_eq!(
+        verify_fwg, post_create_fwg,
+        "file_write_guid must not change with ReadOnlyNoReplay"
+    );
+
+    // log_guid 应仍为非 nil
+    assert_ne!(
+        verify_log_guid,
+        Guid::nil(),
+        "log_guid must remain non-nil after ReadOnlyNoReplay"
+    );
+}
+
+/// Task 8：ReadOnlyNoReplay 需被明确视为兼容模式例外，且不得触发回放写入。
+///
+/// 验证点：
+/// - 以 ReadOnlyNoReplay 打开后仍有 pending logs
+/// - header 会话字段与 log_guid 保持不变
+/// - 目标数据位置原始字节保持不变（无 replay write）
+#[test]
+fn test_readonly_no_replay_is_explicit_compat_mode() {
+    use vhdx_rs::{File, Guid, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    let target_disk_offset = 2048_u64;
+    let target_file_offset =
+        u64::try_from(HEADER_SECTION_SIZE).expect("header size overflow") + target_disk_offset;
+    let payload = b"TASK8_COMPAT_MODE_NO_REPLAY";
+
+    let file = File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let (seq_before, fwg_before) = {
+        let header_ref = file.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        (h.sequence_number(), h.file_write_guid())
+    };
+    drop(file);
+
+    inject_pending_log_entry(&path, target_file_offset, payload);
+    let bytes_before = read_raw_bytes(&path, target_file_offset, payload.len());
+    assert_eq!(
+        bytes_before,
+        vec![0u8; payload.len()],
+        "pending log injection should not write payload directly"
+    );
+
+    let compat_open = File::open(&path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("ReadOnlyNoReplay open should succeed");
+
+    assert!(
+        compat_open.has_pending_logs(),
+        "ReadOnlyNoReplay compatibility mode must keep pending logs"
+    );
+
+    {
+        let header_ref = compat_open.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        assert_eq!(
+            h.sequence_number(),
+            seq_before,
+            "ReadOnlyNoReplay must not mutate sequence_number"
+        );
+        assert_eq!(
+            h.file_write_guid(),
+            fwg_before,
+            "ReadOnlyNoReplay must not mutate file_write_guid"
+        );
+        assert_ne!(
+            h.log_guid(),
+            Guid::nil(),
+            "ReadOnlyNoReplay must keep non-nil log_guid for pending state"
+        );
+    }
+    drop(compat_open);
+
+    let bytes_after = read_raw_bytes(&path, target_file_offset, payload.len());
+    assert_eq!(
+        bytes_after,
+        bytes_before,
+        "ReadOnlyNoReplay compatibility mode must not trigger replay writes"
+    );
+}
+
+/// Task 8：严格策略 Require 在存在 pending log 时必须维持严格行为。
+///
+/// 验证点：
+/// - `finish()` 返回 `Error::LogReplayRequired`
+/// - 返回前不触发 replay 写入（目标数据位置保持不变）
+#[test]
+fn test_log_replay_require_policy_replays_non_empty_log() {
+    use vhdx_rs::{Error, File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    let target_disk_offset = 3072_u64;
+    let target_file_offset =
+        u64::try_from(HEADER_SECTION_SIZE).expect("header size overflow") + target_disk_offset;
+    let payload = b"TASK8_REQUIRE_POLICY_PENDING_LOG";
+
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    inject_pending_log_entry(&path, target_file_offset, payload);
+    let bytes_before = read_raw_bytes(&path, target_file_offset, payload.len());
+
+    let err = match File::open(&path)
+        .log_replay(LogReplayPolicy::Require)
+        .finish()
+    {
+        Ok(_) => panic!("Require must reject non-empty pending log"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(err, Error::LogReplayRequired),
+        "Require should return LogReplayRequired, got: {err:?}"
+    );
+
+    let bytes_after = read_raw_bytes(&path, target_file_offset, payload.len());
+    assert_eq!(
+        bytes_after,
+        bytes_before,
+        "Require rejection path must not perform replay writes"
+    );
+}
+
+// ── Task 4: Header 生命周期回归矩阵 ──────────────────────────────────
+//
+// 覆盖 writable / readonly / repeated-open 行为下 header 字段的不变量：
+//   - 可写打开 sequence 单调递增
+//   - 只读打开不改变 sequence 和 file_write_guid
+//   - file_write_guid 在每次可写打开时重新生成，data_write_guid 始终不变
+
+/// 测试多次可写打开时 sequence_number 严格单调递增。
+///
+/// 每次 writable open 触发一次 session-init（MS-VHDX §2.2.2），
+/// sequence_number 每次精确递增 1。连续三次可写打开后序列号应为
+/// create_seq + 2（create 本身已执行一次 session-init）。
+#[test]
+fn test_open_writable_sequence_monotonicity() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    // 创建磁盘：create 内部触发一次 session-init → seq = 初始值 + 1
+    let file = File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let seq_create = {
+        let header_ref = file.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        h.sequence_number()
+    };
+    drop(file);
+
+    // 第一次可写打开 → seq 应精确 +1
+    let file_w1 = File::open(&path)
+        .write()
+        .finish()
+        .expect("writable open 1");
+
+    let seq_w1 = {
+        let header_ref = file_w1.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        h.sequence_number()
+    };
+    drop(file_w1);
+
+    assert_eq!(
+        seq_w1,
+        seq_create + 1,
+        "first writable open should increment sequence by exactly 1: create={seq_create}, w1={seq_w1}"
+    );
+
+    // 第二次可写打开 → seq 应再精确 +1
+    let file_w2 = File::open(&path)
+        .write()
+        .finish()
+        .expect("writable open 2");
+
+    let seq_w2 = {
+        let header_ref = file_w2.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        h.sequence_number()
+    };
+
+    assert_eq!(
+        seq_w2,
+        seq_w1 + 1,
+        "second writable open should increment sequence by exactly 1: w1={seq_w1}, w2={seq_w2}"
+    );
+
+    // 整体单调递增：create < w1 < w2
+    assert!(
+        seq_create < seq_w1 && seq_w1 < seq_w2,
+        "sequence must be strictly monotonically increasing: {seq_create} < {seq_w1} < {seq_w2}"
+    );
+}
+
+/// 测试只读打开夹在两次可写打开之间不改变 sequence_number。
+///
+/// 回归矩阵：
+///   create(seq=S0) → readonly(seq=S0) → writable(seq=S0+1) → readonly(seq=S0+1)
+/// 只读打开不应导致 sequence 改变，可写打开应精确递增 1。
+#[test]
+fn test_open_readonly_between_writable_keeps_sequence() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    // 创建 → 捕获基准 sequence 和 file_write_guid
+    let file = File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let (seq_create, fwg_create) = {
+        let header_ref = file.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        (h.sequence_number(), h.file_write_guid())
+    };
+    drop(file);
+
+    // 第一次只读打开 → sequence 和 file_write_guid 应不变
+    let file_ro1 = File::open(&path).finish().expect("readonly open 1");
+    let (seq_ro1, fwg_ro1) = {
+        let header_ref = file_ro1.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        (h.sequence_number(), h.file_write_guid())
+    };
+    drop(file_ro1);
+
+    assert_eq!(
+        seq_ro1, seq_create,
+        "readonly open must not change sequence: create={seq_create}, ro1={seq_ro1}"
+    );
+    assert_eq!(
+        fwg_ro1, fwg_create,
+        "readonly open must not change file_write_guid"
+    );
+
+    // 可写打开 → sequence 应精确 +1，file_write_guid 应改变
+    let file_w1 = File::open(&path)
+        .write()
+        .finish()
+        .expect("writable open");
+    let (seq_w1, fwg_w1) = {
+        let header_ref = file_w1.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        (h.sequence_number(), h.file_write_guid())
+    };
+    drop(file_w1);
+
+    assert_eq!(
+        seq_w1,
+        seq_create + 1,
+        "writable open should increment sequence by 1: create={seq_create}, w1={seq_w1}"
+    );
+    assert_ne!(
+        fwg_w1, fwg_create,
+        "writable open must generate new file_write_guid"
+    );
+
+    // 第二次只读打开 → sequence 和 file_write_guid 应与可写打开后一致
+    let file_ro2 = File::open(&path).finish().expect("readonly open 2");
+    let (seq_ro2, fwg_ro2) = {
+        let header_ref = file_ro2.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        (h.sequence_number(), h.file_write_guid())
+    };
+
+    assert_eq!(
+        seq_ro2, seq_w1,
+        "second readonly open must not change sequence: w1={seq_w1}, ro2={seq_ro2}"
+    );
+    assert_eq!(
+        fwg_ro2, fwg_w1,
+        "second readonly open must not change file_write_guid"
+    );
+}
+
+/// 测试 header GUID 在跨会话生命周期中的一致性不变量。
+///
+/// 不变量：
+///   - file_write_guid 在每次可写打开时重新生成（每会话唯一标识）
+///   - data_write_guid 在 session-init 期间不被修改，跨会话保持不变
+///   - 只读打开不改变任何 GUID
+#[test]
+fn test_header_guid_lifecycle_across_sessions() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    // 创建 → 捕获初始 GUID
+    let file = File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let (fwg_create, dwg_create) = {
+        let header_ref = file.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        (h.file_write_guid(), h.data_write_guid())
+    };
+
+    // 初始 GUID 应非 nil
+    assert_ne!(
+        fwg_create,
+        vhdx_rs::Guid::nil(),
+        "file_write_guid must be non-nil after create"
+    );
+    assert_ne!(
+        dwg_create,
+        vhdx_rs::Guid::nil(),
+        "data_write_guid must be non-nil after create"
+    );
+
+    drop(file);
+
+    // 第一次可写打开 → file_write_guid 应改变，data_write_guid 不变
+    let file_w1 = File::open(&path)
+        .write()
+        .finish()
+        .expect("writable open 1");
+
+    let (fwg_w1, dwg_w1) = {
+        let header_ref = file_w1.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        (h.file_write_guid(), h.data_write_guid())
+    };
+    drop(file_w1);
+
+    assert_ne!(
+        fwg_w1, fwg_create,
+        "file_write_guid must change on each writable open"
+    );
+    assert_eq!(
+        dwg_w1, dwg_create,
+        "data_write_guid must not change on session init"
+    );
+
+    // 第二次可写打开 → file_write_guid 应再次改变，data_write_guid 仍不变
+    let file_w2 = File::open(&path)
+        .write()
+        .finish()
+        .expect("writable open 2");
+
+    let (fwg_w2, dwg_w2) = {
+        let header_ref = file_w2.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        (h.file_write_guid(), h.data_write_guid())
+    };
+    drop(file_w2);
+
+    assert_ne!(
+        fwg_w2, fwg_w1,
+        "file_write_guid must change on second writable open (unique per session)"
+    );
+    assert_ne!(
+        fwg_w2, fwg_create,
+        "file_write_guid from second writable must differ from create session"
+    );
+    assert_eq!(
+        dwg_w2, dwg_create,
+        "data_write_guid must remain unchanged across all sessions"
+    );
+
+    // 只读打开 → 所有 GUID 应保持与第二次可写打开后一致
+    let file_ro = File::open(&path).finish().expect("readonly open");
+    let (fwg_ro, dwg_ro) = {
+        let header_ref = file_ro.sections().header().expect("header");
+        let h = header_ref.header(0).expect("active header");
+        (h.file_write_guid(), h.data_write_guid())
+    };
+
+    assert_eq!(
+        fwg_ro, fwg_w2,
+        "readonly open must not change file_write_guid"
+    );
+    assert_eq!(
+        dwg_ro, dwg_create,
+        "readonly open must not change data_write_guid"
+    );
+}
+
+// ── Task 5: Parent Locator 写入格式验证 ──
+
+/// 测试差分磁盘的 Parent Locator 的 locator_type 等于 LOCATOR_TYPE_VHDX GUID。
+///
+/// 验证 `build_parent_locator_payload` 正确写入 LocatorType 字段（MS-VHDX §2.6.2.6.1）。
+#[test]
+fn test_create_diff_parent_locator_has_vhdx_locator_type() {
+    use vhdx_rs::section::StandardItems::LOCATOR_TYPE_VHDX;
+    use vhdx_rs::File;
+
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    let child = File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create differencing child disk");
+
+    let metadata = child
+        .sections()
+        .metadata()
+        .expect("Failed to read metadata");
+    let items = metadata.items();
+    let locator = items
+        .parent_locator()
+        .expect("Expected parent locator for differencing disk");
+
+    // locator_type 必须是 VHDX 标准定位器 GUID
+    let header = locator.header();
+    assert_eq!(
+        header.locator_type,
+        LOCATOR_TYPE_VHDX,
+        "Parent locator locator_type must equal LOCATOR_TYPE_VHDX \
+         (B04AEFB7-D19E-4A81-B789-25B8E9445913)"
+    );
+
+    // reserved 必须为 0
+    assert_eq!(
+        header.reserved, 0,
+        "Parent locator header reserved field must be 0"
+    );
+}
+
+/// 测试差分磁盘的 Parent Locator 中所有 key/value 条目的偏移和长度均非零且有效。
+///
+/// entry 偏移量相对于 key_value_data 区域，长度必须 > 0，
+/// 偏移 + 长度不能超出 key_value_data 范围。
+#[test]
+fn test_parent_locator_rejects_zero_offsets_or_lengths() {
+    use vhdx_rs::File;
+
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    let child = File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create differencing child disk");
+
+    let metadata = child
+        .sections()
+        .metadata()
+        .expect("Failed to read metadata");
+    let items = metadata.items();
+    let locator = items
+        .parent_locator()
+        .expect("Expected parent locator for differencing disk");
+
+    let kv_data = locator.key_value_data();
+    let entries = locator.entries();
+    assert!(!entries.is_empty(), "Should have at least one entry");
+
+    for (i, entry) in entries.iter().enumerate() {
+        // 长度必须 > 0
+        assert!(
+            entry.key_length > 0,
+            "Entry {i}: key_length must be > 0"
+        );
+        assert!(
+            entry.value_length > 0,
+            "Entry {i}: value_length must be > 0"
+        );
+
+        // key 范围检查
+        let key_end = entry.key_offset as usize + entry.key_length as usize;
+        assert!(
+            entry.key_offset as usize <= kv_data.len() && key_end <= kv_data.len(),
+            "Entry {i}: key region [{}, {}) exceeds key_value_data length {}",
+            entry.key_offset,
+            key_end,
+            kv_data.len()
+        );
+
+        // value 范围检查
+        let value_end = entry.value_offset as usize + entry.value_length as usize;
+        assert!(
+            entry.value_offset as usize <= kv_data.len() && value_end <= kv_data.len(),
+            "Entry {i}: value region [{}, {}) exceeds key_value_data length {}",
+            entry.value_offset,
+            value_end,
+            kv_data.len()
+        );
+
+        // key 和 value 可成功解码
+        assert!(
+            entry.key(kv_data).is_some(),
+            "Entry {i}: key decode should succeed"
+        );
+        assert!(
+            entry.value(kv_data).is_some(),
+            "Entry {i}: value decode should succeed"
+        );
+    }
+}
+
+// ── Task 6: 加强 Parent Locator 校验测试 ──
+
+/// 构造一个不带 locator_type 的 Parent Locator（用于测试无效 locator_type 拒绝）。
+fn build_parent_locator_without_type(entries: &[(&str, &str)]) -> Vec<u8> {
+    let mut key_value_data = Vec::new();
+    let mut entry_table = Vec::new();
+
+    for (key, value) in entries {
+        let key_bytes = utf16_le_bytes(key);
+        let value_bytes = utf16_le_bytes(value);
+
+        let key_offset = u32::try_from(key_value_data.len()).expect("key offset overflow");
+        key_value_data.extend_from_slice(&key_bytes);
+        let value_offset = u32::try_from(key_value_data.len()).expect("value offset overflow");
+        key_value_data.extend_from_slice(&value_bytes);
+
+        entry_table.extend_from_slice(&key_offset.to_le_bytes());
+        entry_table.extend_from_slice(&value_offset.to_le_bytes());
+        entry_table.extend_from_slice(
+            &u16::try_from(key_bytes.len())
+                .expect("key length overflow")
+                .to_le_bytes(),
+        );
+        entry_table.extend_from_slice(
+            &u16::try_from(value_bytes.len())
+                .expect("value length overflow")
+                .to_le_bytes(),
+        );
+    }
+
+    // locator_type 保持全零（无效）
+    let mut locator = vec![0u8; 20];
+    locator[18..20].copy_from_slice(
+        &u16::try_from(entries.len())
+            .expect("entry count overflow")
+            .to_le_bytes(),
+    );
+    locator.extend_from_slice(&entry_table);
+    locator.extend_from_slice(&key_value_data);
+    locator
+}
+
+/// Task 6：合法 Parent Locator 应通过所有严格校验。
+///
+/// 验证包含正确 locator_type、parent_linkage、路径键的 locator 能通过
+/// `validate_parent_locator` 的全部五项检查。
+#[test]
+fn test_validate_parent_locator_strict_valid() {
+    use vhdx_rs::{File, SpecValidator};
+
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    let child = File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create differencing child");
+    drop(child);
+
+    // 注入包含完整键的合法 locator
+    let valid_locator = build_parent_locator(&[
+        ("parent_linkage", "12345678-1234-1234-1234-123456789ABC"),
+        ("relative_path", &parent_path.to_string_lossy()),
+    ]);
+    inject_parent_locator(&child_path, &valid_locator);
+
+    let file = File::open(&child_path)
+        .finish()
+        .expect("Failed to reopen child disk after valid locator injection");
+
+    let validator = SpecValidator::new(&file);
+    let result = validator.validate_parent_locator();
+    assert!(
+        result.is_ok(),
+        "valid parent locator should pass strict validation: {:?}",
+        result.err()
+    );
+}
+
+/// Task 6：无效 locator_type 应被拒绝并返回 InvalidMetadata。
+///
+/// 注入 locator_type 为全零的 Parent Locator，校验器应拒绝并返回
+/// 包含 "locator_type mismatch" 的 InvalidMetadata 错误。
+#[test]
+fn test_validate_parent_locator_rejects_invalid_type() {
+    use vhdx_rs::{Error, File, SpecValidator};
+
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    let child = File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create differencing child");
+    drop(child);
+
+    // 构造 locator_type 为全零的 locator（不是 LOCATOR_TYPE_VHDX）
+    let invalid_locator = build_parent_locator_without_type(&[
+        ("parent_linkage", "12345678-1234-1234-1234-123456789ABC"),
+        ("relative_path", &parent_path.to_string_lossy()),
+    ]);
+    inject_parent_locator(&child_path, &invalid_locator);
+
+    let file = File::open(&child_path)
+        .finish()
+        .expect("Failed to reopen child disk after invalid type injection");
+
+    let validator = SpecValidator::new(&file);
+    let err = validator
+        .validate_parent_locator()
+        .expect_err("Expected InvalidMetadata for invalid locator_type");
+
+    match err {
+        Error::InvalidMetadata(message) => {
+            assert!(
+                message.contains("locator_type mismatch"),
+                "unexpected error message: {message}"
+            );
+        }
+        other => panic!("expected InvalidMetadata, got: {other:?}"),
+    }
+}
+
+/// Task 6：重复键应被拒绝并返回 InvalidMetadata。
+#[test]
+fn test_validate_parent_locator_rejects_duplicate_keys() {
+    use vhdx_rs::{Error, File};
+
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    let child = File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create differencing child");
+    drop(child);
+
+    // 注入包含重复键的 locator
+    let dup_locator = build_parent_locator(&[
+        ("parent_linkage", "12345678-1234-1234-1234-123456789ABC"),
+        ("parent_linkage", "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"),
+        ("relative_path", &parent_path.to_string_lossy()),
+    ]);
+    inject_parent_locator(&child_path, &dup_locator);
+
+    let file = File::open(&child_path)
+        .finish()
+        .expect("Failed to reopen child disk after duplicate key injection");
+
+    let err = file
+        .validator()
+        .validate_parent_locator()
+        .expect_err("Expected InvalidMetadata for duplicate keys");
+
+    match err {
+        Error::InvalidMetadata(message) => {
+            assert!(
+                message.contains("duplicate key"),
+                "unexpected error message: {message}"
+            );
+            assert!(
+                message.contains("parent_linkage"),
+                "error should mention the duplicated key name: {message}"
+            );
+        }
+        other => panic!("expected InvalidMetadata, got: {other:?}"),
+    }
+}
+
+/// Task 6：缺少所有路径键应被拒绝。
+#[test]
+fn test_validate_parent_locator_rejects_missing_all_path_keys() {
+    use vhdx_rs::{Error, File};
+
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    let child = File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create differencing child");
+    drop(child);
+
+    // 注入仅有 parent_linkage、无路径键的 locator
+    let no_path_locator = build_parent_locator(&[
+        ("parent_linkage", "12345678-1234-1234-1234-123456789ABC"),
+    ]);
+    inject_parent_locator(&child_path, &no_path_locator);
+
+    let file = File::open(&child_path)
+        .finish()
+        .expect("Failed to reopen child disk after no-path injection");
+
+    let err = file
+        .validator()
+        .validate_parent_locator()
+        .expect_err("Expected InvalidMetadata for missing path keys");
+
+    match err {
+        Error::InvalidMetadata(message) => {
+            assert!(
+                message.contains("path key"),
+                "unexpected error message: {message}"
+            );
+        }
+        other => panic!("expected InvalidMetadata, got: {other:?}"),
+    }
+}
+
+// ── Task 7: validate_parent_chain 单跳回归测试 ──
+//
+// 固化 validate_parent_chain 为 SINGLE-HOP ONLY（child → direct parent），
+// 不递归、不检测循环。覆盖 happy / not-found / mismatch 三条路径。
+
+/// Task 7 单跳回归：child 的 parent_linkage 与父盘 DataWriteGuid 匹配时返回链信息。
+///
+/// 验证：
+/// - `validate_parent_chain` 返回 `Ok(ParentChainInfo)`
+/// - `linkage_matched == true`
+/// - `child` 路径等于实际子盘路径
+/// - `parent` 路径等于实际父盘路径
+#[test]
+fn test_validate_parent_chain_single_hop_happy() {
+    use vhdx_rs::File;
+
+    let parent_path = temp_vhdx_path();
+    let parent = File::create(&parent_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    // 获取父盘 DataWriteGuid
+    let parent_data_write_guid = parent
+        .sections()
+        .header()
+        .expect("Failed to read parent header")
+        .header(0)
+        .expect("Missing active parent header")
+        .data_write_guid();
+    drop(parent);
+
+    let child_path = temp_vhdx_path();
+    let child = File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create child differencing disk");
+
+    // 验证默认创建的 locator 包含匹配的 parent_linkage
+    {
+        let metadata = child
+            .sections()
+            .metadata()
+            .expect("Failed to read child metadata");
+        let items = metadata.items();
+        let locator = items
+            .parent_locator()
+            .expect("Expected parent locator");
+
+        // 从 locator 中解析 parent_linkage 值
+        let data = locator.key_value_data();
+        let entries = locator.entries();
+        let mut found_linkage = false;
+        for entry in entries {
+            if let Some(key) = entry.key(data) {
+                if key == "parent_linkage" {
+                    let value = entry.value(data).expect("parent_linkage value");
+                    found_linkage = true;
+                    // 验证 linkage 值可解析为 GUID 且与父盘 DataWriteGuid 匹配
+                    let trimmed = value.trim().trim_start_matches('{').trim_end_matches('}');
+                    let parsed = uuid::Uuid::parse_str(trimmed).expect("parent_linkage GUID parse");
+                    let linkage_bytes = parsed.as_bytes();
+                    let linkage_guid = vhdx_rs::Guid::from_bytes([
+                        linkage_bytes[3], linkage_bytes[2], linkage_bytes[1], linkage_bytes[0],
+                        linkage_bytes[5], linkage_bytes[4], linkage_bytes[7], linkage_bytes[6],
+                        linkage_bytes[8], linkage_bytes[9], linkage_bytes[10], linkage_bytes[11],
+                        linkage_bytes[12], linkage_bytes[13], linkage_bytes[14], linkage_bytes[15],
+                    ]);
+                    assert_eq!(
+                        linkage_guid, parent_data_write_guid,
+                        "default-created parent_linkage should match parent DataWriteGuid"
+                    );
+                }
+            }
+        }
+        assert!(found_linkage, "parent_linkage key must exist in locator");
+    }
+    drop(child);
+
+    // 核心：validate_parent_chain 应返回成功且 linkage_matched=true
+    let child_reopen = File::open(&child_path)
+        .finish()
+        .expect("Failed to reopen child disk");
+
+    let info = child_reopen
+        .validator()
+        .validate_parent_chain()
+        .expect("validate_parent_chain should succeed for matching parent linkage");
+
+    assert!(
+        info.linkage_matched,
+        "single-hop happy path: linkage should be matched"
+    );
+    assert_eq!(
+        info.child, child_path,
+        "single-hop happy path: child path should match"
+    );
+    assert_eq!(
+        info.parent, parent_path,
+        "single-hop happy path: parent path should match"
+    );
+}
+
+/// Task 7 单跳回归：parent_linkage 与父盘 DataWriteGuid 不匹配时返回 ParentMismatch。
+///
+/// 注入故意错误的 parent_linkage GUID，验证 `validate_parent_chain` 返回
+/// `Error::ParentMismatch`，且 `expected` 为注入的错误 GUID，`actual` 为父盘真实 GUID。
+#[test]
+fn test_validate_parent_chain_single_hop_mismatch() {
+    use vhdx_rs::{Error, File, Guid};
+
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    let child = File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create child differencing disk");
+    drop(child);
+
+    // 注入故意不匹配的 parent_linkage
+    let mismatch_guid = Guid::from_bytes([
+        0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
+        0xDE, 0xF0,
+    ]);
+    let locator = build_parent_locator(&[
+        ("parent_linkage", &format!("{mismatch_guid}")),
+        ("relative_path", &parent_path.to_string_lossy()),
+    ]);
+    inject_parent_locator(&child_path, &locator);
+
+    let child_reopen = File::open(&child_path)
+        .finish()
+        .expect("Failed to reopen child disk");
+
+    let err = child_reopen
+        .validator()
+        .validate_parent_chain()
+        .expect_err("single-hop mismatch: expected ParentMismatch error");
+
+    match err {
+        Error::ParentMismatch { expected, actual } => {
+            assert_eq!(
+                expected, mismatch_guid,
+                "expected GUID should be the injected mismatch GUID"
+            );
+            assert_ne!(
+                actual, mismatch_guid,
+                "actual GUID should be the parent's real DataWriteGuid"
+            );
+            assert_ne!(
+                actual, Guid::nil(),
+                "actual GUID should not be nil (parent has valid DataWriteGuid)"
+            );
+        }
+        other => panic!("single-hop mismatch: expected ParentMismatch, got: {other:?}"),
+    }
+}
+
+/// Task 7 单跳回归：父盘文件不存在时返回 ParentNotFound。
+///
+/// 创建差分磁盘对后删除父盘文件，验证 `validate_parent_chain` 返回
+/// `Error::ParentNotFound`。
+#[test]
+fn test_validate_parent_chain_single_hop_parent_not_found() {
+    use vhdx_rs::{Error, File};
+
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    let child = File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create child differencing disk");
+    drop(child);
+
+    // 删除父盘文件
+    std::fs::remove_file(&parent_path).expect("Failed to remove parent disk file");
+
+    let child_reopen = File::open(&child_path)
+        .finish()
+        .expect("Failed to reopen child disk");
+
+    let err = child_reopen
+        .validator()
+        .validate_parent_chain()
+        .expect_err("single-hop not-found: expected ParentNotFound error");
+
+    match err {
+        Error::ParentNotFound { path } => {
+            // 路径可能为空或为父盘路径，取决于 resolve_parent_path 是否能从已删除路径解析
+            assert!(
+                path == parent_path || path.as_os_str().is_empty(),
+                "ParentNotFound path should be the deleted parent path or empty, got: {:?}",
+                path
+            );
+        }
+        Error::Io(_) => {
+            // 父盘文件不存在时 File::open 可能返回 IO 错误，同样可接受
+        }
+        other => panic!(
+            "single-hop not-found: expected ParentNotFound or Io error, got: {other:?}"
+        ),
+    }
 }

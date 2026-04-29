@@ -783,6 +783,14 @@ impl File {
         let (has_pending_logs, replay_overlay) =
             Self::handle_log_replay(&mut file, &sections, &current_header, writable, log_replay)?;
 
+        // 步骤 8：可写打开时执行会话初始化头部更新（MS-VHDX §2.2.2）
+        // 更新非活动头部副本，递增序列号并生成新的 FileWriteGuid，
+        // 使被更新的副本成为新的活动头部。只读打开不执行此步骤。
+        if writable {
+            Self::init_session_header(&mut file)?;
+            sections.invalidate_caches();
+        }
+
         Ok(Self {
             inner: file,
             sections,
@@ -934,6 +942,58 @@ impl File {
     /// 判断区域 GUID 是否为规范已知项
     fn is_known_region_guid(guid: &Guid) -> bool {
         *guid == region_guids::BAT_REGION || *guid == region_guids::METADATA_REGION
+    }
+
+    /// 可写打开时的会话初始化头部更新（MS-VHDX §2.2.2）
+    ///
+    /// VHDX 规范要求以写入模式打开文件时，必须更新非活动头部副本：
+    /// - 将序列号设为当前活动头部的 `sequence_number + 1`
+    /// - 生成新的 `FileWriteGuid` 标记本次写入会话
+    ///
+    /// 此操作使被更新的头部副本成为新的活动头部（序列号更大），
+    /// 保持双头安全机制的一致性。只读打开路径不应调用此方法。
+    fn init_session_header(file: &mut StdFile) -> Result<()> {
+        // 重新读取头部区域以获取经过日志回放后的最新状态
+        file.seek(SeekFrom::Start(0))?;
+        let mut header_bytes = vec![0u8; HEADER_SECTION_SIZE];
+        file.read_exact(&mut header_bytes)?;
+        let header = Header::new(header_bytes)?;
+
+        let h1 = header.header(1).ok_or_else(|| {
+            Error::CorruptedHeader("Header 1 parse failed during session init".to_string())
+        })?;
+        let h2 = header.header(2).ok_or_else(|| {
+            Error::CorruptedHeader("Header 2 parse failed during session init".to_string())
+        })?;
+
+        // 确定当前活动头部和非活动头部的偏移
+        // MS-VHDX §2.2.2.1：序列号较大的头部为活动头部；
+        // 序列号相等时 header(0) 选取 h2，因此 h1 为非活动头部
+        let (current, non_current_file_offset) = if h1.sequence_number() > h2.sequence_number() {
+            (h1, HEADER_2_OFFSET as u64) // h1 是活动头部，更新 h2
+        } else {
+            (h2, HEADER_1_OFFSET as u64) // h2 是活动头部（或两者相等），更新 h1
+        };
+
+        // 生成新的 FileWriteGuid 标记本次会话
+        let new_file_write_guid = Guid::from(uuid::Uuid::new_v4());
+
+        // 构造更新后的头部结构
+        let new_header = HeaderStructure::create(
+            current.sequence_number() + 1,
+            new_file_write_guid,
+            current.data_write_guid(),
+            current.log_guid(),
+            current.log_length(),
+            current.log_offset(),
+        );
+
+        // 写入非活动头部位置
+        file.seek(SeekFrom::Start(non_current_file_offset))?;
+        file.write_all(&new_header)?;
+        file.sync_all()?;
+
+        Ok(())
     }
 
     /// 处理日志回放，如有未完成的日志条目则回放并更新头部
@@ -1107,7 +1167,12 @@ impl File {
         }
     }
 
-    /// 执行日志回放并将头部日志 GUID 清零
+    /// 执行日志回放并按照双头一致性策略更新头部（MS-VHDX §2.2.2）
+    ///
+    /// 回放完成后，将日志 GUID 清零并更新非活动头部副本：
+    /// - 序列号设为当前活动头部的 `sequence_number + 1`
+    /// - 生成新的 `FileWriteGuid` 标记回放后的写入会话
+    /// - 仅写入非活动头部位置，遵循交替写入策略
     fn replay_log_and_clear_guid(
         file: &mut StdFile, current_header: &crate::sections::HeaderStructure<'_>,
         log: &std::cell::Ref<'_, crate::sections::Log>, expected_log_guid: Guid,
@@ -1115,17 +1180,48 @@ impl File {
         (*log).replay_with_log_guid(file, expected_log_guid)?;
         file.sync_all()?;
 
-        let new_header = crate::section::HeaderStructure::create(
-            current_header.sequence_number(),
-            current_header.file_write_guid(),
+        // 重新读取头部区域以获取回放后的最新状态（回放可能修改了 BAT/metadata，
+        // 但头部区域本身未被回放修改，使用回放前的 current_header 作为基准）
+        let _ = current_header; // 保留参数以维持签名兼容性
+
+        // 确定非活动头部的偏移量
+        // 需要重新读取两个头部来确定非活动位置
+        file.seek(SeekFrom::Start(0))?;
+        let mut header_bytes = vec![0u8; HEADER_SECTION_SIZE];
+        file.read_exact(&mut header_bytes)?;
+        let header = Header::new(header_bytes)?;
+
+        let parsed_h1 = header.header(1).ok_or_else(|| {
+            Error::CorruptedHeader("Header 1 parse failed after replay".to_string())
+        })?;
+        let parsed_h2 = header.header(2).ok_or_else(|| {
+            Error::CorruptedHeader("Header 2 parse failed after replay".to_string())
+        })?;
+
+        // 确定当前活动头部及其序列号
+        let (active_seq, non_current_file_offset) = if parsed_h1.sequence_number()
+            > parsed_h2.sequence_number()
+        {
+            (parsed_h1.sequence_number(), HEADER_2_OFFSET as u64)
+        } else {
+            (parsed_h2.sequence_number(), HEADER_1_OFFSET as u64)
+        };
+
+        // 生成新的 FileWriteGuid 标记回放后的会话
+        let new_file_write_guid = Guid::from(uuid::Uuid::new_v4());
+
+        // 构造更新后的头部：序列号递增、日志 GUID 清零
+        let new_header = HeaderStructure::create(
+            active_seq + 1,
+            new_file_write_guid,
             current_header.data_write_guid(),
             Guid::nil(), // 清除日志 GUID
             current_header.log_length(),
             current_header.log_offset(),
         );
-        file.seek(SeekFrom::Start(64 * 1024))?;
-        file.write_all(&new_header)?;
-        file.seek(SeekFrom::Start(128 * 1024))?;
+
+        // 仅写入非活动头部位置（交替写入策略）
+        file.seek(SeekFrom::Start(non_current_file_offset))?;
         file.write_all(&new_header)?;
         file.sync_all()?;
         Ok(())
@@ -1702,8 +1798,13 @@ fn create_metadata(
 
 /// 构造可被当前解析器读取的 Parent Locator payload。
 ///
-/// 结构：20 字节头 + N * 12 字节 entry table + UTF-16LE key/value 数据区。
+/// 结构（MS-VHDX §2.6.2.6）：
+/// - **20 字节头部**：LocatorType GUID（16 字节）+ Reserved（2 字节，必须为 0）+ KeyValueCount（2 字节）
+/// - **N × 12 字节 entry table**：每项含 key_offset / value_offset / key_length / value_length
+/// - **UTF-16LE key/value 数据区**：entry 中的偏移量相对于此区域起始位置
 fn build_parent_locator_payload(parent_path: &Path, parent_linkage: Guid) -> Result<Vec<u8>> {
+    use crate::section::StandardItems::LOCATOR_TYPE_VHDX;
+
     let parent_path_str = parent_path.to_string_lossy().to_string();
     let entries = [
         ("parent_linkage", format!("{parent_linkage}")),
@@ -1714,7 +1815,10 @@ fn build_parent_locator_payload(parent_path: &Path, parent_linkage: Guid) -> Res
         Error::InvalidParameter("Parent locator key/value count exceeds u16::MAX".to_string())
     })?;
 
+    // 头部 20 字节：LocatorType(16) + Reserved(2) + KeyValueCount(2)
     let mut payload = vec![0u8; 20];
+    payload[0..16].copy_from_slice(LOCATOR_TYPE_VHDX.as_bytes());
+    // payload[16..18] = Reserved，已为零
     payload[18..20].copy_from_slice(&key_value_count.to_le_bytes());
 
     let mut entry_table = Vec::with_capacity(entries.len() * 12);
@@ -1724,6 +1828,7 @@ fn build_parent_locator_payload(parent_path: &Path, parent_linkage: Guid) -> Res
         let key_bytes = encode_utf16le(key);
         let value_bytes = encode_utf16le(&value);
 
+        // entry 偏移量相对于 key_value_data 区域起始位置
         let key_offset = u32::try_from(key_value_data.len()).map_err(|_| {
             Error::InvalidParameter("Parent locator key offset exceeds u32::MAX".to_string())
         })?;

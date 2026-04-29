@@ -11,6 +11,7 @@ use crate::common::constants::{
 use crate::error::{Error, Result};
 use crate::file::ParentChainInfo;
 use crate::section::{BatState, Descriptor, PayloadBlockState, SectorBitmapState};
+use crate::section::StandardItems::LOCATOR_TYPE_VHDX;
 use crate::types::Guid;
 
 /// 解析 Parent Locator 中的 GUID 字符串。
@@ -591,7 +592,14 @@ impl<'a> SpecValidator<'a> {
         Ok(())
     }
 
-    /// 校验 Parent Locator 的最小键约束
+    /// 校验 Parent Locator 的严格键约束（MS-VHDX §2.6.2.6）
+    ///
+    /// 执行以下检查：
+    /// 1. `locator_type` 必须等于 VHDX 标准定位器类型 GUID
+    /// 2. 每条 entry 的 key/value 偏移和长度必须 > 0
+    /// 3. 键名必须唯一（不允许重复键）
+    /// 4. 必须包含 `parent_linkage` 键，且值为有效 GUID
+    /// 5. 至少存在一个路径键（`relative_path` / `volume_path` / `absolute_win32_path`）
     pub fn validate_parent_locator(&self) -> Result<()> {
         let metadata = self.file.sections().metadata()?;
         let items = metadata.items();
@@ -609,22 +617,59 @@ impl<'a> SpecValidator<'a> {
             Error::InvalidMetadata("Missing required metadata item: parent_locator".to_string())
         })?;
 
+        // 规则 1：locator_type 必须等于 VHDX 标准定位器类型 GUID（MS-VHDX §2.6.2.6.1）
+        let locator_header = locator.header();
+        if locator_header.locator_type() != LOCATOR_TYPE_VHDX {
+            return Err(Error::InvalidMetadata(format!(
+                "Parent locator locator_type mismatch: expected LOCATOR_TYPE_VHDX, found {:?}",
+                locator_header.locator_type()
+            )));
+        }
+
         let data = locator.key_value_data();
         let entries = locator.entries();
 
         let mut parent_linkage: Option<Guid> = None;
         let mut has_path = false;
 
-        for entry in entries {
+        // 已解码键名集合，用于检测重复键
+        let mut seen_keys = std::collections::HashSet::<String>::new();
+
+        for (entry_index, entry) in entries.iter().enumerate() {
+            // 规则 2：key/value 偏移和长度必须 > 0
+            if entry.key_length == 0 {
+                return Err(Error::InvalidMetadata(format!(
+                    "Parent locator entry {entry_index} has key_length=0 (must be > 0)"
+                )));
+            }
+            if entry.value_length == 0 {
+                return Err(Error::InvalidMetadata(format!(
+                    "Parent locator entry {entry_index} has value_length=0 (must be > 0)"
+                )));
+            }
+
             let Some(key) = entry.key(data) else {
-                continue;
+                // key_offset 超出 key_value_data 范围时解码失败，视为偏移无效
+                return Err(Error::InvalidMetadata(format!(
+                    "Parent locator entry {entry_index} key_offset ({}) out of key_value_data bounds",
+                    entry.key_offset
+                )));
             };
+
+            // 规则 3：键名唯一性检查
+            if !seen_keys.insert(key.clone()) {
+                return Err(Error::InvalidMetadata(format!(
+                    "Parent locator has duplicate key: \"{key}\""
+                )));
+            }
+
             match key.as_str() {
                 "parent_linkage" => {
                     let value = entry.value(data).ok_or_else(|| {
-                        Error::InvalidMetadata(
-                            "Parent locator key parent_linkage has no value".to_string(),
-                        )
+                        Error::InvalidMetadata(format!(
+                            "Parent locator entry {entry_index} value_offset ({}) out of key_value_data bounds",
+                            entry.value_offset
+                        ))
                     })?;
                     parent_linkage = parse_locator_guid(&value);
                     if parent_linkage.is_none() {
@@ -635,9 +680,10 @@ impl<'a> SpecValidator<'a> {
                 }
                 "parent_linkage2" => {
                     let value = entry.value(data).ok_or_else(|| {
-                        Error::InvalidMetadata(
-                            "Parent locator key parent_linkage2 has no value".to_string(),
-                        )
+                        Error::InvalidMetadata(format!(
+                            "Parent locator entry {entry_index} value_offset ({}) out of key_value_data bounds",
+                            entry.value_offset
+                        ))
                     })?;
 
                     // parent_linkage2 为可选键：存在时需可解析为 GUID。
@@ -652,25 +698,40 @@ impl<'a> SpecValidator<'a> {
             }
         }
 
+        // 规则 4：必须包含 parent_linkage 键
         if parent_linkage.is_none() {
             return Err(Error::InvalidMetadata(
                 "Parent locator missing required key: parent_linkage".to_string(),
             ));
         }
 
+        // 规则 5：至少存在一个路径键
         if !has_path {
             return Err(Error::InvalidMetadata(
-                "Parent locator must include one path key".to_string(),
+                "Parent locator must include at least one path key (relative_path, volume_path, or absolute_win32_path)".to_string(),
             ));
         }
 
         Ok(())
     }
 
-    /// 差分链校验
+    /// 差分链单跳校验（SINGLE-HOP ONLY）
     ///
-    /// 校验 parent_linkage / parent_linkage2 与父盘 DataWriteGuid 的一致性。
-    /// 当前为最小实现：非差分盘返回错误，差分盘返回基本链信息。
+    /// 仅校验 child → direct parent 的 DataWriteGuid 一致性，
+    /// 不执行递归遍历、循环检测或多级链校验。
+    ///
+    /// # 行为范围（显式固化）
+    ///
+    /// - **单跳**：打开 parent_linkage / parent_linkage2 指向的直接父盘，
+    ///   比对其 DataWriteGuid 与子盘记录的 linkage GUID。
+    /// - **不递归**：不向上追溯 grandparent 或更深层级。
+    /// - **不检测循环**：不检测 child → parent → child 环路。
+    ///
+    /// # 错误路径
+    ///
+    /// - 非差分盘调用 → `Error::InvalidParameter`
+    /// - 父盘文件不存在 → `Error::ParentNotFound`
+    /// - GUID 不匹配 → `Error::ParentMismatch`
     pub fn validate_parent_chain(&self) -> Result<ParentChainInfo> {
         let metadata = self.file.sections().metadata()?;
         let items = metadata.items();

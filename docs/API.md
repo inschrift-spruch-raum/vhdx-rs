@@ -89,6 +89,14 @@ impl OpenOptions {
 }
 ```
 
+### `LogReplayPolicy`
+
+`LogReplayPolicy` 的严格路径是 `Require`、`Auto`、`InMemoryOnReadOnly`。
+`ReadOnlyNoReplay` 被保留为**兼容模式例外**，用于只读诊断场景。
+
+需要明确的是，`ReadOnlyNoReplay` **不是**严格 MS-VHDX 一致性路径。
+当文件存在 pending log 时，该策略会保留 pending 状态，不触发回放写入。
+
 ### `CreateOptions`
 
 ```rust

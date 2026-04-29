@@ -99,6 +99,12 @@ file.read(0, &mut buf)?;
 file.write(0, &buf)?;
 ```
 
+### 日志回放策略说明（`LogReplayPolicy`）
+
+- `Require` / `Auto` / `InMemoryOnReadOnly` 是严格回放语义路径，遇到 pending log 时会要求或执行回放。
+- `ReadOnlyNoReplay` 是**兼容模式例外**，用于只读诊断或兼容旧行为。
+- `ReadOnlyNoReplay` **不是**严格 MS-VHDX 一致性路径，开启后会保留 pending log 状态，不执行回放写入。
+
 ## 项目结构
 
 ```

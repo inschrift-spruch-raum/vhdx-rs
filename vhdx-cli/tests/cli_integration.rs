@@ -547,6 +547,8 @@ fn cli_check_differencing_parent_locator_output() {
 }
 
 /// 测试差分盘 Parent Locator 无效时，check 应报告 Parent Locator 失败。
+///
+/// inject_invalid_parent_locator_for_cli 将 locator_type 清零，触发 locator_type mismatch。
 #[test]
 fn check_invalid_parent_locator_reports_failure() {
     let (_dir, child_path) = create_differencing_vhdx_pair();
@@ -557,10 +559,10 @@ fn check_invalid_parent_locator_reports_failure() {
         .assert()
         .failure()
         .stdout(predicate::str::contains("✗ Parent Locator"))
-        .stdout(predicate::str::contains("parent_linkage"));
+        .stdout(predicate::str::contains("locator_type"));
 }
 
-/// 测试 CLI check 在 Parent Locator 无效时返回失败并报告 parent_linkage。
+/// 测试 CLI check 在 Parent Locator 无效时返回失败并报告 locator_type 错误。
 #[test]
 fn cli_check_invalid_parent_locator_fails() {
     let (_dir, child_path) = create_differencing_vhdx_pair();
@@ -571,7 +573,7 @@ fn cli_check_invalid_parent_locator_fails() {
         .assert()
         .failure()
         .stdout(predicate::str::contains("Parent Locator"))
-        .stdout(predicate::str::contains("parent_linkage"));
+        .stdout(predicate::str::contains("locator_type"));
 }
 
 /// 测试非差分盘 check 不应误报 Parent Locator 失败。

@@ -88,7 +88,7 @@ Wave 3 (收敛与全量): Task 10
 ## TODOs
 > Implementation + Test = ONE task. Never separate.
 
-- [ ] 1. 规范解释决议并固化为测试前置约束
+- [x] 1. 规范解释决议并固化为测试前置约束
 
   **What to do**:
   - 固化本轮规范解释：
@@ -134,7 +134,7 @@ Wave 3 (收敛与全量): Task 10
 
   **Commit**: YES | Message: `fix(validation): lock spec interpretation for header and locator checks` | Files: `tests/integration_test.rs`
 
-- [ ] 2. 实现可写打开 Header 会话初始化更新语义
+- [x] 2. 实现可写打开 Header 会话初始化更新语义
 
   **What to do**:
   - 在 `open_file_with_options(... writable=true ...)` 中增加“首次会话 header 更新”路径。
@@ -178,7 +178,7 @@ Wave 3 (收敛与全量): Task 10
 
   **Commit**: YES | Message: `fix(file): apply writable-open header session update semantics` | Files: `src/file.rs`, `tests/integration_test.rs`
 
-- [ ] 3. 对齐 log replay 后 Header 更新语义
+- [x] 3. 对齐 log replay 后 Header 更新语义
 
   **What to do**:
   - 调整 `replay_log_and_clear_guid`，保证 replay 后 header 写入符合 sequence 递增与双头一致性策略。
@@ -219,7 +219,7 @@ Wave 3 (收敛与全量): Task 10
 
   **Commit**: YES | Message: `fix(file): align replay header update and log guid lifecycle` | Files: `src/file.rs`, `tests/integration_test.rs`
 
-- [ ] 4. 增加 Header 生命周期回归矩阵
+- [x] 4. 增加 Header 生命周期回归矩阵
 
   **What to do**:
   - 在 `tests/integration_test.rs` 增加可写/只读/重复打开三类矩阵。
@@ -259,7 +259,7 @@ Wave 3 (收敛与全量): Task 10
 
   **Commit**: YES | Message: `test(validation): add header lifecycle regression matrix` | Files: `tests/integration_test.rs`
 
-- [ ] 5. 修复 Parent Locator 写入格式（LocatorType/Reserved/entry）
+- [x] 5. 修复 Parent Locator 写入格式（LocatorType/Reserved/entry）
 
   **What to do**:
   - `build_parent_locator_payload` 写入 VHDX `LocatorType` GUID，`Reserved=0`。
@@ -302,7 +302,7 @@ Wave 3 (收敛与全量): Task 10
 
   **Commit**: YES | Message: `fix(file): emit spec-compliant parent locator payload` | Files: `src/file.rs`, `tests/integration_test.rs`
 
-- [ ] 6. 加强 Parent Locator 校验（type + entry + key 规则）
+- [x] 6. 加强 Parent Locator 校验（type + entry + key 规则）
 
   **What to do**:
   - 在 `validate_parent_locator` 增加：
@@ -346,7 +346,7 @@ Wave 3 (收敛与全量): Task 10
 
   **Commit**: YES | Message: `fix(validation): enforce strict parent locator conformance` | Files: `src/validation.rs`, `tests/integration_test.rs`
 
-- [ ] 7. 固化 `validate_parent_chain` 范围并补回归（单跳）
+- [x] 7. 固化 `validate_parent_chain` 范围并补回归（单跳）
 
   **What to do**:
   - 保持单跳设计，明确行为：只校验 child->direct parent 的 DataWriteGuid 匹配。
@@ -386,7 +386,7 @@ Wave 3 (收敛与全量): Task 10
 
   **Commit**: YES | Message: `test(validation): lock single-hop parent chain behavior` | Files: `tests/integration_test.rs`, `src/validation.rs`
 
-- [ ] 8. 明确并守护 ReadOnlyNoReplay 兼容例外
+- [x] 8. 明确并守护 ReadOnlyNoReplay 兼容例外
 
   **What to do**:
   - 在文档与测试中明确：`ReadOnlyNoReplay` 为 compatibility mode，不宣称严格规范一致。
@@ -428,7 +428,7 @@ Wave 3 (收敛与全量): Task 10
 
   **Commit**: YES | Message: `docs(file): mark readonly-no-replay as compatibility exception` | Files: `README.md`, `docs/API.md`, `tests/integration_test.rs`
 
-- [ ] 9. 执行 targeted gap suite（可重复）
+- [x] 9. 执行 targeted gap suite（可重复）
 
   **What to do**:
   - 顺序运行本计划新增测试与现有相关回归，输出证据文件。
@@ -467,7 +467,7 @@ Wave 3 (收敛与全量): Task 10
 
   **Commit**: NO | Message: `N/A` | Files: `N/A`
 
-- [ ] 10. 全量回归与静态检查收口
+- [x] 10. 全量回归与静态检查收口
 
   **What to do**:
   - 运行 workspace 全量测试和 clippy。
@@ -512,10 +512,10 @@ Wave 3 (收敛与全量): Task 10
 > 4 review agents run in PARALLEL. ALL must APPROVE. Present consolidated results to user and get explicit "okay" before completing.
 > **Do NOT auto-proceed after verification. Wait for user's explicit approval before marking work complete.**
 > **Never mark F1-F4 as checked before getting user's okay.**
-- [ ] F1. Plan Compliance Audit — oracle
-- [ ] F2. Code Quality Review — unspecified-high
-- [ ] F3. Real Manual QA — unspecified-high (+ playwright if UI)
-- [ ] F4. Scope Fidelity Check — deep
+- [x] F1. Plan Compliance Audit — oracle
+- [x] F2. Code Quality Review — unspecified-high
+- [x] F3. Real Manual QA — unspecified-high (+ playwright if UI)
+- [x] F4. Scope Fidelity Check — deep
 
 ## Commit Strategy
 - 按任务原子提交（2/3/5/6/8 可独立提交）。
