@@ -1,0 +1,12 @@
+# task-3 overreach guard
+date: 2026-04-29
+
+检查项: plan 未承诺 API 是否被新增为公开承诺
+
+- SectionsConfig: 0 条
+- crc32c_with_zero_field: 0 条
+- IO::write_sectors: 1 条（仅出现在“非承诺边界”声明）
+- IO::read_sectors: 1 条（仅出现在“非承诺边界”声明）
+- File 扩展 getter（virtual_disk_size/block_size/logical_sector_size/is_fixed/has_parent/has_pending_logs）: 0 条
+
+结论: 越界新增 = 0（write_sectors/read_sectors 仅用于禁止承诺声明，不构成新增公开契约）

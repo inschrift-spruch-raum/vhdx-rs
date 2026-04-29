@@ -1,0 +1,95 @@
+# task-7 最终差异报告（计划承诺对齐）
+date: 2026-04-29
+scope: docs/plan/API.md 承诺面 vs 当前源码/文档证据（T1-T6）
+
+## 一、已满足项（Satisfied）
+
+### S-01 计划承诺面分类已闭环（0 未归类）
+- 分类: 已满足
+- 证据:
+  - `.sisyphus/evidence/task-1-plan-matrix.txt:8-55`（全量条目均归入 Plan-required / Plan-not-required / Optional-spec）
+  - `.sisyphus/evidence/task-1-plan-matrix.txt:65-66`（真实能力缺失条目已声明“仅记录不修复”，未落入未判定）
+- 优先级: P0（已完成）
+- 建议: 维持三分类口径冻结，后续新增条目沿用同口径，避免产生“未判定”。
+
+### S-02 `IO::write_sectors` 阻断判定完成并下放技术债
+- 分类: 已满足
+- 证据:
+  - `.sisyphus/evidence/task-2-io-write.txt:11-24`（计划 IO 承诺仅 `IO::sector -> Sector::read/write`）
+  - `.sisyphus/evidence/task-2-io-write.txt:25-39`（`pub(crate)` + 未导出 + stub 证据链）
+  - `.sisyphus/evidence/task-2-io-write.txt:60-62`（非阻断结论）
+- 优先级: P0（已完成）
+- 建议: 将 TD-IO-BATCH-OPS 与并发可写签名设计（`&mut self`/写锁）作为独立设计任务推进。
+
+### S-03 文档承诺面对齐完成（防越界）
+- 分类: 已满足
+- 证据:
+  - `.sisyphus/evidence/task-3-doc-align.txt:5-24`（移除越界承诺、补齐承诺命名空间、保留非承诺边界）
+  - `docs/API.md:1-5,59-142`（明确“以 plan 为基线”“非承诺边界”）
+- 优先级: P0（已完成）
+- 建议: 后续 API 文档变更先对照 `docs/plan/API.md`，禁止“实现存在即承诺”。
+
+### S-04 checksum 结论已降级为“时机评估”，消除误报
+- 分类: 已满足
+- 证据:
+  - `.sisyphus/evidence/task-4-checksum-wording.txt:10-93`（Header/RegionTable/Log CRC-32C 覆盖证据）
+  - `.sisyphus/evidence/task-4-checksum-wording.txt:103-107,129-135`（正确措辞与非阻断结论）
+- 优先级: P0（已完成）
+- 建议: 将“open 阶段是否自动校验”作为策略讨论，不再表述为能力缺失。
+
+### S-05 backlog 拆分完成且与 blocking 零交集
+- 分类: 已满足
+- 证据:
+  - `.sisyphus/evidence/task-5-backlog-split.txt:18-23`（三条 backlog：BL-LOG-WRITE / BL-DATA-WRITE-GUID / BL-DIFF-BITMAP）
+  - `.sisyphus/evidence/task-5-backlog-split.txt:116-125`（blocking∩backlog=空集）
+- 优先级: P0（已完成）
+- 建议: 保持 backlog 非阻断属性，按 P2/P3 优先级分期实施。
+
+### S-06 质量闸门通过（测试/静态检查/文档构建）
+- 分类: 已满足
+- 证据:
+  - `.sisyphus/evidence/task-6-regression.txt:8-20`（`cargo test --workspace` 270/270）
+  - `.sisyphus/evidence/task-6-regression.txt:33-37`（`cargo clippy --workspace` 0 warning）
+  - `.sisyphus/evidence/task-6-regression.txt:41-57`（`cargo doc --no-deps` exit 0，13 条既有 cosmetic warnings）
+- 优先级: P0（已完成）
+- 建议: 将 rustdoc warning 作为独立文档清债项处理，不阻断当前计划承诺验收。
+
+## 二、部分满足项（Partially Satisfied）
+
+- 无。
+
+## 三、不满足项（Unsatisfied）
+
+- 无。
+
+## 四、backlog 非阻断项与后续入口
+
+### BL-LOG-WRITE（P2）
+- 分类: backlog（非阻断）
+- 证据: `.sisyphus/evidence/task-5-backlog-split.txt:28-54`
+- 优先级: P2
+- 建议入口: 先设计日志写入 API（`Log::write_entry` 或 `LogWriter`），再接入 `allocate_payload_block` 前置事务。
+
+### BL-DIFF-BITMAP（P2）
+- 分类: backlog（非阻断）
+- 证据: `.sisyphus/evidence/task-5-backlog-split.txt:86-113`
+- 优先级: P2
+- 建议入口: 在差分写入路径引入 `PartiallyPresent + sector bitmap` 维护，且与 BL-LOG-WRITE 联动。
+
+### BL-DATA-WRITE-GUID（P3）
+- 分类: backlog（非阻断）
+- 证据: `.sisyphus/evidence/task-5-backlog-split.txt:57-83`
+- 优先级: P3
+- 建议入口: 先确定 GUID 更新频率策略（每写/会话/批量），再实现双头交替提交。
+
+## 五、最终判定
+
+### 计划承诺面 100% 对齐：成立
+
+依据：
+1. 承诺分类闭环且 0 未归类（T1，见 `task-1-plan-matrix.txt:8-55`）。
+2. 越界承诺已消除、文档与 plan 对齐（T3，见 `task-3-doc-align.txt:5-28` 与 `docs/API.md:1-5,139-142`）。
+3. 所有剩余差异均已归档为 backlog 非阻断项且与 blocking 零交集（T5，见 `task-5-backlog-split.txt:116-125`）。
+4. 质量闸门命令全部 exit 0（T6，见 `task-6-regression.txt:61-64`）。
+
+结论：当前轮次不存在阻断性未满足差异；可进入 Final Verification Wave（F1-F4 并行审查）。

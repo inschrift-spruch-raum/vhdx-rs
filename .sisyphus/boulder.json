@@ -1,0 +1,83 @@
+{
+  "active_plan": "C:\\Users\\Raum\\Documents\\InfoBrain\\program-poj\\linkfs\\vhdx-rs\\.sisyphus\\plans\\vhdx-plan-gap-remediation.md",
+  "started_at": "2026-04-29T14:03:26.488Z",
+  "session_ids": [
+    "ses_22672be73fferlyt5h9sdlMWkj",
+    "ses_22671eb57ffehVfCWnKaGY9v0X",
+    "ses_22671eb35ffelny3EW84g2grZQ",
+    "ses_22671eb34ffeIZJCeoM75JFq4w"
+  ],
+  "session_origins": {
+    "ses_22672be73fferlyt5h9sdlMWkj": "direct",
+    "ses_22671eb57ffehVfCWnKaGY9v0X": "appended",
+    "ses_22671eb35ffelny3EW84g2grZQ": "appended",
+    "ses_22671eb34ffeIZJCeoM75JFq4w": "appended"
+  },
+  "plan_name": "vhdx-plan-gap-remediation",
+  "agent": "atlas",
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "冻结“计划承诺面”判定矩阵",
+      "session_id": "ses_2266b2deaffeFHHIDAERcatViv",
+      "agent": "Sisyphus-Junior",
+      "category": "deep",
+      "updated_at": "2026-04-29T14:15:58.010Z"
+    },
+    "todo:2": {
+      "task_key": "todo:2",
+      "task_label": "2",
+      "task_title": "处理 `IO::write_sectors` 计划阻断判定与整改",
+      "session_id": "ses_2262ef2f5ffePfiPMzdAFF0sfC",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-low",
+      "updated_at": "2026-04-29T15:36:40.312Z"
+    },
+    "todo:3": {
+      "task_key": "todo:3",
+      "task_label": "3",
+      "task_title": "对齐 `docs/API.md` 到 `docs/plan/API.md`",
+      "session_id": "ses_2261c59adffeNPfpQzUOy5GClN",
+      "agent": "Sisyphus-Junior",
+      "category": "writing",
+      "updated_at": "2026-04-29T15:41:59.141Z"
+    },
+    "todo:5": {
+      "task_key": "todo:5",
+      "task_label": "5",
+      "task_title": "规范增强 backlog 拆分（非阻断）",
+      "session_id": "ses_2261716ffffeB4ZrTWO4dxglsX",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-low",
+      "updated_at": "2026-04-29T15:47:38.526Z"
+    },
+    "todo:6": {
+      "task_key": "todo:6",
+      "task_label": "6",
+      "task_title": "全量回归与质量闸门",
+      "session_id": "ses_22612c9a5ffepPsX3Y71CvJePS",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-low",
+      "updated_at": "2026-04-29T15:50:34.486Z"
+    },
+    "todo:7": {
+      "task_key": "todo:7",
+      "task_label": "7",
+      "task_title": "交付最终差异报告与执行建议",
+      "session_id": "ses_2260fea63fferB8LvT8MXuv6UQ",
+      "agent": "Sisyphus-Junior",
+      "category": "deep",
+      "updated_at": "2026-04-29T15:54:45.074Z"
+    },
+    "final-wave:f1": {
+      "task_key": "final-wave:f1",
+      "task_label": "F1",
+      "task_title": "Plan Compliance Audit — oracle",
+      "session_id": "ses_2260c005bffe2aoq86KpaKdvUV",
+      "agent": "oracle",
+      "category": "",
+      "updated_at": "2026-04-29T15:57:02.611Z"
+    }
+  }
+}

@@ -78,7 +78,7 @@ Wave 3: 回归验证与发布材料（qa/review）
 > Implementation + Test = ONE task. Never separate.
 > EVERY task MUST have: Agent Profile + Parallelization + QA Scenarios.
 
-- [ ] 1. 冻结“计划承诺面”判定矩阵
+- [x] 1. 冻结“计划承诺面”判定矩阵
 
   **What to do**: 从 `docs/plan/API.md` 提取承诺 API/语义，逐条映射到实际符号；输出 `Plan-required / Plan-not-required / Optional-spec` 三列矩阵。
   **Must NOT do**: 不进入代码改动；不引入 spec-only 新需求。
@@ -116,7 +116,7 @@ Wave 3: 回归验证与发布材料（qa/review）
 
   **Commit**: NO | Message: `n/a` | Files: []
 
-- [ ] 2. 处理 `IO::write_sectors` 计划阻断判定与整改
+- [x] 2. 处理 `IO::write_sectors` 计划阻断判定与整改
 
   **What to do**: 若 T1 结论为 `IO::write_sectors` 属于计划承诺，则实现可用写入或移除误导承诺路径；若非承诺，记录为技术债并从阻断列表移除。
   **Must NOT do**: 不改变 `IO::sector`/`Sector::write` 既有对外语义。
@@ -154,7 +154,7 @@ Wave 3: 回归验证与发布材料（qa/review）
 
   **Commit**: YES | Message: `fix(io): align write_sectors handling with plan contract` | Files: [src/io_module.rs, tests/*, docs/*]
 
-- [ ] 3. 对齐 `docs/API.md` 到 `docs/plan/API.md`
+- [x] 3. 对齐 `docs/API.md` 到 `docs/plan/API.md`
 
   **What to do**: 修正文档中与计划承诺冲突/缺漏项（导出面、命名空间、语义说明），保证“以计划为准”。
   **Must NOT do**: 不借机扩展新 API；不改动实现语义。
@@ -192,7 +192,7 @@ Wave 3: 回归验证与发布材料（qa/review）
 
   **Commit**: YES | Message: `docs(api): align exported contract with plan baseline` | Files: [docs/API.md]
 
-- [ ] 4. 降级误报：checksum-on-open 从“缺失”改为“覆盖评估”
+- [x] 4. 降级误报：checksum-on-open 从“缺失”改为“覆盖评估”
 
   **What to do**: 在差异报告中修正表述，明确 `SpecValidator` 路径已提供 CRC 校验；仅评估是否需要在 open 阶段前置。
   **Must NOT do**: 不将其强行升级为阻断。
@@ -229,7 +229,7 @@ Wave 3: 回归验证与发布材料（qa/review）
 
   **Commit**: NO | Message: `n/a` | Files: []
 
-- [ ] 5. 规范增强 backlog 拆分（非阻断）
+- [x] 5. 规范增强 backlog 拆分（非阻断）
 
   **What to do**: 将 log-write crash consistency、DataWriteGuid 更新、differencing bitmap 写入整理为单独里程碑与优先级，不进入本轮 DoD。
   **Must NOT do**: 不把 backlog 项重新引入当前阻断。
@@ -266,7 +266,7 @@ Wave 3: 回归验证与发布材料（qa/review）
 
   **Commit**: NO | Message: `n/a` | Files: []
 
-- [ ] 6. 全量回归与质量闸门
+- [x] 6. 全量回归与质量闸门
 
   **What to do**: 运行 `test/clippy/doc`，产出最终验收证据与结论摘要。
   **Must NOT do**: 不跳过失败项；不人工裁定通过。
@@ -304,7 +304,7 @@ Wave 3: 回归验证与发布材料（qa/review）
 
   **Commit**: NO | Message: `n/a` | Files: []
 
-- [ ] 7. 交付最终差异报告与执行建议
+- [x] 7. 交付最终差异报告与执行建议
 
   **What to do**: 输出最终报告（已满足/部分满足/不满足），并给出下一步执行入口。
   **Must NOT do**: 不遗留“未判定”条目。
@@ -346,10 +346,10 @@ Wave 3: 回归验证与发布材料（qa/review）
 > 4 review agents run in PARALLEL. ALL must APPROVE. Present consolidated results to user and get explicit "okay" before completing.
 > **Do NOT auto-proceed after verification. Wait for user's explicit approval before marking work complete.**
 > **Never mark F1-F4 as checked before getting user's okay.** Rejection or user feedback -> fix -> re-run -> present again -> wait for okay.
-- [ ] F1. Plan Compliance Audit — oracle
-- [ ] F2. Code Quality Review — unspecified-high
-- [ ] F3. Real Manual QA — unspecified-high (+ playwright if UI)
-- [ ] F4. Scope Fidelity Check — deep
+- [x] F1. Plan Compliance Audit — oracle
+- [x] F2. Code Quality Review — unspecified-high
+- [x] F3. Real Manual QA — unspecified-high (+ playwright if UI)
+- [x] F4. Scope Fidelity Check — deep
 
 ## Commit Strategy
 - 仅在任务明确标注 `Commit: YES` 时提交。

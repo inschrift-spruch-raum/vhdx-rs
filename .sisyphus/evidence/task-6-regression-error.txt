@@ -1,0 +1,72 @@
+# Task 6: Error Template Evidence (Demonstration)
+# Date: 2026-04-29
+# NOTE: This file demonstrates the structured error recording format.
+#       All commands actually passed. This is a TEMPLATE for failure scenarios.
+
+================================================================================
+## FAILURE TEMPLATE
+================================================================================
+
+If any command had failed, the evidence would follow this structure:
+
+---
+### FAILURE: cargo test --workspace
+Exit Code: 1 (non-zero = failure)
+Failed Test(s):
+  - test_name :: module::path
+    Location: src/file.rs:248
+    Error: "write to unallocated block returned error"
+    Panic message: "assertion failed: ..."
+
+Structured Error Summary:
+  Total tests:        270
+  Passed:             269
+  Failed:             1
+  Ignored:            0
+  Affected module:    src/file.rs (dynamic block allocation)
+
+Retry Suggestion:
+  1. Examine the failing test: `cargo test test_name -- --nocapture`
+  2. Review recent changes to src/file.rs in the block allocation path
+  3. Check if BAT entry state transitions are correct for the failing case
+  4. Re-run after fix: `cargo test --workspace`
+---
+
+---
+### FAILURE: cargo clippy --workspace
+Exit Code: 1
+Warning/Error:
+  error: `xxx` is never used
+    --> src/lib.rs:42:5
+     |
+  42 |     pub fn unused_function() {}
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Retry Suggestion:
+  1. Remove or prefix with underscore the unused item
+  2. Re-run: `cargo clippy --workspace`
+---
+
+---
+### FAILURE: cargo doc --no-deps
+Exit Code: 1 (only if errors, not warnings)
+Error:
+  error: unresolved link to `NonExistentType`
+    --> src/lib.rs:100:5
+
+Retry Suggestion:
+  1. Fix the broken intra-doc link or escape brackets
+  2. Re-run: `cargo doc --no-deps`
+---
+
+================================================================================
+## ACTUAL OUTCOME (for reference)
+================================================================================
+
+All commands passed successfully. See task-6-regression.txt for full details.
+This template is retained for future reference if regressions occur.
+
+Actual results:
+  cargo test   : exit=0, 270/270 passed
+  cargo clippy : exit=0, 0 warnings
+  cargo doc    : exit=0, 13 cosmetic warnings (no errors)

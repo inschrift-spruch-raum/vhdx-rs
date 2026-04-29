@@ -1,0 +1,66 @@
+## task-1 计划承诺面判定矩阵（基线：docs/plan/API.md）
+
+判定口径：
+1) **Plan-required**：`docs/plan/API.md` 明确作为公开 API/CLI 承诺，且属于当前实现/导出面应对齐范围。  
+2) **Plan-not-required**：计划文档里出现，但不是“对外承诺面”的强制项（如内部实现细节、示例代码路径、非公开方法）。  
+3) **Optional-spec**：计划文档中已显式标注“可选/兼容别名/兼容模式例外”等非强制项。
+
+| 分类 | Plan 条目 | 实际符号映射（path + symbol） | 依据 |
+|---|---|---|---|
+| Plan-required | `File::open/create/sections/io/validator/inner` | `src/file.rs::impl File::{open,create,sections,io,validator,inner}`; root 导出 `src/lib.rs::pub use file::File` | 计划 API 树 + 详细 API 1 节 |
+| Plan-required | `OpenOptions::{write,strict,log_replay,finish}` | `src/file.rs::impl OpenOptions::{write,strict,log_replay,finish}`; root 导出 `src/lib.rs::pub use file::OpenOptions` | 计划 API 树 + 详细 API 2 节 |
+| Plan-required | `CreateOptions::{size,fixed,block_size,logical_sector_size,physical_sector_size,parent_path,finish}` | `src/file.rs::impl CreateOptions::{size,fixed,block_size,logical_sector_size,physical_sector_size,parent_path,finish}`; root 导出 `src/lib.rs::pub use file::CreateOptions` | 计划 API 树 + 详细 API 3 节 |
+| Plan-required | `LogReplayPolicy::{Require,Auto,InMemoryOnReadOnly,ReadOnlyNoReplay}` | `src/file.rs::enum LogReplayPolicy` + root 导出 `src/lib.rs` | 计划 API 树与详细枚举一致 |
+| Plan-required | `ParentChainInfo{child,parent,linkage_matched}` | `src/file.rs::struct ParentChainInfo` + root 导出 `src/lib.rs` | 计划 API 树 |
+| Optional-spec | `ReadOnlyNoReplay` 为“兼容模式例外” | `docs/API.md` 对该变体标注兼容例外；`src/file.rs::LogReplayPolicy::ReadOnlyNoReplay` | 计划与现文档均标记非严格路径 |
+| Plan-required | `validation::SpecValidator` 及 `validate_file/header/region_table/bat/metadata/validate_required_metadata_items/log/parent_locator/parent_chain` | `src/validation.rs::impl SpecValidator` 全部存在；`File::validator()` 在 `src/file.rs` | 计划 validation 模块定义 |
+| Optional-spec | `ValidationIssue`（计划中“可选：结构化校验问题”） | `src/validation.rs::struct ValidationIssue`；root 导出 `src/lib.rs` | 计划文本显式“可选” |
+| Plan-required | `section::Sections::{header,bat,metadata,log}` | `src/sections.rs::impl Sections::{header,bat,metadata,log}`；`src/lib.rs::mod section` re-export `Sections` | 计划 section 容器 |
+| Plan-required | `section::Header::{file_type,header,region_table}` | `src/sections/header.rs::impl Header::{file_type,header,region_table}`; re-export 于 `src/sections.rs`,`src/lib.rs` | 计划 Header API |
+| Plan-required | `section::FileTypeIdentifier` 字段/访问 | `src/sections/header.rs::struct FileTypeIdentifier`（含 `signature`,`creator` 字段与方法） | 计划结构视图 |
+| Plan-required | `section::HeaderStructure` 字段/访问 | `src/sections/header.rs::struct HeaderStructure`（计划字段均存在） | 计划结构视图 |
+| Plan-required | `section::RegionTable/RegionTableHeader/RegionTableEntry` | `src/sections/header.rs` 三结构体均存在并公开；`src/lib.rs` re-export | 计划 API 树 |
+| Plan-required | `section::Bat::{entry,entries,len}` | `src/sections/bat.rs::impl Bat::{entry,entries,len}` | 计划 BAT API |
+| Plan-not-required | `Bat::is_empty` | `src/sections/bat.rs::impl Bat::is_empty` | 代码扩展能力，计划未强制 |
+| Plan-required | `section::BatEntry{state,file_offset_mb}` | `src/sections/bat.rs::struct BatEntry` | 计划 BAT entry |
+| Plan-required | `section::BatState/PayloadBlockState/SectorBitmapState` | `src/sections/bat.rs` 三枚举均存在 | 计划 BAT 状态 |
+| Plan-required | `section::Metadata::{table,items}` | `src/sections.rs::impl Metadata::{table,items}`（外层包装） + `src/sections/metadata.rs`（内层） | 计划 metadata API |
+| Plan-required | `section::MetadataTable::{header,entry,entries}` | `src/sections/metadata.rs::impl MetadataTable::{header,entry,entries}` | 计划 metadata table |
+| Plan-required | `section::TableHeader/TableEntry/EntryFlags` | `src/sections/metadata.rs` 对应结构与方法存在 | 计划 API 树 |
+| Plan-required | `section::MetadataItems::{file_parameters,virtual_disk_size,virtual_disk_id,logical_sector_size,physical_sector_size,parent_locator}` | `src/sections/metadata.rs::impl MetadataItems` 对应方法存在 | 计划 metadata items |
+| Plan-required | `section::FileParameters::{block_size,leave_block_allocated,has_parent}` | `src/sections/metadata.rs::impl FileParameters` | 计划 API |
+| Plan-required | `section::ParentLocator::{header,entry,entries,key_value_data,resolve_parent_path}` | `src/sections/metadata.rs::impl ParentLocator` | 计划 API |
+| Plan-required | `section::LocatorHeader/KeyValueEntry::{key,value}` | `src/sections/metadata.rs` 对应结构与方法存在 | 计划 API |
+| Plan-required | `section::Log::{entry,entries}` | `src/sections.rs::impl Log::{entry,entries}`（包装） + `src/sections/log.rs` | 计划 log API |
+| Plan-required | `section::Entry`（LogEntry 别名） | `src/lib.rs::pub use crate::sections::LogEntry as Entry` | 计划中的 Entry 兼容路径 |
+| Plan-required | `section::LogEntry::{header,descriptor,descriptors,data}` | `src/sections/log.rs::impl LogEntry` | 计划 log entry API |
+| Plan-required | `section::Descriptor::{Data,Zero}` + `DataDescriptor/ZeroDescriptor/LogEntryHeader/DataSector` | `src/sections/log.rs` 对应枚举/结构体公开 | 计划 log 子结构 |
+| Plan-required | `IO::sector` | `src/io_module.rs::impl IO::sector`; root 导出 `src/lib.rs::pub use io_module::IO` | 计划 IO 入口 |
+| Plan-required | `Sector::{payload,read,write}` | `src/io_module.rs::impl Sector::{payload,read,write}` | 计划 Sector API |
+| Plan-required | `PayloadBlock` | `src/io_module.rs::struct PayloadBlock` | 计划 IO 结构 |
+| Plan-not-required | `IO::new` | `src/io_module.rs::IO::new` | 计划作为示例签名存在，但用户经 `File::io()` 获取；非关键承诺 |
+| **Plan-not-required** | **`IO::write_sectors`（必须判定项）** | `src/io_module.rs::pub(crate) fn write_sectors(...)`（crate-private，且注释“not yet fully implemented”） | 计划对外 IO 承诺为 `IO::sector -> Sector::write`；该函数未公开导出（`src/lib.rs` 仅导出 `IO` 类型，不导出 crate-private 方法），故**不在计划承诺面** |
+| Plan-not-required | `IO::read_sectors` | `src/io_module.rs::pub(crate) fn read_sectors(...)` | 同上：crate-private，非公开承诺 |
+| Plan-required | `Guid` | `src/lib.rs::pub use types::Guid` | 计划 root API |
+| Plan-required | `Error`（错误类型存在） | `src/lib.rs::pub use error::Error`; `src/error.rs` | 计划错误类型承诺 |
+| Optional-spec | Error 具体变体“示例清单” | `src/error.rs`（实际变体集合） | 计划列出的是设计态示意；非逐项强约束 |
+| Plan-required | CLI: `info/create/check/sections/diff` 命令树 | `vhdx-cli/src/cli.rs::enum Commands::{Info,Create,Check,Sections,Diff}` | 计划 CLI 树 |
+| Plan-required | CLI: `repair` 命令 | `vhdx-cli/src/cli.rs::Commands::Repair` + `vhdx-cli/src/commands/repair.rs::cmd_repair` | 计划 CLI 树 |
+| Plan-required | CLI create 参数：`--size --type --block-size --parent --force` | `vhdx-cli/src/cli.rs::Commands::Create` 字段映射 `size,disk_type,block_size,parent,force` | 计划 CLI 树 |
+| Optional-spec | CLI `--disk-type` 兼容别名（低优先级） | `vhdx-cli/src/cli.rs::disk_type_compat` + `README.md` 契约说明 | 兼容入口，不是新增能力 |
+| Plan-required | CLI check 参数：`--repair --log-replay` | `vhdx-cli/src/cli.rs::Check{repair,log_replay}` + `vhdx-cli/src/commands/check.rs` | 计划 CLI 树 |
+| Plan-required | CLI sections 子命令：`header/bat/metadata/log` | `vhdx-cli/src/cli.rs::enum SectionCommand` | 计划 CLI 树 |
+| Plan-required | CLI diff 子命令：`parent/chain` | `vhdx-cli/src/cli.rs::enum DiffCommand` | 计划 CLI 树 |
+| Optional-spec | `section::StandardItems::*` 常量命名空间（计划在详细设计给出） | `src/lib.rs::section::StandardItems::{FILE_PARAMETERS,...,LOCATOR_TYPE_VHDX}` | 属便利常量路径，可选增强，不改变核心能力 |
+
+---
+
+### 命名差异但可兼容（非能力缺失）
+
+1. `section::Entry`：计划使用 `Entry`，实现中主类型名为 `LogEntry`，通过别名 `Entry = LogEntry` 保持兼容（`src/lib.rs`）。  
+2. CLI `--type` 与 `--disk-type`：`--disk-type` 为兼容别名，能力不扩展（`vhdx-cli/src/cli.rs` + README 契约）。
+
+### 真实能力缺失（本任务仅记录，不修复）
+
+1. `IO::write_sectors` 尚未完成，但其为 `pub(crate)` 且不在计划公开承诺面；因此**不阻断本任务“计划承诺面”判定**。  
+2. `IO::read_sectors` 同为 `pub(crate)`，不属于公开承诺面。

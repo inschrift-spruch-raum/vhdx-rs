@@ -1,0 +1,43 @@
+## task-2 IO::write_sectors 阻断下放记录
+
+### 从 blocking 移至 tech-debt 的依据
+
+**阻断项**：`IO::write_sectors` 未完全实现，始终返回 `InvalidParameter` 错误。
+
+**下放依据**：
+
+1. **计划基线不含此项**
+   - docs/plan/API.md §9 IO 模块承诺面：`IO::sector()` → `Sector::read/write`
+   - 设计约束明确："唯一数据平面入口：所有虚拟磁盘读写必须经由 IO::sector -> Sector::read/write"
+   - `write_sectors` 不在计划公开签名中
+
+2. **可见性为 crate-private**
+   - `src/io_module.rs:107` — `pub(crate) fn write_sectors(...)`
+   - 外部用户无法调用，不在公共 API 面
+
+3. **无调用点、无测试覆盖**
+   - `#[allow(dead_code)]` 标注确认当前无调用
+   - tests/integration_test.rs 中无 `write_sector` 引用（Select-String 验证）
+
+4. **与 `read_sectors` 对称**
+   - `IO::read_sectors` 同为 `pub(crate)` + `#[allow(dead_code)]`
+   - T1 矩阵已将两者均归为 Plan-not-required（第42-43行）
+
+### 后续追踪建议
+
+**技术债 ID**: TD-IO-BATCH-OPS
+**优先级**: 低（当前无外部调用需求）
+**建议时机**: 当以下条件满足时可考虑实现：
+1. 有明确的批量写入外部需求（如性能优化场景）
+2. 需要将其从 `pub(crate)` 升级为 `pub`
+3. 与 Dynamic 磁盘块分配机制协同设计（当前 Dynamic 写入本身也有限制，见 AGENTS.md 已知问题）
+
+**风险评估**:
+- 当前无风险：函数不可从外部调用
+- 若未来公开需注意：需 `&mut self` 或写锁机制，当前签名 `&self` 在并发写入时不安全
+
+### 阻断列表变更
+
+| 项目 | 变更前 | 变更后 |
+|------|--------|--------|
+| IO::write_sectors | blocking（待判定） | tech-debt（TD-IO-BATCH-OPS） |

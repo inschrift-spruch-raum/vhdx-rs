@@ -1,0 +1,64 @@
+# Task 6: Full Regression & Quality Gate Evidence
+# Date: 2026-04-29
+# Executor: Sisyphus-Junior (glm-5.1)
+
+================================================================================
+## Command 1: cargo test --workspace
+================================================================================
+Exit Code: 0
+Status: PASS
+
+Summary:
+  - vhdx-rs (lib) unit tests:       36 passed, 0 failed
+  - api_surface_smoke:              32 passed, 0 failed
+  - integration_test:              144 passed, 0 failed
+  - vhdx-tool (bin) unit tests:      0 tests (no unit tests in binary)
+  - cli_integration:                55 passed, 0 failed
+  - doc-tests:                       3 passed, 0 failed
+  ---------------------------------------------------
+  TOTAL:                           270 tests, ALL PASSED
+
+Notable coverage areas:
+  - Fixed/Dynamic/Differencing disk creation and read/write
+  - BAT entry parsing and state transitions
+  - Log replay (active sequence, trailing bytes, combined)
+  - Parent chain validation
+  - File validator (header, region table, BAT, log, metadata)
+  - CLI commands (info, create, check, repair, sections, diff)
+  - API surface smoke tests (all public types importable)
+
+================================================================================
+## Command 2: cargo clippy --workspace
+================================================================================
+Exit Code: 0
+Status: PASS (zero warnings, zero errors)
+
+No clippy warnings or errors reported.
+
+================================================================================
+## Command 3: cargo doc --no-deps
+================================================================================
+Exit Code: 0
+Status: PASS (with 13 warnings)
+
+Warnings breakdown:
+  - 12 unresolved intra-doc links in src/lib.rs (lines 29, 49-52):
+    Types referenced in module-level doc (`Sections`, `Bat`, `BatEntry`,
+    `Header`, `HeaderStructure`, `Metadata`, `MetadataTable`,
+    `FileParameters`, `Log`, `LogEntry`, `Entry`, `LogEntryHeader`)
+    are re-exported from submodules but not resolvable in the module
+    doc context. These are cosmetic issues only.
+  - 1 ambiguous link in src/error.rs:20:
+    `Error` is both an enum and a derive macro. Suggested fix:
+    use `[enum@Error]` instead of `[Error]`.
+
+All warnings are cosmetic (broken_intra_doc_links, ambiguous links).
+No errors. Documentation was generated successfully.
+
+================================================================================
+## OVERALL VERDICT
+================================================================================
+All 3 quality gate commands: PASS
+  cargo test   : PASS (270/270 tests)
+  cargo clippy : PASS (0 warnings)
+  cargo doc    : PASS (13 cosmetic warnings, 0 errors)
