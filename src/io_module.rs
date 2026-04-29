@@ -72,6 +72,7 @@ impl<'a> IO<'a> {
     }
 
     /// 批量读取连续扇区数据到缓冲区
+    #[allow(dead_code)]
     pub(crate) fn read_sectors(&self, start_sector: u64, buf: &mut [u8]) -> Result<usize> {
         let sector_size = self.file.logical_sector_size() as usize;
         let num_sectors = buf.len() / sector_size;
@@ -102,6 +103,7 @@ impl<'a> IO<'a> {
     }
 
     /// 批量写入连续扇区（当前未完全实现）
+    #[allow(dead_code)]
     pub(crate) fn write_sectors(&self, _start_sector: u64, data: &[u8]) -> Result<usize> {
         let sector_size = self.file.logical_sector_size() as usize;
         let _num_sectors = data.len() / sector_size;

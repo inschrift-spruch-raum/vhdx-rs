@@ -154,6 +154,7 @@ pub mod metadata_guids {
 ///
 /// 使用位运算实现高效对齐：`(value + alignment - 1) & !(alignment - 1)`
 /// 要求 alignment 必须是 2 的幂次。
+#[must_use]
 pub const fn align_up(value: u64, alignment: u64) -> u64 {
     (value + alignment - 1) & !(alignment - 1)
 }
@@ -161,6 +162,7 @@ pub const fn align_up(value: u64, alignment: u64) -> u64 {
 /// 将 value 向上对齐到 1MB 边界
 ///
 /// VHDX 文件格式要求所有区域按 1MB 对齐（MS-VHDX §2.1）。
+#[must_use]
 pub const fn align_1mib(value: u64) -> u64 {
     align_up(value, MiB)
 }

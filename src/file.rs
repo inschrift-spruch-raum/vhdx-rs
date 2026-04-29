@@ -137,7 +137,7 @@ pub struct ParentChainInfo {
     pub child: PathBuf,
     /// 解析出的父盘路径
     pub parent: PathBuf,
-    /// 是否匹配 parent_linkage / parent_linkage2
+    /// 是否匹配 `parent_linkage` / `parent_linkage2`
     pub linkage_matched: bool,
 }
 
@@ -392,7 +392,7 @@ impl File {
                                     let bitmap_bit_start = block_within_chunk * sectors_per_block;
                                     let bitmap_byte_start = bm_offset + bitmap_bit_start / 8;
                                     let bitmap_byte_len =
-                                        usize::try_from((sectors_per_block + 7) / 8).unwrap_or(0);
+                                        usize::try_from(sectors_per_block.div_ceil(8)).unwrap_or(0);
 
                                     let mut bitmap_data = vec![0u8; bitmap_byte_len];
                                     file.seek(SeekFrom::Start(bitmap_byte_start))?;
@@ -563,7 +563,7 @@ impl File {
     /// 对于未分配的块（NotPresent/Zero/Unmapped），自动分配 payload block：
     /// 1. 计算文件末尾并对齐到 1MiB 边界
     /// 2. 将文件扩展以容纳新块
-    /// 3. 更新 BAT 条目为 FullyPresent + 新偏移并持久化到磁盘
+    /// 3. 更新 BAT 条目为 `FullyPresent` + 新偏移并持久化到磁盘
     fn write_dynamic(&self, offset: u64, data: &[u8]) -> Result<()> {
         let block_size = u64::from(self.block_size);
         let chunk_ratio = u64::from(Bat::calculate_chunk_ratio(
@@ -645,8 +645,8 @@ impl File {
 
     /// 为未分配的 payload block 分配文件空间并更新 BAT
     ///
-    /// 分配策略：在文件末尾对齐到 1MiB 边界处分配 block_size 字节空间，
-    /// 将 BAT 条目更新为 FullyPresent 状态并持久化到磁盘。
+    /// 分配策略：在文件末尾对齐到 1MiB 边界处分配 `block_size` 字节空间，
+    /// 将 BAT 条目更新为 `FullyPresent` 状态并持久化到磁盘。
     fn allocate_payload_block(&self, bat_payload_index: u64) -> Result<u64> {
         let block_size = u64::from(self.block_size);
 
@@ -692,6 +692,7 @@ impl File {
     }
 
     /// 内部使用的原始刷新方法（通过克隆文件句柄实现 &self 刷新）
+    #[allow(dead_code)]
     pub(crate) fn flush_raw(&self) -> Result<()> {
         let file = self.inner.try_clone()?;
         file.sync_all()?;
@@ -1049,7 +1050,7 @@ impl File {
     ) -> Result<ReplayOverlay> {
         let mut writes = Vec::new();
 
-        let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let file_len = file.metadata().map_or(0, |m| m.len());
 
         for entry in (*log).entries_for_log_guid(expected_log_guid)? {
             let header = entry.header();
@@ -1094,7 +1095,7 @@ impl File {
                             // 边界安全：leading + trailing 不得超过扇区数据长度
                             if leading
                                 .checked_add(trailing)
-                                .map_or(true, |sum| sum > sector_data.len())
+                                .is_none_or(|sum| sum > sector_data.len())
                             {
                                 return Err(Error::LogEntryCorrupted(format!(
                                     "leading_bytes ({leading}) + trailing_bytes ({trailing}) \
@@ -1199,13 +1200,12 @@ impl File {
         })?;
 
         // 确定当前活动头部及其序列号
-        let (active_seq, non_current_file_offset) = if parsed_h1.sequence_number()
-            > parsed_h2.sequence_number()
-        {
-            (parsed_h1.sequence_number(), HEADER_2_OFFSET as u64)
-        } else {
-            (parsed_h2.sequence_number(), HEADER_1_OFFSET as u64)
-        };
+        let (active_seq, non_current_file_offset) =
+            if parsed_h1.sequence_number() > parsed_h2.sequence_number() {
+                (parsed_h1.sequence_number(), HEADER_2_OFFSET as u64)
+            } else {
+                (parsed_h2.sequence_number(), HEADER_1_OFFSET as u64)
+            };
 
         // 生成新的 FileWriteGuid 标记回放后的会话
         let new_file_write_guid = Guid::from(uuid::Uuid::new_v4());
@@ -1234,12 +1234,12 @@ impl File {
     /// 2. 计算文件布局（各区域偏移和大小）
     /// 3. 写入文件类型标识符（含签名和创建者信息）
     /// 4. 写入元数据区域（表头 + 表项 + 数据）
-    /// 5. 写入 BAT（Fixed 类型标记所有块为 FullyPresent）
+    /// 5. 写入 BAT（Fixed 类型标记所有块为 `FullyPresent`）
     /// 6. 写入空的日志区域
     /// 7. 写入两个头部结构（含序列号和 GUID）
     /// 8. 写入两个区域表
     /// 9. Fixed 类型：预分配数据区域
-    /// 10. 重新打开文件（通过 open_file 验证完整性）
+    /// 10. 重新打开文件（通过 `open_file` 验证完整性）
     fn create_file(
         path: &Path, virtual_size: u64, fixed: bool, has_parent: bool, parent_path: Option<&Path>,
         block_size: u32, logical_sector_size: u32, physical_sector_size: u32,
@@ -1467,14 +1467,14 @@ impl File {
         )
     }
 
-    /// 创建 BAT 原始数据，Fixed 类型标记 Payload 块为 FullyPresent
+    /// 创建 BAT 原始数据，Fixed 类型标记 Payload 块为 `FullyPresent`
     ///
     /// 每个 BAT 条目为 8 字节，编码了块状态（高 4 位）和块偏移（低 60 位）。
     /// Fixed 类型将 Payload 块标记为 `FullyPresent`（状态值 6），并指向连续的数据区域。
     /// Sector Bitmap 条目保持为零（`NotPresent` + 偏移 0），因为 Fixed 类型不需要位图。
     /// Dynamic 类型创建全零 BAT（所有块标记为 `NotPresent`）。
     ///
-    /// BAT 条目按 chunk_ratio 个 Payload 条目后接 1 个 Sector Bitmap 条目交错排列
+    /// BAT 条目按 `chunk_ratio` 个 Payload 条目后接 1 个 Sector Bitmap 条目交错排列
     /// （MS-VHDX §2.5）。使用 `Bat::is_sector_bitmap_entry_index` 判断条目类型。
     fn create_bat_data(
         fixed: bool, bat_entries: u64, payload_offset: u64, block_size: u32,
@@ -1538,6 +1538,7 @@ pub struct OpenOptions {
 
 impl OpenOptions {
     /// 设置以写入模式打开文件
+    #[must_use]
     pub const fn write(mut self) -> Self {
         self.write = true;
         self
@@ -1546,12 +1547,14 @@ impl OpenOptions {
     /// 设置严格模式
     ///
     /// strict=true 时遇到 required 未知项应视为错误。
+    #[must_use]
     pub const fn strict(mut self, strict: bool) -> Self {
         self.strict = strict;
         self
     }
 
     /// 设置日志回放策略
+    #[must_use]
     pub const fn log_replay(mut self, policy: LogReplayPolicy) -> Self {
         self.log_replay = policy;
         self
@@ -1601,30 +1604,35 @@ pub struct CreateOptions {
 
 impl CreateOptions {
     /// 设置虚拟磁盘大小（字节），必填参数
+    #[must_use]
     pub const fn size(mut self, size: u64) -> Self {
         self.size = Some(size);
         self
     }
 
     /// 设置是否创建 Fixed 类型的虚拟磁盘
+    #[must_use]
     pub const fn fixed(mut self, fixed: bool) -> Self {
         self.fixed = fixed;
         self
     }
 
     /// 设置块大小（字节），默认 32MB，必须是 2 的幂且在合法范围内
+    #[must_use]
     pub const fn block_size(mut self, block_size: u32) -> Self {
         self.block_size = block_size;
         self
     }
 
     /// 设置逻辑扇区大小（字节）
+    #[must_use]
     pub const fn logical_sector_size(mut self, logical_sector_size: u32) -> Self {
         self.logical_sector_size = logical_sector_size;
         self
     }
 
     /// 设置物理扇区大小（字节）
+    #[must_use]
     pub const fn physical_sector_size(mut self, physical_sector_size: u32) -> Self {
         self.physical_sector_size = physical_sector_size;
         self
@@ -1643,12 +1651,12 @@ impl CreateOptions {
             .size
             .ok_or_else(|| Error::InvalidParameter("Virtual disk size is required".to_string()))?;
 
-        if let Some(parent_path) = &self.parent_path {
-            if !parent_path.exists() {
-                return Err(Error::ParentNotFound {
-                    path: parent_path.clone(),
-                });
-            }
+        if let Some(parent_path) = &self.parent_path
+            && !parent_path.exists()
+        {
+            return Err(Error::ParentNotFound {
+                path: parent_path.clone(),
+            });
         }
 
         let has_parent = self.has_parent || self.parent_path.is_some();
@@ -1799,8 +1807,8 @@ fn create_metadata(
 /// 构造可被当前解析器读取的 Parent Locator payload。
 ///
 /// 结构（MS-VHDX §2.6.2.6）：
-/// - **20 字节头部**：LocatorType GUID（16 字节）+ Reserved（2 字节，必须为 0）+ KeyValueCount（2 字节）
-/// - **N × 12 字节 entry table**：每项含 key_offset / value_offset / key_length / value_length
+/// - **20 字节头部**：`LocatorType` GUID（16 字节）+ Reserved（2 字节，必须为 0）+ KeyValueCount（2 字节）
+/// - **N × 12 字节 entry table**：每项含 `key_offset` / `value_offset` / `key_length` / `value_length`
 /// - **UTF-16LE key/value 数据区**：entry 中的偏移量相对于此区域起始位置
 fn build_parent_locator_payload(parent_path: &Path, parent_linkage: Guid) -> Result<Vec<u8>> {
     use crate::section::StandardItems::LOCATOR_TYPE_VHDX;
@@ -1859,7 +1867,7 @@ fn build_parent_locator_payload(parent_path: &Path, parent_linkage: Guid) -> Res
 
 /// 将字符串编码为 UTF-16LE 字节序列。
 fn encode_utf16le(value: &str) -> Vec<u8> {
-    value.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
+    value.encode_utf16().flat_map(u16::to_le_bytes).collect()
 }
 
 /// 构造区域表的原始字节数据，包含 BAT 和元数据区域条目，自动计算 CRC32C 校验和

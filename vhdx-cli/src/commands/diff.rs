@@ -120,19 +120,18 @@ fn walk_chain(start: &Path) {
             }
         };
 
-        let parent_path = match metadata
+        let parent_path = if let Some(p) = metadata
             .items()
             .parent_locator()
             .and_then(|loc| loc.resolve_parent_path())
         {
-            Some(p) => p,
-            None => {
-                eprintln!(
-                    "Error: Missing parent path in differencing disk: {}",
-                    current.display()
-                );
-                std::process::exit(1);
-            }
+            p
+        } else {
+            eprintln!(
+                "Error: Missing parent path in differencing disk: {}",
+                current.display()
+            );
+            std::process::exit(1);
         };
 
         // 将相对路径解析为绝对路径（基于当前磁盘所在目录）

@@ -66,7 +66,7 @@ pub struct Log<'a> {
     marker: PhantomData<&'a [u8]>,
 }
 
-impl<'a> Log<'a> {
+impl Log<'_> {
     /// 从原始数据创建日志实例
     #[must_use]
     pub const fn new(data: Vec<u8>) -> Self {
@@ -378,7 +378,7 @@ impl<'a> Log<'a> {
                     })?;
                     if leading
                         .checked_add(trailing)
-                        .map_or(true, |sum| sum > sector.data().len())
+                        .is_none_or(|sum| sum > sector.data().len())
                     {
                         return Err(Error::LogEntryCorrupted(
                             "leading_bytes + trailing_bytes exceeds sector data size".to_string(),
@@ -415,7 +415,7 @@ impl<'a> Log<'a> {
         }
 
         // 获取当前文件长度，用于 flushed_file_offset / last_file_offset 约束检查
-        let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let file_len = file.metadata().map_or(0, |m| m.len());
 
         // 预扫描：验证 flushed_file_offset 约束并收集 last_file_offset
         let mut max_last_file_offset: u64 = 0;
@@ -490,7 +490,7 @@ impl<'a> Log<'a> {
                             // 边界安全：leading + trailing 不得超过扇区数据长度
                             if leading
                                 .checked_add(trailing)
-                                .map_or(true, |sum| sum > sector_data.len())
+                                .is_none_or(|sum| sum > sector_data.len())
                             {
                                 return Err(Error::LogEntryCorrupted(format!(
                                     "leading_bytes ({leading}) + trailing_bytes ({trailing}) \
@@ -536,7 +536,7 @@ impl<'a> Log<'a> {
 
         // 回放完成后：若 last_file_offset 超出当前文件长度，扩展文件
         if max_last_file_offset > 0 {
-            let current_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+            let current_len = file.metadata().map_or(0, |m| m.len());
             if max_last_file_offset > current_len {
                 file.seek(SeekFrom::Start(max_last_file_offset - 1))?;
                 file.write_all(&[0u8])?;
@@ -550,8 +550,8 @@ impl<'a> Log<'a> {
     ///
     /// 校验口径对齐 `SpecValidator::validate_log` 的基础约束：
     /// - signature 必须为 `loge`
-    /// - entry_length 必须在合法边界内
-    /// - descriptor area 必须落在 entry_length 内
+    /// - `entry_length` 必须在合法边界内
+    /// - descriptor area 必须落在 `entry_length` 内
     /// - CRC-32C 必须匹配（计算时 checksum 字段置零）
     fn precheck_replay_entry(entry: &LogEntry<'_>) -> Result<usize> {
         let header = entry.header();
@@ -1002,11 +1002,11 @@ impl<'a> ZeroDescriptor<'a> {
 ///
 /// 序列号被拆分为两部分存储以检测撕裂写入（torn writes）：
 /// - 前 4 字节为签名（DataSignature）
-/// - 字节 4-8 为序列号高 32 位（sequence_high）
+/// - 字节 4-8 为序列号高 32 `位（sequence_high`）
 /// - 字节 8-4092 为数据内容
-/// - 字节 4092-4096 为序列号低 32 位（sequence_low）
+/// - 字节 4092-4096 为序列号低 32 `位（sequence_low`）
 ///
-/// 如果 sequence_high ≠ sequence_low，说明写入不完整（撕裂写入）。
+/// 如果 `sequence_high` ≠ `sequence_low，说明写入不完整（撕裂写入`）。
 pub struct DataSector<'a> {
     /// 数据扇区签名
     pub signature: [u8; 4],

@@ -10,8 +10,8 @@ use crate::common::constants::{
 };
 use crate::error::{Error, Result};
 use crate::file::ParentChainInfo;
-use crate::section::{BatState, Descriptor, PayloadBlockState, SectorBitmapState};
 use crate::section::StandardItems::LOCATOR_TYPE_VHDX;
+use crate::section::{BatState, Descriptor, PayloadBlockState, SectorBitmapState};
 use crate::types::Guid;
 
 /// 解析 Parent Locator 中的 GUID 字符串。
@@ -404,8 +404,8 @@ impl<'a> SpecValidator<'a> {
     /// - 日志 GUID 与活动头部一致性
     /// - 描述符数量与可解析数量匹配
     /// - 数据扇区签名、撕裂检测、序列号一致性
-    /// - leading_bytes + trailing_bytes 边界
-    /// - flushed_file_offset / last_file_offset 约束
+    /// - `leading_bytes` + `trailing_bytes` 边界
+    /// - `flushed_file_offset` / `last_file_offset` 约束
     /// - 序列号单调性
     pub fn validate_log(&self) -> Result<()> {
         let log = self.file.sections().log()?;
@@ -535,8 +535,7 @@ impl<'a> SpecValidator<'a> {
 
                         let sector = data_sectors.get(data_sector_index).ok_or_else(|| {
                             Error::LogEntryCorrupted(format!(
-                                "Log entry {entry_index} missing data sector for descriptor {}",
-                                data_sector_index
+                                "Log entry {entry_index} missing data sector for descriptor {data_sector_index}"
                             ))
                         })?;
 
@@ -579,12 +578,13 @@ impl<'a> SpecValidator<'a> {
                 )));
             }
 
-            if let Some(prev) = previous_sequence {
-                if header.sequence_number() != 0 && header.sequence_number() < prev {
-                    return Err(Error::LogEntryCorrupted(format!(
-                        "Log entry sequence decreases at index {entry_index}"
-                    )));
-                }
+            if let Some(prev) = previous_sequence
+                && header.sequence_number() != 0
+                && header.sequence_number() < prev
+            {
+                return Err(Error::LogEntryCorrupted(format!(
+                    "Log entry sequence decreases at index {entry_index}"
+                )));
             }
             previous_sequence = Some(header.sequence_number());
         }
@@ -717,13 +717,13 @@ impl<'a> SpecValidator<'a> {
 
     /// 差分链单跳校验（SINGLE-HOP ONLY）
     ///
-    /// 仅校验 child → direct parent 的 DataWriteGuid 一致性，
+    /// 仅校验 child → direct parent 的 `DataWriteGuid` 一致性，
     /// 不执行递归遍历、循环检测或多级链校验。
     ///
     /// # 行为范围（显式固化）
     ///
-    /// - **单跳**：打开 parent_linkage / parent_linkage2 指向的直接父盘，
-    ///   比对其 DataWriteGuid 与子盘记录的 linkage GUID。
+    /// - **单跳**：打开 `parent_linkage` / `parent_linkage2` 指向的直接父盘，
+    ///   比对其 `DataWriteGuid` 与子盘记录的 linkage GUID。
     /// - **不递归**：不向上追溯 grandparent 或更深层级。
     /// - **不检测循环**：不检测 child → parent → child 环路。
     ///

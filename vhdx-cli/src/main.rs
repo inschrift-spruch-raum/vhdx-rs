@@ -1,4 +1,5 @@
 //! vhdx-cli：VHDX (虚拟硬盘 v2) 命令行工具入口
+#![allow(clippy::too_many_lines, clippy::manual_let_else)]
 //!
 //! 本模块是 vhdx-tool 可执行程序的入口点。
 //! 它解析命令行参数并分派到对应的子命令处理函数。

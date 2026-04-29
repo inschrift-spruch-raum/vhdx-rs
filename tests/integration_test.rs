@@ -3636,6 +3636,7 @@ fn bitmap_bat_index_for_chunk(block_idx: u64, chunk_ratio: u64) -> u64 {
 ///
 /// 为 `[start_block, start_block + count)` 范围内的每个 block 分配
 /// FullyPresent 的 payload BAT 条目，offset 从 `offset_base_mb` 开始递增。
+#[allow(dead_code)]
 fn inject_cross_chunk_payload_bat_entries(
     path: &std::path::Path, chunk_ratio: u64, start_block: u64, count: u64, offset_base_mb: u64,
 ) {
@@ -3815,6 +3816,7 @@ fn fix_log_entry_checksum(path: &std::path::Path, entry_index: u64) {
 }
 
 /// 篡改指定日志条目的 signature 字段为 `bad_sig`（测试专用）。
+#[allow(dead_code)]
 fn corrupt_log_entry_signature(path: &std::path::Path, entry_index: u64, bad_sig: [u8; 4]) {
     use vhdx_rs::{File, LogReplayPolicy};
 
@@ -3930,6 +3932,7 @@ fn create_differencing_pair(virtual_size: u64, block_size: u32) -> (PathBuf, Pat
 }
 
 /// 创建三级差分链（grandparent → parent → child），返回三个路径。
+#[allow(dead_code)]
 fn create_three_level_chain(virtual_size: u64, block_size: u32) -> (PathBuf, PathBuf, PathBuf) {
     use vhdx_rs::File;
 
@@ -5496,11 +5499,7 @@ fn test_log_replay_clears_guid_and_updates_header_sequence() {
     let (post_replay_seq, post_replay_fwg, post_replay_log_guid) = {
         let header_ref = file.sections().header().expect("header");
         let h = header_ref.header(0).expect("active header");
-        (
-            h.sequence_number(),
-            h.file_write_guid(),
-            h.log_guid(),
-        )
+        (h.sequence_number(), h.file_write_guid(), h.log_guid())
     };
 
     // log_guid 应为 nil（replay 清除）
@@ -5585,11 +5584,7 @@ fn test_log_replay_policy_readonly_no_replay_keeps_pending() {
     let (verify_seq, verify_fwg, verify_log_guid) = {
         let header_ref = file_verify.sections().header().expect("header");
         let h = header_ref.header(0).expect("active header");
-        (
-            h.sequence_number(),
-            h.file_write_guid(),
-            h.log_guid(),
-        )
+        (h.sequence_number(), h.file_write_guid(), h.log_guid())
     };
 
     // sequence_number 应与创建后一致
@@ -5682,8 +5677,7 @@ fn test_readonly_no_replay_is_explicit_compat_mode() {
 
     let bytes_after = read_raw_bytes(&path, target_file_offset, payload.len());
     assert_eq!(
-        bytes_after,
-        bytes_before,
+        bytes_after, bytes_before,
         "ReadOnlyNoReplay compatibility mode must not trigger replay writes"
     );
 }
@@ -5726,8 +5720,7 @@ fn test_log_replay_require_policy_replays_non_empty_log() {
 
     let bytes_after = read_raw_bytes(&path, target_file_offset, payload.len());
     assert_eq!(
-        bytes_after,
-        bytes_before,
+        bytes_after, bytes_before,
         "Require rejection path must not perform replay writes"
     );
 }
@@ -5765,10 +5758,7 @@ fn test_open_writable_sequence_monotonicity() {
     drop(file);
 
     // 第一次可写打开 → seq 应精确 +1
-    let file_w1 = File::open(&path)
-        .write()
-        .finish()
-        .expect("writable open 1");
+    let file_w1 = File::open(&path).write().finish().expect("writable open 1");
 
     let seq_w1 = {
         let header_ref = file_w1.sections().header().expect("header");
@@ -5784,10 +5774,7 @@ fn test_open_writable_sequence_monotonicity() {
     );
 
     // 第二次可写打开 → seq 应再精确 +1
-    let file_w2 = File::open(&path)
-        .write()
-        .finish()
-        .expect("writable open 2");
+    let file_w2 = File::open(&path).write().finish().expect("writable open 2");
 
     let seq_w2 = {
         let header_ref = file_w2.sections().header().expect("header");
@@ -5852,10 +5839,7 @@ fn test_open_readonly_between_writable_keeps_sequence() {
     );
 
     // 可写打开 → sequence 应精确 +1，file_write_guid 应改变
-    let file_w1 = File::open(&path)
-        .write()
-        .finish()
-        .expect("writable open");
+    let file_w1 = File::open(&path).write().finish().expect("writable open");
     let (seq_w1, fwg_w1) = {
         let header_ref = file_w1.sections().header().expect("header");
         let h = header_ref.header(0).expect("active header");
@@ -5931,10 +5915,7 @@ fn test_header_guid_lifecycle_across_sessions() {
     drop(file);
 
     // 第一次可写打开 → file_write_guid 应改变，data_write_guid 不变
-    let file_w1 = File::open(&path)
-        .write()
-        .finish()
-        .expect("writable open 1");
+    let file_w1 = File::open(&path).write().finish().expect("writable open 1");
 
     let (fwg_w1, dwg_w1) = {
         let header_ref = file_w1.sections().header().expect("header");
@@ -5953,10 +5934,7 @@ fn test_header_guid_lifecycle_across_sessions() {
     );
 
     // 第二次可写打开 → file_write_guid 应再次改变，data_write_guid 仍不变
-    let file_w2 = File::open(&path)
-        .write()
-        .finish()
-        .expect("writable open 2");
+    let file_w2 = File::open(&path).write().finish().expect("writable open 2");
 
     let (fwg_w2, dwg_w2) = {
         let header_ref = file_w2.sections().header().expect("header");
@@ -6003,8 +5981,8 @@ fn test_header_guid_lifecycle_across_sessions() {
 /// 验证 `build_parent_locator_payload` 正确写入 LocatorType 字段（MS-VHDX §2.6.2.6.1）。
 #[test]
 fn test_create_diff_parent_locator_has_vhdx_locator_type() {
-    use vhdx_rs::section::StandardItems::LOCATOR_TYPE_VHDX;
     use vhdx_rs::File;
+    use vhdx_rs::section::StandardItems::LOCATOR_TYPE_VHDX;
 
     let parent_path = temp_vhdx_path();
     File::create(&parent_path)
@@ -6032,8 +6010,7 @@ fn test_create_diff_parent_locator_has_vhdx_locator_type() {
     // locator_type 必须是 VHDX 标准定位器 GUID
     let header = locator.header();
     assert_eq!(
-        header.locator_type,
-        LOCATOR_TYPE_VHDX,
+        header.locator_type, LOCATOR_TYPE_VHDX,
         "Parent locator locator_type must equal LOCATOR_TYPE_VHDX \
          (B04AEFB7-D19E-4A81-B789-25B8E9445913)"
     );
@@ -6082,10 +6059,7 @@ fn test_parent_locator_rejects_zero_offsets_or_lengths() {
 
     for (i, entry) in entries.iter().enumerate() {
         // 长度必须 > 0
-        assert!(
-            entry.key_length > 0,
-            "Entry {i}: key_length must be > 0"
-        );
+        assert!(entry.key_length > 0, "Entry {i}: key_length must be > 0");
         assert!(
             entry.value_length > 0,
             "Entry {i}: value_length must be > 0"
@@ -6331,9 +6305,8 @@ fn test_validate_parent_locator_rejects_missing_all_path_keys() {
     drop(child);
 
     // 注入仅有 parent_linkage、无路径键的 locator
-    let no_path_locator = build_parent_locator(&[
-        ("parent_linkage", "12345678-1234-1234-1234-123456789ABC"),
-    ]);
+    let no_path_locator =
+        build_parent_locator(&[("parent_linkage", "12345678-1234-1234-1234-123456789ABC")]);
     inject_parent_locator(&child_path, &no_path_locator);
 
     let file = File::open(&child_path)
@@ -6403,9 +6376,7 @@ fn test_validate_parent_chain_single_hop_happy() {
             .metadata()
             .expect("Failed to read child metadata");
         let items = metadata.items();
-        let locator = items
-            .parent_locator()
-            .expect("Expected parent locator");
+        let locator = items.parent_locator().expect("Expected parent locator");
 
         // 从 locator 中解析 parent_linkage 值
         let data = locator.key_value_data();
@@ -6421,10 +6392,22 @@ fn test_validate_parent_chain_single_hop_happy() {
                     let parsed = uuid::Uuid::parse_str(trimmed).expect("parent_linkage GUID parse");
                     let linkage_bytes = parsed.as_bytes();
                     let linkage_guid = vhdx_rs::Guid::from_bytes([
-                        linkage_bytes[3], linkage_bytes[2], linkage_bytes[1], linkage_bytes[0],
-                        linkage_bytes[5], linkage_bytes[4], linkage_bytes[7], linkage_bytes[6],
-                        linkage_bytes[8], linkage_bytes[9], linkage_bytes[10], linkage_bytes[11],
-                        linkage_bytes[12], linkage_bytes[13], linkage_bytes[14], linkage_bytes[15],
+                        linkage_bytes[3],
+                        linkage_bytes[2],
+                        linkage_bytes[1],
+                        linkage_bytes[0],
+                        linkage_bytes[5],
+                        linkage_bytes[4],
+                        linkage_bytes[7],
+                        linkage_bytes[6],
+                        linkage_bytes[8],
+                        linkage_bytes[9],
+                        linkage_bytes[10],
+                        linkage_bytes[11],
+                        linkage_bytes[12],
+                        linkage_bytes[13],
+                        linkage_bytes[14],
+                        linkage_bytes[15],
                     ]);
                     assert_eq!(
                         linkage_guid, parent_data_write_guid,
@@ -6486,8 +6469,8 @@ fn test_validate_parent_chain_single_hop_mismatch() {
 
     // 注入故意不匹配的 parent_linkage
     let mismatch_guid = Guid::from_bytes([
-        0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC,
-        0xDE, 0xF0,
+        0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE,
+        0xF0,
     ]);
     let locator = build_parent_locator(&[
         ("parent_linkage", &format!("{mismatch_guid}")),
@@ -6515,7 +6498,8 @@ fn test_validate_parent_chain_single_hop_mismatch() {
                 "actual GUID should be the parent's real DataWriteGuid"
             );
             assert_ne!(
-                actual, Guid::nil(),
+                actual,
+                Guid::nil(),
                 "actual GUID should not be nil (parent has valid DataWriteGuid)"
             );
         }
@@ -6570,8 +6554,8 @@ fn test_validate_parent_chain_single_hop_parent_not_found() {
         Error::Io(_) => {
             // 父盘文件不存在时 File::open 可能返回 IO 错误，同样可接受
         }
-        other => panic!(
-            "single-hop not-found: expected ParentNotFound or Io error, got: {other:?}"
-        ),
+        other => {
+            panic!("single-hop not-found: expected ParentNotFound or Io error, got: {other:?}")
+        }
     }
 }

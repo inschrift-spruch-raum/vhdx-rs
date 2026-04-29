@@ -58,7 +58,7 @@ pub struct Metadata<'a> {
     marker: PhantomData<&'a [u8]>,
 }
 
-impl<'a> Metadata<'a> {
+impl Metadata<'_> {
     /// 从原始字节数据创建元数据区域实例
     ///
     /// 数据长度必须至少为 `METADATA_TABLE_SIZE`（64KB），否则返回错误。
@@ -210,7 +210,7 @@ impl<'a> TableHeader<'a> {
 /// - ItemID（16 字节）— 元数据项的 GUID 标识符
 /// - Offset（4 字节）— 数据在元数据区域中的偏移量
 /// - Length（4 字节）— 数据长度
-/// - Flags（4 字节）— 属性标志位（IsUser / IsVirtualDisk / IsRequired）
+/// - Flags（4 字节）— 属性标志位（IsUser / `IsVirtualDisk` / `IsRequired`）
 pub struct TableEntry<'a> {
     /// 元数据项 GUID
     pub item_id: Guid,
@@ -409,15 +409,15 @@ impl<'a> MetadataItems<'a> {
 /// 文件参数元数据（MS-VHDX §2.6.2.1）
 ///
 /// 描述 VHDX 文件的基本配置参数，固定 8 字节：
-/// - block_size（4 字节）— 块大小，必须为 1MB 的幂次（1MB-256MB）
+/// - `block_size（4` 字节）— 块大小，必须为 1MB 的幂次（1MB-256MB）
 /// - flags（4 字节）— 标志位
-///   - bit 0: LeaveBlockAllocated — 删除块时是否保留空间
-///   - bit 1: HasParent — 是否为差分磁盘（有父磁盘）
+///   - bit 0: `LeaveBlockAllocated` — 删除块时是否保留空间
+///   - bit 1: `HasParent` — 是否为差分磁盘（有父磁盘）
 #[derive(Clone, Copy, Debug)]
 pub struct FileParameters<'a> {
     /// 块大小（字节），必须为 1MB 的幂次（1MB-256MB）
     pub block_size: u32,
-    /// 标志位（bit 0: LeaveBlockAllocated, bit 1: HasParent）
+    /// 标志位（bit 0: `LeaveBlockAllocated`, bit 1: `HasParent`）
     pub flags: u32,
     /// 原始字节视图
     pub raw: &'a [u8],
@@ -536,7 +536,7 @@ impl<'a> ParentLocator<'a> {
         &self.data[entries_size..]
     }
 
-    /// 解析父盘路径（优先级：relative_path -> volume_path -> absolute_win32_path）
+    /// `解析父盘路径（优先级：relative_path` -> `volume_path` -> `absolute_win32_path`）
     #[must_use]
     pub fn resolve_parent_path(&self) -> Option<PathBuf> {
         let data = self.key_value_data();
@@ -626,7 +626,7 @@ pub struct KeyValueEntry<'a> {
 impl<'a> KeyValueEntry<'a> {
     /// 从 12 字节数据解析键值对条目
     ///
-    /// 数据布局：key_offset(4) + value_offset(4) + key_length(2) + value_length(2)
+    /// `数据布局：key_offset(4)` + `value_offset(4)` + `key_length(2)` + `value_length(2)`
     pub fn new(data: &'a [u8]) -> Result<Self> {
         if data.len() != 12 {
             return Err(Error::InvalidMetadata(
@@ -650,7 +650,7 @@ impl<'a> KeyValueEntry<'a> {
 
     /// 从定位器数据区域中读取键字符串
     ///
-    /// 根据 key_offset 和 key_length 从 data 中提取 UTF-16 LE 编码的字节，
+    /// 根据 `key_offset` 和 `key_length` 从 data 中提取 UTF-16 LE 编码的字节，
     /// 并解码为 String（遇到空字符截断）。
     #[must_use]
     pub fn key(&self, data: &[u8]) -> Option<String> {
@@ -669,7 +669,7 @@ impl<'a> KeyValueEntry<'a> {
 
     /// 从定位器数据区域中读取值字符串
     ///
-    /// 根据 value_offset 和 value_length 从 data 中提取 UTF-16 LE 编码的字节，
+    /// 根据 `value_offset` 和 `value_length` 从 data 中提取 UTF-16 LE 编码的字节，
     /// 并解码为 String（遇到空字符截断）。
     #[must_use]
     pub fn value(&self, data: &[u8]) -> Option<String> {

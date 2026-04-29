@@ -41,15 +41,14 @@ pub fn cmd_create(
     }
 
     // --force 处理：仅在目标文件已存在时删除，其他错误路径不受影响
-    if path.exists() {
-        if force {
-            if let Err(e) = std::fs::remove_file(path) {
-                eprintln!("Error removing existing file: {e}");
-                std::process::exit(1);
-            }
-        }
-        // 未指定 --force 时由库返回 "File already exists" 错误
+    if path.exists()
+        && force
+        && let Err(e) = std::fs::remove_file(path)
+    {
+        eprintln!("Error removing existing file: {e}");
+        std::process::exit(1);
     }
+    // 未指定 --force 时由库返回 "File already exists" 错误
 
     let mut builder = File::create(path)
         .size(size_bytes)

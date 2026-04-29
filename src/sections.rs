@@ -48,7 +48,7 @@ pub struct Metadata<'a> {
     inner: metadata::Metadata<'a>,
 }
 
-impl<'a> Metadata<'a> {
+impl Metadata<'_> {
     /// 从原始字节数据创建元数据包装实例
     ///
     /// 将数据传递给内部 `metadata::Metadata::new()` 进行解析。
@@ -90,7 +90,7 @@ pub struct Log<'a> {
     inner: log::Log<'a>,
 }
 
-impl<'a> Log<'a> {
+impl Log<'_> {
     /// 从原始字节数据创建日志包装实例
     ///
     /// 直接将数据传递给内部 `log::Log::new()`，不进行解析
@@ -371,6 +371,7 @@ impl<'a> Sections<'a> {
 /// - `data` — 完整的数据（含校验和字段）
 /// - `zero_offset` — 需要置零的字段起始偏移
 /// - `zero_len` — 需要置零的字段长度
+#[must_use]
 pub fn crc32c_with_zero_field(data: &[u8], zero_offset: usize, zero_len: usize) -> u32 {
     // 复制数据，避免修改原始输入
     let mut data_copy = data.to_vec();

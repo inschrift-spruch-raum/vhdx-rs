@@ -62,7 +62,7 @@ pub struct Header<'a> {
     marker: PhantomData<&'a [u8]>,
 }
 
-impl<'a> Header<'a> {
+impl Header<'_> {
     /// 从原始数据创建头部区域实例，验证数据长度必须为 1MB
     pub fn new(data: Vec<u8>) -> Result<Self> {
         if data.len() != HEADER_SECTION_SIZE {
@@ -406,7 +406,7 @@ impl<'a> HeaderStructure<'a> {
 /// 描述 VHDX 文件中各区域（如 BAT、元数据）的位置和大小。
 /// VHDX 文件包含两个冗余的区域表副本。
 pub struct RegionTable<'a> {
-    /// 原始字节数据（私有，供 raw() 方法向后兼容）
+    /// 原始字节数据（私有，供 `raw()` 方法向后兼容）
     data: &'a [u8],
     /// 区域表头部（MS-VHDX §2.2.3.1）
     pub header: RegionTableHeader<'a>,

@@ -152,7 +152,7 @@ pub enum Error {
 
     /// 数据块未分配
     ///
-    /// 请求访问的数据块处于未分配状态（如 NotPresent 或 Zero 状态），
+    /// 请求访问的数据块处于未分配状态（如 `NotPresent` 或 Zero 状态），
     /// 无法提供实际数据（MS-VHDX §2.5.1.1）。
     #[error("Block {block_idx} not allocated (state: {state:?})")]
     BlockNotPresent { block_idx: u64, state: String },

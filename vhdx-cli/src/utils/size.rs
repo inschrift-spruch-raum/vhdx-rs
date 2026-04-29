@@ -23,8 +23,8 @@ pub fn parse_size(size_str: &str) -> Result<u64, String> {
     use byte_unit::Byte;
 
     Byte::parse_str(size_str, true)
-        .map(|b| b.as_u64())
-        .map_err(|e| format!("Invalid size '{}': {e}", size_str))
+        .map(byte_unit::Byte::as_u64)
+        .map_err(|e| format!("Invalid size '{size_str}': {e}"))
 }
 
 /// 解析块大小字符串并进行验证
@@ -44,7 +44,7 @@ pub fn parse_block_size(size_str: &str) -> Result<u32, String> {
     use byte_unit::Byte;
 
     let byte = Byte::parse_str(size_str, true)
-        .map_err(|e| format!("Invalid block size '{}': {e}", size_str))?;
+        .map_err(|e| format!("Invalid block size '{size_str}': {e}"))?;
 
     let size = byte.as_u64();
 
@@ -56,16 +56,11 @@ pub fn parse_block_size(size_str: &str) -> Result<u32, String> {
     // 块大小必须是 2 的幂（VHDX 规范要求）
     if !size.is_power_of_two() {
         return Err(format!(
-            "Block size '{}' ({}) must be a power of 2 (e.g., 1MiB, 2MiB, 4MiB, 8MiB, 16MiB, 32MiB, 64MiB)",
-            size_str, byte
+            "Block size '{size_str}' ({byte}) must be a power of 2 (e.g., 1MiB, 2MiB, 4MiB, 8MiB, 16MiB, 32MiB, 64MiB)"
         ));
     }
 
     // 确保块大小不超过 u32 范围（最大 4 GiB）
-    u32::try_from(size).map_err(|_| {
-        format!(
-            "Block size '{}' ({}) exceeds maximum allowed (4 GiB)",
-            size_str, byte
-        )
-    })
+    u32::try_from(size)
+        .map_err(|_| format!("Block size '{size_str}' ({byte}) exceeds maximum allowed (4 GiB)"))
 }

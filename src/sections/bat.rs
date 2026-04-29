@@ -4,7 +4,7 @@
 //!
 //! BAT 将虚拟磁盘的逻辑块地址映射到 VHDX 文件中的物理偏移量。
 //! 每个 BAT 条目为 8 字节（64 位），采用位字段编码：
-//! - 低 3 位：块状态（Payload 或 SectorBitmap）
+//! - 低 3 位：块状态（Payload 或 `SectorBitmap`）
 //! - 中间 17 位：保留
 //! - 高 44 位：文件偏移量（以 MB 为单位）
 //!
@@ -32,7 +32,7 @@ pub struct Bat<'a> {
     marker: PhantomData<&'a [u8]>,
 }
 
-impl<'a> Bat<'a> {
+impl Bat<'_> {
     /// 从原始数据创建 BAT 实例，验证数据长度是否足够容纳指定数量的条目
     pub fn new(data: Vec<u8>, entry_count: u64) -> Result<Self> {
         let entry_count: usize = entry_count.try_into().map_err(|_| {
@@ -208,6 +208,7 @@ pub struct BatEntry {
 
 impl BatEntry {
     /// 从原始 64 位值解析 BAT 条目，提取低 3 位状态和高 44 位偏移量
+    #[allow(dead_code)]
     pub(crate) fn from_raw(raw: u64) -> std::result::Result<Self, Error> {
         Self::from_raw_with_context(raw, false)
     }
@@ -252,7 +253,7 @@ impl BatEntry {
     }
 }
 
-impl<'a> Bat<'a> {
+impl Bat<'_> {
     /// 更新指定索引处的 BAT 条目（同时更新内存缓存和原始数据）
     ///
     /// 用于 Dynamic 类型写入时自动分配 payload block 后更新 BAT 条目。
@@ -341,7 +342,7 @@ pub enum PayloadBlockState {
 }
 
 impl PayloadBlockState {
-    /// 从状态值解析 Payload Block 状态，未知值回退为 NotPresent
+    /// 从状态值解析 Payload Block 状态，未知值回退为 `NotPresent`
     #[must_use]
     pub const fn from_bits(bits: u8) -> Self {
         match bits {
@@ -367,7 +368,7 @@ impl PayloadBlockState {
         }
     }
 
-    /// 检查块是否已分配文件空间（FullyPresent 或 PartiallyPresent）
+    /// 检查块是否已分配文件空间（FullyPresent 或 `PartiallyPresent`）
     #[must_use]
     pub const fn is_allocated(&self) -> bool {
         matches!(self, Self::FullyPresent | Self::PartiallyPresent)
@@ -397,7 +398,7 @@ pub enum SectorBitmapState {
 }
 
 impl SectorBitmapState {
-    /// 从状态值解析 Sector Bitmap Block 状态，值 6 为 Present，其余为 NotPresent
+    /// 从状态值解析 Sector Bitmap Block 状态，值 6 为 Present，其余为 `NotPresent`
     #[must_use]
     pub const fn from_bits(bits: u8) -> Self {
         match bits {

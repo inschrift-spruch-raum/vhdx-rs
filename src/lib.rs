@@ -1,4 +1,9 @@
 //! # vhdx-rs
+#![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
+#![allow(clippy::too_many_lines, clippy::too_many_arguments)]
+#![allow(clippy::cast_possible_truncation, clippy::return_self_not_must_use)]
+#![allow(clippy::manual_let_else, clippy::match_wildcard_for_single_variants)]
+#![allow(clippy::unused_self, clippy::manual_checked_ops)]
 //!
 //! VHDX (Virtual Hard Disk v2) 文件格式的 Rust 库。
 //!

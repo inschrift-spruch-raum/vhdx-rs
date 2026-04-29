@@ -79,7 +79,7 @@ pub fn cmd_info(file: &Path, format: &OutputFormat) {
                         Byte::from_u64(virtual_size).get_appropriate_unit(UnitType::Binary)
                     );
                     println!("Block Size: {block_sz} bytes");
-                    println!("Logical Sector Size: {logical_sector_sz} bytes",);
+                    println!("Logical Sector Size: {logical_sector_sz} bytes");
                     // 根据是否固定大小判断磁盘类型
                     println!("Disk Type: {}", if is_fixed { "Fixed" } else { "Dynamic" });
                     // 如果是差分磁盘，显示父磁盘信息
