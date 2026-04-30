@@ -82,7 +82,7 @@ Wave 2: tests + full verification
 
 ## TODOs
 
-- [ ] 1. Implement metadata table-header validation in `validate_metadata`
+- [x] 1. Implement metadata table-header validation in `validate_metadata`
 
   **What to do**:
   - In `src/validation.rs`, expand `validate_metadata()` to validate metadata table/header-level constraints (signature/reserved/entry-count semantics per project API plan + spec-aligned expectations).
@@ -125,7 +125,7 @@ Wave 2: tests + full verification
 
   **Commit**: NO | Message: `fix(validation): enforce metadata table header constraints` | Files: `src/validation.rs`, test files
 
-- [ ] 2. Implement metadata entry structural validation in `validate_metadata`
+- [x] 2. Implement metadata entry structural validation in `validate_metadata`
 
   **What to do**:
   - Validate entry-level constraints: unique identifiers, offset/length bounds, non-overlap, zero-length rule, and entry-count-related invariants as required by plan/spec.
@@ -168,7 +168,7 @@ Wave 2: tests + full verification
 
   **Commit**: NO | Message: `fix(validation): enforce metadata entry structural constraints` | Files: `src/validation.rs`, test files
 
-- [ ] 3. Implement known metadata item semantic constraints in `validate_metadata`
+- [x] 3. Implement known metadata item semantic constraints in `validate_metadata`
 
   **What to do**:
   - Validate known-item semantic constraints (e.g., block size rules, logical/physical sector size rules, virtual disk size alignment/range) required by plan/spec.
@@ -211,7 +211,7 @@ Wave 2: tests + full verification
 
   **Commit**: NO | Message: `fix(validation): enforce known metadata item constraints` | Files: `src/validation.rs`, test files
 
-- [ ] 4. Add/adjust metadata validation tests for plan-scope completeness
+- [x] 4. Add/adjust metadata validation tests for plan-scope completeness
 
   **What to do**:
   - Add targeted tests in existing validator test module to cover:
@@ -259,7 +259,7 @@ Wave 2: tests + full verification
 
   **Commit**: NO | Message: `test(validation): add metadata compliance coverage` | Files: test files under `src/validation.rs` module
 
-- [ ] 5. Execute workspace-level verification and collect evidence
+- [x] 5. Execute workspace-level verification and collect evidence
 
   **What to do**:
   - Run full project checks after implementation:
@@ -310,10 +310,10 @@ Wave 2: tests + full verification
 > **Do NOT auto-proceed after verification. Wait for user's explicit approval before marking work complete.**
 > **Never mark F1-F4 as checked before getting user's okay.** Rejection or user feedback -> fix -> re-run -> present again -> wait for okay.
 
-- [ ] F1. Plan Compliance Audit — oracle
-- [ ] F2. Code Quality Review — unspecified-high
-- [ ] F3. Real Manual QA — unspecified-high (+ playwright if UI)
-- [ ] F4. Scope Fidelity Check — deep
+- [x] F1. Plan Compliance Audit — oracle
+- [x] F2. Code Quality Review — unspecified-high
+- [x] F3. Real Manual QA — unspecified-high (+ playwright if UI)
+- [x] F4. Scope Fidelity Check — deep
 
 ## Commit Strategy
 - Prefer small atomic commits by constraint group:

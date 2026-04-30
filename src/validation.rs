@@ -6,7 +6,8 @@
 use crate::File;
 use crate::common::constants::{
     DATA_SECTOR_SIZE, FILE_TYPE_SIGNATURE, HEADER_SIGNATURE, LOG_ENTRY_SIGNATURE, LOG_VERSION,
-    REGION_TABLE_SIGNATURE, VHDX_VERSION, metadata_guids, region_guids,
+    MAX_BLOCK_SIZE, METADATA_SIGNATURE, MIN_BLOCK_SIZE, REGION_TABLE_SIGNATURE, VHDX_VERSION,
+    metadata_guids, region_guids,
 };
 use crate::error::{Error, Result};
 use crate::file::ParentChainInfo;
@@ -318,8 +319,192 @@ impl<'a> SpecValidator<'a> {
     }
 
     /// 校验 Metadata 区域可读取
+    ///
+    /// 执行以下约束检查：
+    ///
+    /// 表头级别（MS-VHDX §2.6.1.1）：
+    /// - 表头签名必须为 `"metadata"`
+    /// - 保留字段必须为零
+    /// - 表项数量不得超过 2047
+    /// - 已解析表项数量与表头声明的 entry_count 一致
+    ///
+    /// 表项级别（MS-VHDX §2.6.1.2）：
+    /// - 表项数据长度不得为零
+    /// - 表项偏移 + 长度不得超过元数据区域大小
+    /// - 表项 item_id 不得重复
+    /// - 任意两个表项的数据区域不得重叠
     pub fn validate_metadata(&self) -> Result<()> {
-        let _metadata = self.file.sections().metadata()?;
+        let metadata = self.file.sections().metadata()?;
+        let table = metadata.table();
+        let table_header = table.header();
+
+        // 签名校验（MS-VHDX §2.6.1.1）
+        if table_header.signature() != METADATA_SIGNATURE {
+            return Err(Error::InvalidMetadata(format!(
+                "Invalid metadata table signature: expected '{}', found '{}'",
+                String::from_utf8_lossy(METADATA_SIGNATURE),
+                String::from_utf8_lossy(table_header.signature())
+            )));
+        }
+
+        // 保留字段校验（MS-VHDX §2.6.1.1）
+        if table_header.reserved != [0u8; 2] {
+            return Err(Error::InvalidMetadata(format!(
+                "Metadata table header reserved field is not zero: {:?}",
+                table_header.reserved
+            )));
+        }
+
+        if table_header.reserved2 != [0u8; 20] {
+            return Err(Error::InvalidMetadata(format!(
+                "Metadata table header reserved2 field is not zero: {:?}",
+                table_header.reserved2
+            )));
+        }
+
+        // 表项数量上限校验（MS-VHDX §2.6.1.1: EntryCount MUST be <= 2047）
+        const MAX_METADATA_ENTRY_COUNT: u16 = 2047;
+        if table_header.entry_count() > MAX_METADATA_ENTRY_COUNT {
+            return Err(Error::InvalidMetadata(format!(
+                "Metadata table entry count exceeds maximum: count={}, max={MAX_METADATA_ENTRY_COUNT}",
+                table_header.entry_count()
+            )));
+        }
+
+        // 已解析表项数量与表头声明的一致性校验
+        let entries = table.entries();
+        if entries.len() != usize::from(table_header.entry_count()) {
+            return Err(Error::InvalidMetadata(format!(
+                "Metadata table entry count mismatch: header={}, parsed={}",
+                table_header.entry_count(),
+                entries.len()
+            )));
+        }
+
+        // 元数据区域原始长度，作为表项偏移/长度的上界基准
+        let region_len = u64::try_from(metadata.raw().len()).unwrap_or(u64::MAX);
+
+        // 表项结构约束校验（MS-VHDX §2.6.1.2）
+        for (index, entry) in entries.iter().enumerate() {
+            // 零长度规则：表项的数据长度不得为零
+            if entry.length() == 0 {
+                return Err(Error::InvalidMetadata(format!(
+                    "Metadata entry {index} has zero length"
+                )));
+            }
+
+            // 偏移/长度越界校验：offset + length 不得超过元数据区域大小
+            let entry_offset = u64::from(entry.offset());
+            let entry_length = u64::from(entry.length());
+            if entry_offset.saturating_add(entry_length) > region_len {
+                return Err(Error::InvalidMetadata(format!(
+                    "Metadata entry {index} out of range: offset={}, length={}, region_size={}",
+                    entry.offset(),
+                    entry.length(),
+                    metadata.raw().len()
+                )));
+            }
+        }
+
+        // 重复标识符校验：同一 item_id 不得出现多次
+        for (index, entry) in entries.iter().enumerate() {
+            for (other_index, other) in entries.iter().enumerate().skip(index + 1) {
+                if entry.item_id() == other.item_id() {
+                    return Err(Error::InvalidMetadata(format!(
+                        "Duplicate metadata item_id at entries {index} and {other_index}: {:?}",
+                        entry.item_id()
+                    )));
+                }
+            }
+        }
+
+        // 重叠范围校验：任意两个表项的数据区域不得重叠
+        for (index, entry) in entries.iter().enumerate() {
+            let a_start = u64::from(entry.offset());
+            let a_end = a_start.saturating_add(u64::from(entry.length()));
+            for (other_index, other) in entries.iter().enumerate().skip(index + 1) {
+                let b_start = u64::from(other.offset());
+                let b_end = b_start.saturating_add(u64::from(other.length()));
+                // 区间 [a_start, a_end) 与 [b_start, b_end) 重叠
+                if a_start < b_end && b_start < a_end {
+                    return Err(Error::InvalidMetadata(format!(
+                        "Metadata entries {index} and {other_index} have overlapping data ranges"
+                    )));
+                }
+            }
+        }
+
+        // 已知元数据项语义约束（仅校验已存在项，不在此处做 required completeness）
+        let items = metadata.items();
+
+        if let Some(file_parameters) = items.file_parameters() {
+            let block_size = file_parameters.block_size();
+            if !(MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE).contains(&block_size) {
+                return Err(Error::InvalidMetadata(format!(
+                    "Invalid block size: {block_size} (expected range: {MIN_BLOCK_SIZE}..={MAX_BLOCK_SIZE})"
+                )));
+            }
+            if !block_size.is_power_of_two() {
+                return Err(Error::InvalidMetadata(format!(
+                    "Invalid block size: {block_size} (must be a power of two)"
+                )));
+            }
+        }
+
+        if let Some(logical_sector_size) = items.logical_sector_size()
+            && logical_sector_size != 512
+            && logical_sector_size != 4096
+        {
+            return Err(Error::InvalidMetadata(format!(
+                "Invalid logical sector size: {logical_sector_size} (expected: 512 or 4096)"
+            )));
+        }
+
+        if let Some(physical_sector_size) = items.physical_sector_size()
+            && physical_sector_size != 512
+            && physical_sector_size != 4096
+        {
+            return Err(Error::InvalidMetadata(format!(
+                "Invalid physical sector size: {physical_sector_size} (expected: 512 or 4096)"
+            )));
+        }
+
+        if let Some(virtual_disk_size) = items.virtual_disk_size() {
+            const MAX_VIRTUAL_DISK_SIZE: u64 = 64 * 1024 * 1024 * 1024 * 1024; // 64 TiB
+
+            if virtual_disk_size == 0 {
+                return Err(Error::InvalidMetadata(
+                    "Invalid virtual disk size: 0 (must be greater than 0)".to_string(),
+                ));
+            }
+
+            if virtual_disk_size > MAX_VIRTUAL_DISK_SIZE {
+                return Err(Error::InvalidMetadata(format!(
+                    "Invalid virtual disk size: {virtual_disk_size} (max: {MAX_VIRTUAL_DISK_SIZE})"
+                )));
+            }
+
+            if let Some(logical_sector_size) = items.logical_sector_size() {
+                let logical_sector_size_u64 = u64::from(logical_sector_size);
+                if logical_sector_size_u64 != 0
+                    && virtual_disk_size % logical_sector_size_u64 != 0
+                {
+                    return Err(Error::InvalidMetadata(format!(
+                        "Virtual disk size {virtual_disk_size} is not aligned to logical sector size {logical_sector_size}"
+                    )));
+                }
+            }
+        }
+
+        if let (Some(logical_sector_size), Some(physical_sector_size)) =
+            (items.logical_sector_size(), items.physical_sector_size())
+            && physical_sector_size < logical_sector_size
+        {
+            return Err(Error::InvalidMetadata(format!(
+                "Physical sector size {physical_sector_size} is smaller than logical sector size {logical_sector_size}"
+            )));
+        }
+
         Ok(())
     }
 
@@ -818,3 +1003,4 @@ impl<'a> SpecValidator<'a> {
         })
     }
 }
+

@@ -341,6 +341,88 @@ fn remove_last_metadata_entry(path: &std::path::Path) {
     raw.flush().expect("Failed to flush metadata entry removal");
 }
 
+/// 按 item_id 覆写 metadata 表项数据区前 4 字节（测试专用）。
+fn mutate_known_metadata_u32(path: &std::path::Path, item_id: vhdx_rs::Guid, value: u32) {
+    const METADATA_OFFSET: u64 = 2 * 1024 * 1024;
+    const TABLE_SIZE: usize = 64 * 1024;
+
+    let mut raw = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("Failed to open file for metadata u32 mutation");
+
+    raw.seek(SeekFrom::Start(METADATA_OFFSET))
+        .expect("Failed to seek metadata table for u32 mutation");
+    let mut table = vec![0u8; TABLE_SIZE];
+    raw.read_exact(&mut table)
+        .expect("Failed to read metadata table for u32 mutation");
+
+    let entry_count = u16::from_le_bytes([table[10], table[11]]);
+    let mut found_data_offset: Option<u32> = None;
+    for i in 0..entry_count {
+        let entry_base = 32 + usize::from(i) * 32;
+        let guid = &table[entry_base..entry_base + 16];
+        if guid == item_id.as_bytes() {
+            found_data_offset = Some(u32::from_le_bytes([
+                table[entry_base + 16],
+                table[entry_base + 17],
+                table[entry_base + 18],
+                table[entry_base + 19],
+            ]));
+            break;
+        }
+    }
+
+    let data_offset = found_data_offset.expect("metadata item_id not found for u32 mutation");
+    raw.seek(SeekFrom::Start(METADATA_OFFSET + u64::from(data_offset)))
+        .expect("Failed to seek metadata data offset for u32 mutation");
+    raw.write_all(&value.to_le_bytes())
+        .expect("Failed to write metadata u32 mutation");
+    raw.flush().expect("Failed to flush metadata u32 mutation");
+}
+
+/// 按 item_id 覆写 metadata 表项数据区前 8 字节（测试专用）。
+fn mutate_known_metadata_u64(path: &std::path::Path, item_id: vhdx_rs::Guid, value: u64) {
+    const METADATA_OFFSET: u64 = 2 * 1024 * 1024;
+    const TABLE_SIZE: usize = 64 * 1024;
+
+    let mut raw = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("Failed to open file for metadata u64 mutation");
+
+    raw.seek(SeekFrom::Start(METADATA_OFFSET))
+        .expect("Failed to seek metadata table for u64 mutation");
+    let mut table = vec![0u8; TABLE_SIZE];
+    raw.read_exact(&mut table)
+        .expect("Failed to read metadata table for u64 mutation");
+
+    let entry_count = u16::from_le_bytes([table[10], table[11]]);
+    let mut found_data_offset: Option<u32> = None;
+    for i in 0..entry_count {
+        let entry_base = 32 + usize::from(i) * 32;
+        let guid = &table[entry_base..entry_base + 16];
+        if guid == item_id.as_bytes() {
+            found_data_offset = Some(u32::from_le_bytes([
+                table[entry_base + 16],
+                table[entry_base + 17],
+                table[entry_base + 18],
+                table[entry_base + 19],
+            ]));
+            break;
+        }
+    }
+
+    let data_offset = found_data_offset.expect("metadata item_id not found for u64 mutation");
+    raw.seek(SeekFrom::Start(METADATA_OFFSET + u64::from(data_offset)))
+        .expect("Failed to seek metadata data offset for u64 mutation");
+    raw.write_all(&value.to_le_bytes())
+        .expect("Failed to write metadata u64 mutation");
+    raw.flush().expect("Failed to flush metadata u64 mutation");
+}
+
 /// 测试固定磁盘的创建与读写：创建 1 MiB 固定磁盘，写入数据后读回并验证一致性。
 /// 已移至 src/file.rs 单元测试（使用 pub(crate) 的 read_raw/write_raw/flush_raw）。
 
@@ -6559,3 +6641,506 @@ fn test_validate_parent_chain_single_hop_parent_not_found() {
         }
     }
 }
+
+// ── Task 3: metadata known-item semantic validation tests ───────────────────
+
+/// 已知 metadata item 语义约束 happy path：合法值应通过 validate_metadata()。
+#[test]
+fn test_validate_metadata_known_items_happy() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+    let file = File::create(&path)
+        .size(4 * 1024 * 1024)
+        .fixed(true)
+        .block_size(1024 * 1024)
+        .logical_sector_size(4096)
+        .physical_sector_size(4096)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    file.validator()
+        .validate_metadata()
+        .expect("validate_metadata should pass for valid known metadata item values");
+}
+
+/// 已知 metadata item 非法语义值应被 reject。
+#[test]
+fn test_validate_metadata_rejects_invalid_known_item_values() {
+    use vhdx_rs::{Error, File};
+    use vhdx_rs::constants::metadata_guids;
+
+    // 1) block size 非 2 的幂（但在范围内）
+    {
+        let path = temp_vhdx_path();
+        File::create(&path)
+            .size(4 * 1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk for block size test");
+
+        mutate_known_metadata_u32(&path, metadata_guids::FILE_PARAMETERS, 3 * 1024 * 1024);
+
+        let file = File::open(&path)
+            .strict(false)
+            .finish()
+            .expect("Failed to open mutated file for block size test");
+        let err = file
+            .validator()
+            .validate_metadata()
+            .expect_err("Expected invalid block size to be rejected");
+
+        match err {
+            Error::InvalidMetadata(msg) => assert!(msg.contains("block size"), "unexpected message: {msg}"),
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    // 2) logical sector size 不在 allowlist
+    {
+        let path = temp_vhdx_path();
+        File::create(&path)
+            .size(4 * 1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk for logical sector test");
+
+        mutate_known_metadata_u32(&path, metadata_guids::LOGICAL_SECTOR_SIZE, 2048);
+
+        let file = File::open(&path)
+            .strict(false)
+            .finish()
+            .expect("Failed to open mutated file for logical sector test");
+        let err = file
+            .validator()
+            .validate_metadata()
+            .expect_err("Expected invalid logical sector size to be rejected");
+
+        match err {
+            Error::InvalidMetadata(msg) => assert!(msg.contains("logical sector size"), "unexpected message: {msg}"),
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    // 3) physical sector size 不在 allowlist
+    {
+        let path = temp_vhdx_path();
+        File::create(&path)
+            .size(4 * 1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk for physical sector test");
+
+        mutate_known_metadata_u32(&path, metadata_guids::PHYSICAL_SECTOR_SIZE, 2048);
+
+        let file = File::open(&path)
+            .strict(false)
+            .finish()
+            .expect("Failed to open mutated file for physical sector test");
+        let err = file
+            .validator()
+            .validate_metadata()
+            .expect_err("Expected invalid physical sector size to be rejected");
+
+        match err {
+            Error::InvalidMetadata(msg) => assert!(msg.contains("physical sector size"), "unexpected message: {msg}"),
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    // 4) virtual disk size = 0
+    {
+        let path = temp_vhdx_path();
+        File::create(&path)
+            .size(4 * 1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk for zero-size test");
+
+        mutate_known_metadata_u64(&path, metadata_guids::VIRTUAL_DISK_SIZE, 0);
+
+        let file = File::open(&path)
+            .strict(false)
+            .finish()
+            .expect("Failed to open mutated file for zero-size test");
+        let err = file
+            .validator()
+            .validate_metadata()
+            .expect_err("Expected zero virtual disk size to be rejected");
+
+        match err {
+            Error::InvalidMetadata(msg) => assert!(msg.contains("virtual disk size"), "unexpected message: {msg}"),
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    // 5) virtual disk size 未对齐 logical sector size
+    {
+        let path = temp_vhdx_path();
+        File::create(&path)
+            .size(4 * 1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk for alignment test");
+
+        mutate_known_metadata_u64(&path, metadata_guids::VIRTUAL_DISK_SIZE, 4 * 1024 * 1024 + 1);
+
+        let file = File::open(&path)
+            .strict(false)
+            .finish()
+            .expect("Failed to open mutated file for alignment test");
+        let err = file
+            .validator()
+            .validate_metadata()
+            .expect_err("Expected unaligned virtual disk size to be rejected");
+
+        match err {
+            Error::InvalidMetadata(msg) => assert!(msg.contains("aligned"), "unexpected message: {msg}"),
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    // 6) physical < logical
+    {
+        let path = temp_vhdx_path();
+        File::create(&path)
+            .size(4 * 1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk for physical<logical test");
+
+        mutate_known_metadata_u32(&path, metadata_guids::LOGICAL_SECTOR_SIZE, 4096);
+        mutate_known_metadata_u32(&path, metadata_guids::PHYSICAL_SECTOR_SIZE, 512);
+
+        let file = File::open(&path)
+            .strict(false)
+            .finish()
+            .expect("Failed to open mutated file for physical<logical test");
+        let err = file
+            .validator()
+            .validate_metadata()
+            .expect_err("Expected physical<logical sector sizes to be rejected");
+
+        match err {
+            Error::InvalidMetadata(msg) => assert!(msg.contains("smaller than logical"), "unexpected message: {msg}"),
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+}
+// ── Task 2: metadata entry structural validation tests ──────────────────────
+
+/// 元数据表项结构约束 happy path：合法的 metadata 应通过 validate_metadata()。
+#[test]
+fn test_validate_metadata_entry_constraints_happy() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+    let file = File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    file.validator()
+        .validate_metadata()
+        .expect("validate_metadata should pass for valid fixed disk entries");
+}
+
+/// 元数据表项结构约束 happy path：合法的 dynamic 磁盘也应通过。
+#[test]
+fn test_validate_metadata_entry_constraints_dynamic_happy() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+    let file = File::create(&path)
+        .size(10 * 1024 * 1024)
+        .finish()
+        .expect("Failed to create dynamic disk");
+
+    file.validator()
+        .validate_metadata()
+        .expect("validate_metadata should pass for valid dynamic disk entries");
+}
+
+/// 重复 item_id 的表项应被拒绝。
+#[test]
+fn test_validate_metadata_rejects_duplicate_item_id() {
+    use vhdx_rs::{Error, File};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    // 读取第一个 metadata entry 的 item_id（16 字节），然后复制到最后一个 entry 位置。
+    // 布局：METADATA_OFFSET + 32 (header) + N*32 entries
+    // 典型 entry_count = 5，因此 entry[0] at +32，entry[4] at +32+4*32 = +160
+    const METADATA_OFFSET: u64 = 2 * 1024 * 1024;
+
+    let first_entry_id = read_raw_bytes(&path, METADATA_OFFSET + 32, 16);
+
+    // 读取 entry_count
+    let count_bytes = read_raw_bytes(&path, METADATA_OFFSET + 10, 2);
+    let entry_count = u16::from_le_bytes([count_bytes[0], count_bytes[1]]);
+    assert!(entry_count >= 2, "Need at least 2 entries to test duplication");
+
+    // 将最后一个 entry 的 item_id 覆写为第一个 entry 的 item_id（制造重复）
+    let last_entry_offset = METADATA_OFFSET + 32 + u64::from(entry_count - 1) * 32;
+    write_raw_bytes(&path, last_entry_offset, &first_entry_id);
+
+    let file = File::open(&path)
+        .strict(false)
+        .finish()
+        .expect("Failed to open file with duplicate metadata entry");
+
+    let err = file
+        .validator()
+        .validate_metadata()
+        .expect_err("Expected validate_metadata to reject duplicate item_id");
+
+    match err {
+        Error::InvalidMetadata(msg) => {
+            assert!(
+                msg.contains("Duplicate metadata item_id"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// 零长度表项应被拒绝。
+#[test]
+fn test_validate_metadata_rejects_zero_length_entry() {
+    use vhdx_rs::{Error, File};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    const METADATA_OFFSET: u64 = 2 * 1024 * 1024;
+
+    // 读取 entry_count，然后修改最后一个 entry 的 length 字段为零。
+    // 最后一个 entry 不影响 File::open() 的必要元数据读取。
+    let count_bytes = read_raw_bytes(&path, METADATA_OFFSET + 10, 2);
+    let entry_count = u16::from_le_bytes([count_bytes[0], count_bytes[1]]);
+    assert!(entry_count >= 2, "Need at least 2 entries");
+
+    let last_entry_base = METADATA_OFFSET + 32 + u64::from(entry_count - 1) * 32;
+    let length_field_offset = last_entry_base + 20;
+    write_raw_bytes(&path, length_field_offset, &0u32.to_le_bytes());
+
+    let file = File::open(&path)
+        .strict(false)
+        .finish()
+        .expect("Failed to open file with zero-length metadata entry");
+
+    let err = file
+        .validator()
+        .validate_metadata()
+        .expect_err("Expected validate_metadata to reject zero-length entry");
+
+    match err {
+        Error::InvalidMetadata(msg) => {
+            assert!(
+                msg.contains("zero length"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// 偏移/长度超出元数据区域的表项应被拒绝。
+#[test]
+fn test_validate_metadata_rejects_out_of_range_entry() {
+    use vhdx_rs::{Error, File};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    const METADATA_OFFSET: u64 = 2 * 1024 * 1024;
+
+    // 修改最后一个 entry 的 offset 为一个极大值，使 offset + length 超过 region 大小。
+    // 最后一个 entry 不影响 File::open() 的必要元数据读取。
+    let count_bytes = read_raw_bytes(&path, METADATA_OFFSET + 10, 2);
+    let entry_count = u16::from_le_bytes([count_bytes[0], count_bytes[1]]);
+    assert!(entry_count >= 2, "Need at least 2 entries");
+
+    let last_entry_base = METADATA_OFFSET + 32 + u64::from(entry_count - 1) * 32;
+    let offset_field_pos = last_entry_base + 16;
+    write_raw_bytes(&path, offset_field_pos, &0xFFFF_0000_u32.to_le_bytes());
+
+    let file = File::open(&path)
+        .strict(false)
+        .finish()
+        .expect("Failed to open file with out-of-range metadata entry");
+
+    let err = file
+        .validator()
+        .validate_metadata()
+        .expect_err("Expected validate_metadata to reject out-of-range entry");
+
+    match err {
+        Error::InvalidMetadata(msg) => {
+            assert!(
+                msg.contains("out of range"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// 重叠数据范围的表项应被拒绝。
+#[test]
+fn test_validate_metadata_rejects_overlapping_entries() {
+    use vhdx_rs::{Error, File};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    const METADATA_OFFSET: u64 = 2 * 1024 * 1024;
+
+    // 读取 entry_count 和第一个 entry 的 offset/length
+    let count_bytes = read_raw_bytes(&path, METADATA_OFFSET + 10, 2);
+    let entry_count = u16::from_le_bytes([count_bytes[0], count_bytes[1]]);
+    assert!(entry_count >= 2, "Need at least 2 entries for overlap test");
+
+    // 读取第一个 entry 的 offset 和 length
+    let entry0_offset_bytes = read_raw_bytes(&path, METADATA_OFFSET + 32 + 16, 4);
+    let entry0_offset = u32::from_le_bytes([
+        entry0_offset_bytes[0],
+        entry0_offset_bytes[1],
+        entry0_offset_bytes[2],
+        entry0_offset_bytes[3],
+    ]);
+    let entry0_length_bytes = read_raw_bytes(&path, METADATA_OFFSET + 32 + 20, 4);
+    let entry0_length = u32::from_le_bytes([
+        entry0_length_bytes[0],
+        entry0_length_bytes[1],
+        entry0_length_bytes[2],
+        entry0_length_bytes[3],
+    ]);
+
+    // 将第二个 entry 的 offset 设为第一个 entry offset + 1（制造重叠）
+    // entry[1] 起始于 METADATA_OFFSET + 32 + 32，offset 在 entry[1] + 16
+    let entry1_offset_pos = METADATA_OFFSET + 32 + 32 + 16;
+    // 设定 entry1.offset = entry0.offset + 1，length = entry0.length（与 entry0 范围重叠）
+    let overlap_offset = entry0_offset + 1;
+    write_raw_bytes(&path, entry1_offset_pos, &overlap_offset.to_le_bytes());
+    // 设定 entry1.length = entry0.length（确保重叠范围足够）
+    let entry1_length_pos = METADATA_OFFSET + 32 + 32 + 20;
+    write_raw_bytes(&path, entry1_length_pos, &entry0_length.to_le_bytes());
+
+    let file = File::open(&path)
+        .strict(false)
+        .finish()
+        .expect("Failed to open file with overlapping metadata entries");
+
+    let err = file
+        .validator()
+        .validate_metadata()
+        .expect_err("Expected validate_metadata to reject overlapping entries");
+
+    match err {
+        Error::InvalidMetadata(msg) => {
+            assert!(
+                msg.contains("overlapping"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// 元数据表头签名错误应被 `validate_metadata()` 拒绝。
+#[test]
+fn test_validate_metadata_rejects_invalid_table_signature() {
+    use vhdx_rs::{Error, File};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    const METADATA_OFFSET: u64 = 2 * 1024 * 1024;
+    write_raw_bytes(&path, METADATA_OFFSET, b"badtable");
+
+    let file = File::open(&path)
+        .strict(false)
+        .finish()
+        .expect("Failed to open file with invalid metadata table signature");
+
+    let err = file
+        .validator()
+        .validate_metadata()
+        .expect_err("Expected invalid metadata table signature to be rejected");
+
+    match err {
+        Error::InvalidMetadata(msg) => {
+            assert!(msg.contains("table signature"), "unexpected error message: {msg}");
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// 边界证明：required-item 完整性由 `validate_required_metadata_items()` 负责，
+/// 不应由 `validate_metadata()` 重复校验。
+#[test]
+fn test_validate_metadata_scope_boundary_required_item_completeness_is_separate() {
+    use vhdx_rs::{Error, File};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    // 删除最后一个 required 已知项（physical_sector_size）。
+    // 该变更应由 validate_required_metadata_items() 拒绝，
+    // 而 validate_metadata() 仅验证其职责范围（table/entry/known-item 值约束）。
+    remove_last_metadata_entry(&path);
+
+    let file = File::open(&path)
+        .strict(false)
+        .finish()
+        .expect("Failed to open file with missing required metadata item");
+
+    file.validator()
+        .validate_metadata()
+        .expect("validate_metadata should not enforce required-item completeness");
+
+    let err = file
+        .validator()
+        .validate_required_metadata_items()
+        .expect_err("Expected required-item completeness failure");
+
+    match err {
+        Error::InvalidMetadata(msg) => {
+            assert!(
+                msg.contains("Missing required metadata item: physical_sector_size"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+

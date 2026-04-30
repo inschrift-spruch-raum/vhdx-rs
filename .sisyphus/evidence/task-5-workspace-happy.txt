@@ -1,0 +1,393 @@
+=== Task 5 Workspace Verification (2026-04-30T17:53:45.1767647+08:00) ===
+\n>>> cargo test -p vhdx-rs test_validate_metadata\n
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src\lib.rs (target\debug\deps\vhdx_rs-be8ceab3b48a9ab2.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.00s
+
+     Running tests\api_surface_smoke.rs (target\debug\deps\api_surface_smoke-48f80c724278b778.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 0.00s
+
+     Running tests\integration_test.rs (target\debug\deps\integration_test-8c36168b70fe7da0.exe)
+
+running 10 tests
+test test_validate_metadata_entry_constraints_happy ... ok
+test test_validate_metadata_entry_constraints_dynamic_happy ... ok
+test test_validate_metadata_scope_boundary_required_item_completeness_is_separate ... ok
+test test_validate_metadata_rejects_zero_length_entry ... ok
+test test_validate_metadata_rejects_out_of_range_entry ... ok
+test test_validate_metadata_rejects_overlapping_entries ... ok
+test test_validate_metadata_rejects_invalid_table_signature ... ok
+test test_validate_metadata_known_items_happy ... ok
+test test_validate_metadata_rejects_duplicate_item_id ... ok
+test test_validate_metadata_rejects_invalid_known_item_values ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 144 filtered out; finished in 0.11s
+
+\n>>> cargo test --workspace\n
+   Compiling vhdx-rs v0.1.0 (C:\Users\Raum\Documents\InfoBrain\program-poj\linkfs\vhdx-rs)
+   Compiling vhdx-tool v0.1.0 (C:\Users\Raum\Documents\InfoBrain\program-poj\linkfs\vhdx-rs\vhdx-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.53s
+     Running unittests src\lib.rs (target\debug\deps\vhdx_rs-d539657daf548747.exe)
+
+running 36 tests
+test common::constants::tests::test_align_up ... ok
+test sections::bat::tests::test_bat_new_parses_sector_bitmap_via_entry_and_entries ... ok
+test sections::log::tests::test_log_entry_out_of_range_returns_none ... ok
+test sections::bat::tests::test_bat_entry_from_raw ... ok
+test sections::bat::tests::test_bat_entry_from_raw_sector_bitmap_context_rejects_invalid_state ... ok
+test sections::bat::tests::test_bat_entry_from_raw_sector_bitmap_context ... ok
+test sections::bat::tests::test_bat_entry_to_raw ... ok
+test sections::bat::tests::test_bat_new_parses_sector_bitmap_in_partial_final_chunk ... ok
+test sections::bat::tests::test_bat_new_rejects_invalid_sector_bitmap_state ... ok
+test sections::bat::tests::test_chunk_ratio_calculation ... ok
+test sections::bat::tests::test_entries_empty_bat ... ok
+test sections::bat::tests::test_calculate_payload_blocks ... ok
+test sections::bat::tests::test_entries_returns_vec_with_correct_content ... ok
+test sections::bat::tests::test_entries_returns_owned_copy ... ok
+test sections::header::tests::test_header_structure ... ok
+test sections::header::tests::test_file_type_identifier ... ok
+test sections::header::tests::test_region_table_entry ... ok
+test sections::log::tests::test_zero_descriptor ... ok
+test sections::log::tests::test_log_entry_index_matches_entries_order ... ok
+test sections::metadata::tests::test_file_parameters ... ok
+test sections::metadata::tests::test_entry_flags ... ok
+test common::constants::tests::test_guid_constants ... ok
+test sections::bat::tests::test_payload_block_states ... ok
+test sections::metadata::tests::test_key_value_entry ... ok
+test sections::log::tests::test_data_descriptor ... ok
+test types::tests::test_guid_nil ... ok
+test types::tests::test_guid_debug_format ... ok
+test types::tests::test_guid_from_bytes ... ok
+test sections::log::tests::test_log_entry_header ... ok
+test file::tests::test_write_and_read_at_offset ... ok
+test file::tests::test_write_dynamic_disk_auto_allocates ... ok
+test file::tests::test_read_unwritten_area_returns_zeros ... ok
+test file::tests::test_multiple_writes_and_reads ... ok
+test file::tests::test_open_with_write_access ... ok
+test file::tests::test_flush_after_write ... ok
+test file::tests::test_create_and_read_fixed_disk ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests\api_surface_smoke.rs (target\debug\deps\api_surface_smoke-c3c0f5669fc4673b.exe)
+
+running 32 tests
+test smoke_root_options_types_import ... ok
+test smoke_constants_region_guids_import ... ok
+test smoke_validation_mod_import ... ok
+test smoke_constants_metadata_guids_import ... ok
+test smoke_guid_basic_operations ... ok
+test smoke_log_entry_types_callable ... ok
+test smoke_parent_locator_full_api_callable ... ok
+test smoke_constants_namespace_import ... ok
+test smoke_root_io_section_types_import ... ok
+test smoke_root_helpers_import ... ok
+test smoke_error_variants_constructible ... ok
+test smoke_root_policy_and_chain_info_import ... ok
+test smoke_section_bat_types_import ... ok
+test smoke_root_validation_types_import ... ok
+test smoke_section_header_types_import ... ok
+test smoke_section_log_types_import ... ok
+test smoke_section_standard_items_namespace_import ... ok
+test smoke_payload_block_manual_construction ... ok
+test smoke_section_metadata_types_import ... ok
+test smoke_section_sections_type_import ... ok
+test smoke_bat_entry_state_pattern_matchable ... ok
+test smoke_file_public_methods_callable ... ok
+test smoke_metadata_substructure_callable ... ok
+test smoke_file_sections_methods_callable ... ok
+test smoke_file_validator_methods_callable ... ok
+test smoke_header_substructure_fields_accessible ... ok
+test smoke_file_inner_callable ... ok
+test smoke_root_core_types_import ... ok
+test smoke_io_sector_payload_chain ... ok
+test smoke_file_io_sector_callable ... ok
+test smoke_open_builder_chain_callable ... ok
+test smoke_create_builder_chain_callable ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests\integration_test.rs (target\debug\deps\integration_test-4a7c280cb07b11cf.exe)
+
+running 154 tests
+test log_replay_combined_leading_trailing_preserves_both_ends ... ok
+test test_constants_align_functions ... ok
+test test_constants_guids_are_unique ... ok
+test test_constants_metadata_guids_accessible ... ok
+test test_constants_namespace_basic_values ... ok
+test test_constants_namespace_layout_constants ... ok
+test test_constants_region_guids_accessible ... ok
+test fixed_bat_sector_bitmap_notpresent ... ok
+test gap_log_replay_enforces_file_size_offsets ... ok
+test test_bat_section_after_create ... ok
+test dynamic_read_bat_payload_index_out_of_range_returns_zeros ... ok
+test log_replay_auto_applies_entry ... ok
+test log_replay_data_descriptor_leading_trailing_semantics ... ok
+test t12_validator_log_rejects_guid_mismatch ... ok
+test gap_log_replay_data_descriptor_leading_trailing_semantics ... ok
+test test_create_non_power_of_two_block_size_fails ... ok
+test test_bat_entries_vec_traversable ... ok
+test test_create_invalid_sector_size_combination_fails ... ok
+test test_create_with_nonexistent_parent_path_fails ... ok
+test test_create_zero_size_fails ... ok
+test log_replay_rejects_invalid_checksum ... ok
+test log_replay_active_sequence_only ... ok
+test gap_log_replay_active_sequence_only ... ok
+test log_replay_refreshes_sections ... ok
+test log_replay_rejects_mismatched_log_guid ... ok
+test log_replay_trailing_bytes_preserves_end_of_target ... ok
+test log_replay_rejects_invalid_leading_trailing_combination ... ok
+test log_replay_enforces_file_size_offsets ... ok
+test t12_validator_log_passes_with_valid_entry ... ok
+test t12_validator_log_rejects_invalid_checksum ... ok
+test gap_dynamic_write_auto_allocates_payload_block ... ok
+test differencing_read_falls_back_to_parent ... ok
+test gap_differencing_read_partially_present_uses_bitmap ... ok
+test t12_validator_passes_after_dynamic_auto_allocation ... ok
+test gap_differencing_read_parent_missing_errors ... ok
+test test_create_dynamic_disk ... ok
+test differencing_read_parent_missing_errors ... ok
+test log_replay_guid_match ... ok
+test test_create_dynamic_disk_with_custom_block_size ... ok
+test test_create_file_already_exists_fails ... ok
+test test_key_value_entry_key_value_utf16_decode ... ok
+test test_key_value_entry_public_fields_accessible ... ok
+test test_locator_header_public_fields_accessible ... ok
+test test_log_entry_import_and_construction ... ok
+test test_create_fixed_disk_10mb ... ok
+test test_create_fixed_disk_with_custom_block_size ... ok
+test test_default_block_size_is_32mb ... ok
+test test_log_replay_policy_variants_accessible ... ok
+test gap_differencing_read_falls_back_to_parent ... ok
+test differencing_read_partially_present_uses_bitmap ... ok
+test test_dynamic_allocated_block_auto_policy_applies_overlay_on_readonly_open ... ok
+test t12_validator_full_validate_on_differencing_disk ... ok
+test test_file_validator_callable_and_validate_file ... ok
+test t12_validator_bat_allows_partially_present_on_differencing_disk ... ok
+test test_has_parent_false_for_non_differencing ... ok
+test test_dynamic_unallocated_block_overlay_does_not_break_zero_fill_semantics ... ok
+test test_file_validator_individual_methods ... ok
+test test_open_nonexistent_file_fails ... ok
+test test_dynamic_allocated_block_replay_overlay_applies_on_inmemory_readonly_read ... ok
+test test_dynamic_read_unmapped_bat_state_returns_zeros ... ok
+test test_create_diff_parent_locator_has_vhdx_locator_type ... ok
+test test_dynamic_read_zero_bat_state_returns_zeros ... ok
+test test_create_differencing_disk_writes_parent_locator_payload ... ok
+test test_has_pending_logs_false_for_new_file ... ok
+test test_open_test_fs_vhdx ... ok
+test test_open_test_void_vhdx ... ok
+test test_header_section_after_create ... ok
+test test_io_sector_out_of_range_returns_none ... ok
+test test_dynamic_write_zero_state_auto_allocates ... ok
+test test_dynamic_write_auto_allocates_and_persists_on_reopen ... ok
+test test_parent_chain_info_import_and_fields ... ok
+test test_parent_locator_api_surface ... ok
+test test_parent_locator_empty_entries_and_data ... ok
+test test_parent_locator_malformed_returns_error_or_none ... ok
+test test_inmemory_on_readonly_does_not_write_back_to_disk ... ok
+test test_parent_locator_resolve_parent_path_priority ... ok
+test test_dynamic_write_notpresent_auto_allocates_and_persists ... ok
+test test_log_replay_policy_readonly_no_replay_keeps_pending ... ok
+test test_log_section_after_create ... ok
+test test_logical_sector_size_is_512 ... ok
+test test_metadata_block_size_matches ... ok
+test test_metadata_section_after_create ... ok
+test test_log_replay_require_policy_replays_non_empty_log ... ok
+test test_dynamic_readonly_no_replay_preserves_on_disk_data ... ok
+test test_dynamic_read_nonzero_sector_within_allocated_block ... ok
+test test_io_sector_tail_partial_boundary_behavior ... ok
+test test_create_options_chain_methods_happy_path ... ok
+test test_header_guid_lifecycle_across_sessions ... ok
+test test_metadata_sector_sizes ... ok
+test test_metadata_virtual_disk_id_present ... ok
+test test_open_dynamic_disk_read_only ... ok
+test test_open_non_strict_allows_required_unknown_region ... ok
+test test_open_fixed_disk_read_only ... ok
+test test_open_options_chain_methods_happy_path ... ok
+test test_open_readonly_does_not_mutate_header_session_fields ... ok
+test test_t9_section_module_import_paths ... ok
+test test_open_strict_rejects_required_unknown_region ... ok
+test test_dynamic_write_partially_present_block_succeeds ... ok
+test test_open_with_require_policy_no_pending_logs ... ok
+test test_open_with_read_only_no_replay_policy ... ok
+test test_open_strict_unknown_required_metadata_behavior ... ok
+test test_open_readonly_replay_policies_behavior_diff_with_pending_logs ... ok
+test test_open_readonly_between_writable_keeps_sequence ... ok
+test test_log_replay_clears_guid_and_updates_header_sequence ... ok
+test test_payload_block_traits ... ok
+test test_public_getters ... ok
+test test_read_unallocated_dynamic_block ... ok
+test test_sector_derive_traits ... ok
+test test_open_writable_updates_header_session_fields ... ok
+test test_t6_validator_region_table_rejects_required_unknown_region ... ok
+test test_read_allocated_dynamic_block_returns_payload_data ... ok
+test test_readonly_no_replay_is_explicit_compat_mode ... ok
+test test_replay_overlay_does_not_affect_non_overlapping_allocated_block ... ok
+test test_open_writable_sequence_monotonicity ... ok
+test test_t6_validator_header_and_region_table_happy_path ... ok
+test test_sector_public_fields_accessible ... ok
+test test_t8_validator_required_metadata_rejects_missing_known_required_item ... ok
+test test_sector_block_sector_index_values ... ok
+test test_t8_validator_required_metadata_rejects_required_unknown_item ... ok
+test test_t8_validator_required_metadata_happy_path ... ok
+test test_t7_validator_bat_and_log_happy_path ... ok
+test test_t7_validator_bat_rejects_notpresent_with_nonzero_offset ... ok
+test test_t7_validator_log_rejects_descriptor_count_mismatch ... ok
+test test_validate_metadata_entry_constraints_dynamic_happy ... ok
+test test_validate_file_non_differencing_disk_skips_parent_locator_path ... ok
+test test_validate_metadata_entry_constraints_happy ... ok
+test test_validate_metadata_rejects_duplicate_item_id ... ok
+test test_parent_locator_rejects_zero_offsets_or_lengths ... ok
+test test_validate_metadata_rejects_invalid_table_signature ... ok
+test test_validate_metadata_known_items_happy ... ok
+test test_validate_metadata_rejects_out_of_range_entry ... ok
+test test_validate_metadata_rejects_zero_length_entry ... ok
+test test_validate_metadata_rejects_overlapping_entries ... ok
+test test_parent_locator_strict_rejects_parent_linkage2 ... ok
+test test_validate_metadata_scope_boundary_required_item_completeness_is_separate ... ok
+test test_validate_parent_chain_non_diff_disk_returns_error ... ok
+test test_validate_region_table_detects_corrupted_crc ... ok
+test test_validation_api_import_and_validate_file ... ok
+test test_validate_file_includes_parent_locator_for_diff_disk ... ok
+test test_write_dynamic_unallocated_payload_auto_allocates ... ok
+test test_validate_parent_chain_single_hop_happy ... ok
+test test_validate_parent_locator_rejects_duplicate_keys ... ok
+test test_validate_parent_chain_single_hop_mismatch ... ok
+test test_validate_parent_chain_passes_with_parent_linkage2_and_real_child_path ... ok
+test test_validate_parent_chain_fails_on_linkage_mismatch ... ok
+test test_validate_parent_locator_rejects_invalid_type ... ok
+test test_validate_parent_locator_rejects_missing_all_path_keys ... ok
+test test_spec_decision_manifest ... ok
+test test_validate_parent_locator_strict_valid ... ok
+test test_validation_parent_locator_invalid_returns_error ... ok
+test test_validate_parent_chain_single_hop_parent_not_found ... ok
+test gap_dynamic_read_beyond_chunk_ratio_returns_correct_payload ... ok
+test test_validate_metadata_rejects_invalid_known_item_values ... ok
+test test_write_dynamic_uses_payload_entry_not_sector_bitmap_at_chunk_boundary ... ok
+
+test result: ok. 154 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
+
+     Running unittests src\main.rs (target\debug\deps\vhdx_tool-99a4ad43c3a34e2d.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\cli_integration.rs (target\debug\deps\cli_integration-ad3da88bb27ba7fe.exe)
+
+running 55 tests
+test check_on_test_void_vhdx ... ok
+test check_nonexistent_file_fails ... ok
+test check_corrupted_file_fails ... ok
+test create_missing_size_argument_fails ... ok
+test create_force_does_not_bypass_parent_validation ... ok
+test create_force_does_not_bypass_missing_parent ... ok
+test create_invalid_size_fails ... ok
+test diff_nonexistent_file_fails ... ok
+test help_flag_shows_vhdx ... ok
+test info_on_test_void_vhdx ... ok
+test check_log_replay_with_repair_flag ... ok
+test create_dynamic_disk_success ... ok
+test info_nonexistent_file_fails ... ok
+test create_fixed_disk_via_compat_flag ... ok
+test create_with_explicit_block_size ... ok
+test check_repair_flag_on_clean_file ... ok
+test check_log_replay_flag ... ok
+test create_default_disk_type_is_dynamic ... ok
+test create_file_already_exists_fails ... ok
+test create_fixed_disk_success ... ok
+test create_fixed_disk_via_type_flag ... ok
+test create_dynamic_disk_via_type_flag ... ok
+test create_both_flags_type_takes_precedence ... ok
+test check_log_replay_with_pending_log_reports_entries ... ok
+test check_repair_on_pending_log_file_exits_nonzero ... ok
+test repair_nonexistent_file_fails ... ok
+test check_valid_file_success ... ok
+test diff_chain_on_non_differencing_disk ... ok
+test check_valid_file_shows_summary ... ok
+test diff_parent_on_non_differencing_disk ... ok
+test check_non_differencing_disk_no_parent_locator_false_failure ... ok
+test sections_bat_shows_bat_section ... ok
+test sections_nonexistent_file_fails ... ok
+test info_shows_dynamic_type ... ok
+test check_without_replay_shows_repair_guidance_on_pending_log ... ok
+test create_force_overwrites_existing_file ... ok
+test version_flag ... ok
+test info_shows_fixed_type ... ok
+test sections_header_shows_header_section ... ok
+test info_text_format_shows_fields ... ok
+test repair_dry_run_on_valid_file ... ok
+test info_json_format ... ok
+test cli_check_differencing_parent_locator_output ... ok
+test check_invalid_parent_locator_reports_failure ... ok
+test sections_log_clean_file_shows_no_entries ... ok
+test diff_parent_on_differencing_disk_shows_locator_entries ... ok
+test cli_check_invalid_parent_locator_fails ... ok
+test sections_log_shows_log_section ... ok
+test diff_chain_happy_path ... ok
+test sections_metadata_shows_metadata_section ... ok
+test check_differencing_disk_includes_parent_locator_item ... ok
+test diff_chain_missing_parent_fails ... ok
+test sections_log_shows_pending_entry_details ... ok
+test sections_log_warns_about_pending_log_on_stderr ... ok
+test diff_chain_three_level_traversal ... ok
+
+test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+   Doc-tests vhdx_rs
+
+running 3 tests
+test src\file.rs - file (line 17) - compile ... ok
+test src\file.rs - file::CreateOptions (line 1574) - compile ... ok
+test src\file.rs - file::OpenOptions (line 1520) - compile ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.21s; merged doctests compilation took 0.20s
+\n>>> cargo clippy --workspace\n
+    Checking vhdx-rs v0.1.0 (C:\Users\Raum\Documents\InfoBrain\program-poj\linkfs\vhdx-rs)
+warning: item in documentation is missing backticks
+   --> src\validation.rs:329:25
+    |
+329 |     /// - 宸茶В鏋愯〃椤规暟閲忎笌琛ㄥご澹版槑鐨?entry_count 涓€鑷?    |                                      ^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#doc_markdown
+    = note: `-W clippy::doc-markdown` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::doc_markdown)]`
+help: try
+    |
+329 -     /// - 宸茶В鏋愯〃椤规暟閲忎笌琛ㄥご澹版槑鐨?entry_count 涓€鑷?329 +     /// - 宸茶В鏋愯〃椤规暟閲忎笌琛ㄥご澹版槑鐨?`entry_count` 涓€鑷?    |
+
+warning: item in documentation is missing backticks
+   --> src\validation.rs:334:14
+    |
+334 |     /// - 琛ㄩ」 item_id 涓嶅緱閲嶅
+    |                ^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#doc_markdown
+help: try
+    |
+334 -     /// - 琛ㄩ」 item_id 涓嶅緱閲嶅
+334 +     /// - 琛ㄩ」 `item_id` 涓嶅緱閲嶅
+    |
+
+warning: adding items after statements is confusing, since items exist from the start of the scope
+   --> src\validation.rs:366:9
+    |
+366 |         const MAX_METADATA_ENTRY_COUNT: u16 = 2047;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#items_after_statements
+    = note: `-W clippy::items-after-statements` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::items_after_statements)]`
+
+warning: `vhdx-rs` (lib) generated 3 warnings (run `cargo clippy --fix --lib -p vhdx-rs -- ` to apply 2 suggestions)
+    Checking vhdx-tool v0.1.0 (C:\Users\Raum\Documents\InfoBrain\program-poj\linkfs\vhdx-rs\vhdx-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.58s
+\n=== ALL REQUIRED COMMANDS PASSED ===
