@@ -23,7 +23,7 @@
 
 ### 2.1 Normative 与 Informative
 
-- 标准明确写了：**1.7 与第 2 章是 normative**。
+- 标准明确写了：**MS-VHDX §1.7 与第 2 章是 normative**。
 - 所以实现时，`MUST / MUST NOT / SHOULD` 的判断优先来自这些章节。
 
 ### 2.2 MUST / SHOULD 的工程含义
@@ -36,9 +36,9 @@
 
 ## 3. 文件布局解读：静态图背后的动态规则
 
-## 3.1 Header Section（固定 1MB）
+### 3.1 Header Section（固定 1MB）
 
-Header Section 内含 5 个 64KB 片段：
+Header Section 中有 5 个关键 64KB 槽位（用于放置关键结构；并非表示整个 Section 仅由这 5 段构成）：
 
 - File Type Identifier（0KB）
 - Header1（64KB）
@@ -91,7 +91,7 @@ Header Section 内含 5 个 64KB 片段：
 - 误解：移动块位置（物理重排）要改 `DataWriteGuid`。  
   更正：若不改变虚拟读结果，可不改。
 
-### 4.4 Header 更新推荐流程（规范给出的安全思路）
+### 4.4 Header 更新推荐流程（MS-VHDX §2.2.2.1 给出的安全思路）
 
 1. 找 current / noncurrent。
 2. 内存构建新 Header：`SequenceNumber = current + 1`。
@@ -189,7 +189,7 @@ BAT entry 64 位：
 - `ZERO`：必须返回全零。
 - `UNMAPPED`：可返回零或旧内容（有数据泄漏风险，脚注明确提醒）。
 
-工程建议：若追求跨实现稳定性，尽量把读语义收敛到 `ZERO` 或 `FULLY_PRESENT` 这类定义明确状态。
+工程建议（非规范 MUST）：若追求跨实现稳定性，尽量把读语义收敛到 `ZERO` 或 `FULLY_PRESENT` 这类定义明确状态。
 
 ### 7.4 `PARTIALLY_PRESENT` 只允许差分盘
 
@@ -253,31 +253,31 @@ BAT entry 64 位：
 
 ## 10. 实现者“模糊点清单”与建议决策
 
-## 10.1 模糊点：NOT_PRESENT/UNDEFINED/UNMAPPED 允许返回“任意数据”
+### 10.1 模糊点：NOT_PRESENT/UNDEFINED/UNMAPPED 允许返回“任意数据”
 
 这在安全上有泄漏风险（脚注 11）。
 
-**建议**：默认实现返回零，或仅在受控模式下返回历史数据。
+**实现建议（非规范 MUST）**：默认实现返回零，或仅在受控模式下返回历史数据。
 
 ### 10.2 模糊点：SHOULD 级行为如何落地
 
 如“双次 header 同步更新”是 SHOULD，不是 MUST。
 
-**建议**：默认执行 SHOULD；只在明确性能/介质限制时降级，并记录策略。
+**实现建议（非规范 MUST）**：默认执行 SHOULD；只在明确性能/介质限制时降级，并记录策略。
 
 ### 10.3 模糊点：日志对齐“至少 4KB，可更大”
 
 不同宿主介质可能有更大物理扇区。
 
-**建议**：
+**实现建议（非规范 MUST）**：
 
 - 解析端必须兼容 4KB 基线；
 - 写入端可按宿主特性扩展对齐，但不要要求读取端具备同等对齐假设。
 
 ### 10.4 模糊点：unknown 项是保留还是拒绝
 
-- unknown + required：拒绝。
-- unknown + optional：保留并透传，不能破坏。
+- unknown + required：拒绝（规范要求）。
+- unknown + optional：保留并透传，不能破坏（工程实现约束，用于保障兼容性）。
 
 ---
 
@@ -308,16 +308,16 @@ BAT entry 64 位：
 
 ## 13. 附：建议重点回读的规范位置
 
-- 2.2.2 + 2.2.2.1（Header 与更新时序）
-- 2.3.1 ~ 2.3.3（日志条目/序列/回放）
-- 2.5.1.1（Payload BAT 状态语义）
-- 2.6.1.2（Metadata 表项约束）
-- 2.6.2.6.3（VHDX Parent Locator）
+- MS-VHDX §2.2.2 + §2.2.2.1（Header 与更新时序）
+- MS-VHDX §2.3.1 ~ §2.3.3（日志条目/序列/回放）
+- MS-VHDX §2.5.1.1（Payload BAT 状态语义）
+- MS-VHDX §2.6.1.2（Metadata 表项约束）
+- MS-VHDX §2.6.2.6.3（VHDX Parent Locator）
 - Footnotes 2/5/11/12（差分链与日志回放关键补充）
 
 ---
 
-如果后续你希望，我可以基于这份解读再补一版：
+## 14. 后续可扩展产物（可选）
 
-- **“实现检查清单版”**（逐条可打勾的 MUST/SHOULD checklist）
-- **“测试用例设计版”**（每个模糊点对应 1~3 个回归测试）
+- **“实现检查清单版”**：逐条可打勾的 MUST/SHOULD checklist。
+- **“测试用例设计版”**：每个模糊点对应 1~3 个回归测试。
