@@ -40,6 +40,8 @@
 
 ### 3.2 `log_replay(policy: LogReplayPolicy)`
 
+默认策略约束：若调用方未显式设置 `log_replay(...)`，实现 **MUST** 采用 `Require`。
+
 支持以下策略：
 
 1. `Require`
@@ -121,7 +123,7 @@
 ## 7. 兼容性与实现建议（非规范 MUST）
 
 1. 建议默认 `strict=true`，降低 silent corruption 风险。
-2. 在只读诊断工具中，建议优先 `InMemoryOnReadOnly`，其次 `ReadOnlyNoReplay`。
+2. 建议默认 `log_replay=Require`；在诊断场景可按需显式切换为 `InMemoryOnReadOnly`，其次 `ReadOnlyNoReplay`。
 3. 若暴露 CLI，建议在输出中显式标注当前日志策略与一致性级别。
 
 ---

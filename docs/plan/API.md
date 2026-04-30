@@ -335,7 +335,7 @@ impl File::OpenOptions {
     /// strict=true 时，遇到 required 但无法识别的 region / metadata item 必须失败。
     pub fn strict(self, strict: bool) -> Self;
 
-    /// 设置日志回放策略
+    /// 设置日志回放策略（默认 `LogReplayPolicy::Require`）
     pub fn log_replay(self, policy: LogReplayPolicy) -> Self;
     
     /// 完成打开操作
@@ -363,6 +363,10 @@ pub enum LogReplayPolicy {
     /// 不保证 payload 数据面的一致性读取。
     ReadOnlyNoReplay,
 }
+
+// 默认行为说明：
+// File::open(path).finish() 在未显式调用 .log_replay(...) 时，
+// 等价于使用 LogReplayPolicy::Require。
 
 /// 差分链校验结果
 pub struct ParentChainInfo {
