@@ -98,7 +98,7 @@ Wave 4: hardening and release prep
 > Implementation + Test = ONE task. Never separate.
 > EVERY task MUST have: Agent Profile + Parallelization + QA Scenarios.
 
-- [ ] 1. 建立差异基线与触点索引
+- [x] 1. 建立差异基线与触点索引
 
   **What to do**: 列出全部受影响符号与调用链（`strict` 流程、`Bat::new` 调用点、`SectionsConfig` 参数流、API 公开重导出），形成 executor 用索引表。
   **Must NOT do**: 不修改实现逻辑；不改对外接口。
@@ -137,7 +137,7 @@ Wave 4: hardening and release prep
 
   **Commit**: NO | Message: `n/a` | Files: []
 
-- [ ] 2. 修复 BAT chunk ratio 默认值硬编码
+- [x] 2. 修复 BAT chunk ratio 默认值硬编码
 
   **What to do**: 让 `Bat::new` 接收真实 `logical_sector_size` 与 `block_size`；移除默认常量硬编码计算；确保 payload/bitmap 条目分类逻辑使用真实参数。
   **Must NOT do**: 不改 BAT 状态语义；不改变 BAT on-disk 格式。
@@ -176,7 +176,7 @@ Wave 4: hardening and release prep
 
   **Commit**: YES | Message: `fix(bat): compute chunk ratio from actual metadata parameters` | Files: [src/sections/bat.rs, src/sections.rs, src/file.rs, tests/**]
 
-- [ ] 3. 使 strict=false 语义生效（仅放宽 optional unknown）
+- [x] 3. 使 strict=false 语义生效（仅放宽 optional unknown）
 
   **What to do**: 在 open/metadata 读取路径实现 strict 分支：required unknown 始终失败；optional unknown 在 strict=false 下可忽略。
   **Must NOT do**: 不放宽 required unknown；不改变 strict=true 现有行为。
@@ -214,7 +214,7 @@ Wave 4: hardening and release prep
 
   **Commit**: YES | Message: `fix(open): implement strict mode optional-unknown relaxation` | Files: [src/file.rs, tests/**]
 
-- [ ] 4. 固化日志策略边界回归（Require/Auto/InMemory/ReadOnlyNoReplay）
+- [x] 4. 固化日志策略边界回归（Require/Auto/InMemory/ReadOnlyNoReplay）
 
   **What to do**: 为四种策略补充回归测试，确认只读/可写组合下行为与标准一致。
   **Must NOT do**: 不引入新策略；不改变既有错误类型契约。
@@ -250,7 +250,7 @@ Wave 4: hardening and release prep
 
   **Commit**: YES | Message: `test(open): add replay-policy behavior matrix coverage` | Files: [tests/**, src/**(if minor hooks needed)]
 
-- [ ] 5. 锁定 UB 结论的可重复检查
+- [x] 5. 锁定 UB 结论的可重复检查
 
   **What to do**: 加入/更新审计测试或断言，说明唯一 unsafe 使用的前置边界条件，防止后续改动破坏安全假设。
   **Must NOT do**: 不新增 unsafe；不放宽边界检查。
@@ -285,7 +285,7 @@ Wave 4: hardening and release prep
 
   **Commit**: YES | Message: `test(log): enforce unsafe-entry boundary invariants` | Files: [src/sections/log.rs, tests/**]
 
-- [ ] 6. API 形态差异决策并执行（代码改 or 文档改）
+- [x] 6. API 形态差异决策并执行（代码改 or 文档改）
 
   **What to do**: 对 `SpecValidator<'a>` 与 `HeaderStructure::create` 形态偏差执行最终对齐：优先保证代码正确性与稳定 API，再同步 `docs/plan/API.md` 描述。
   **Must NOT do**: 不破坏现有对外可用路径；不引入不必要 breaking change。
@@ -322,7 +322,7 @@ Wave 4: hardening and release prep
 
   **Commit**: YES | Message: `docs(api): align API plan contracts with implementation shape` | Files: [docs/plan/API.md, src/**(if required)]
 
-- [ ] 7. 传播 Bat::new 新签名到 SectionsConfig/Sections
+- [x] 7. 传播 Bat::new 新签名到 SectionsConfig/Sections
 
   **What to do**: 扩展 `SectionsConfig` 与 `Sections` 字段，把真实参数传入 BAT 懒加载构造路径。
   **Must NOT do**: 不破坏其它 section lazy load 语义。
@@ -358,7 +358,7 @@ Wave 4: hardening and release prep
 
   **Commit**: YES | Message: `refactor(sections): propagate real sector and block size into BAT init` | Files: [src/sections.rs, src/file.rs, src/sections/bat.rs]
 
-- [ ] 8. 对齐 Error 语义映射与计划描述
+- [x] 8. 对齐 Error 语义映射与计划描述
 
   **What to do**: 检查计划中的 Error 枚举与实现超集关系，补充计划文档说明“实现超集但兼容”。
   **Must NOT do**: 不删除现有错误变体。
@@ -394,7 +394,7 @@ Wave 4: hardening and release prep
 
   **Commit**: YES | Message: `docs(error): document planned vs implemented error variants` | Files: [docs/plan/API.md]
 
-- [ ] 9. 建立对照测试矩阵（计划条目→测试）
+- [x] 9. 建立对照测试矩阵（计划条目→测试）
 
   **What to do**: 新建/更新测试矩阵注释，保证关键计划条目有至少一条自动测试覆盖。
   **Must NOT do**: 不把手工验证写成验收条件。
@@ -430,7 +430,7 @@ Wave 4: hardening and release prep
 
   **Commit**: YES | Message: `test(meta): map plan contracts to automated coverage` | Files: [tests/**, docs/plan/API.md(optional section)]
 
-- [ ] 10. 补齐 strict 模式测试（三分法）
+- [x] 10. 补齐 strict 模式测试（三分法）
 
   **What to do**: 增加 strict=true / strict=false(optional unknown) / strict=false(required unknown) 三类场景测试。
   **Must NOT do**: 不依赖外部人工构造文件。
@@ -467,7 +467,7 @@ Wave 4: hardening and release prep
 
   **Commit**: YES | Message: `test(open): add strict behavior matrix coverage` | Files: [tests/**]
 
-- [ ] 11. 补齐 BAT 非默认参数回归测试
+- [x] 11. 补齐 BAT 非默认参数回归测试
 
   **What to do**: 增加 `logical_sector_size=4096` 与不同 block size 的 BAT 分类/读路径测试。
   **Must NOT do**: 不仅验证 happy path，必须验证旧错误路径被拦截。
@@ -503,7 +503,7 @@ Wave 4: hardening and release prep
 
   **Commit**: YES | Message: `test(bat): cover non-default sector and block configurations` | Files: [tests/**]
 
-- [ ] 12. 校准 validator/plan 契约表述
+- [x] 12. 校准 validator/plan 契约表述
 
   **What to do**: 同步 `SpecValidator` 生命周期与模块导出描述，避免 API 文档歧义。
   **Must NOT do**: 不弱化已有校验职责。
@@ -540,7 +540,7 @@ Wave 4: hardening and release prep
 
   **Commit**: YES | Message: `docs(validation): align validator signature and exports` | Files: [docs/plan/API.md]
 
-- [ ] 13. 确认 create/open 内部策略一致性（含 create 后 reopen）
+- [x] 13. 确认 create/open 内部策略一致性（含 create 后 reopen）
 
   **What to do**: 审核并修正 `open_file` 内部默认策略使用，避免与计划语义冲突（必要时显式注释说明）。
   **Must NOT do**: 不改变外部 `OpenOptions` 默认策略（Require）。
@@ -575,7 +575,7 @@ Wave 4: hardening and release prep
 
   **Commit**: YES | Message: `fix(file): make internal open policy semantics explicit and consistent` | Files: [src/file.rs, tests/**]
 
-- [ ] 14. 对齐 HeaderStructure::create 文档/语义说明
+- [x] 14. 对齐 HeaderStructure::create 文档/语义说明
 
   **What to do**: 统一计划文档中 create 的返回语义说明（序列化字节 vs 结构视图）。
   **Must NOT do**: 不改动稳定写入行为。
@@ -611,7 +611,7 @@ Wave 4: hardening and release prep
 
   **Commit**: YES | Message: `docs(header): align create return semantics with implementation` | Files: [docs/plan/API.md]
 
-- [ ] 15. 更新公开 API 示例与导出路径校验
+- [x] 15. 更新公开 API 示例与导出路径校验
 
   **What to do**: 校准 README/API 示例里 `section::Entry`、`StandardItems`、validator 使用路径。
   **Must NOT do**: 不引入与实现不一致的新示例。
@@ -647,7 +647,7 @@ Wave 4: hardening and release prep
 
   **Commit**: YES | Message: `docs(examples): align import paths and API usage examples` | Files: [docs/plan/API.md, README.md(optional)]
 
-- [ ] 16. 全量回归：workspace test + clippy + fmt
+- [x] 16. 全量回归：workspace test + clippy + fmt
 
   **What to do**: 执行统一质量门禁并修复由本次改动引入的问题。
   **Must NOT do**: 不跳过失败项；不删测试。
@@ -684,7 +684,7 @@ Wave 4: hardening and release prep
 
   **Commit**: NO | Message: `n/a` | Files: []
 
-- [ ] 17. 生成“计划一致性验收报告”
+- [x] 17. 生成“计划一致性验收报告”
 
   **What to do**: 汇总每个差异项的修复状态、测试证据、残余偏差（若有）与理由。
   **Must NOT do**: 不留“待人工确认”闭环。
@@ -720,7 +720,7 @@ Wave 4: hardening and release prep
 
   **Commit**: YES | Message: `docs(report): add implementation-to-plan alignment verification report` | Files: [.sisyphus/evidence/**, docs/**]
 
-- [ ] 18. 代码质量复核（非功能）
+- [x] 18. 代码质量复核（非功能）
 
   **What to do**: 复核新增逻辑是否引入重复、隐藏假设、不可维护分支。
   **Must NOT do**: 不追加范围外重构。
@@ -755,7 +755,7 @@ Wave 4: hardening and release prep
 
   **Commit**: NO | Message: `n/a` | Files: []
 
-- [ ] 19. 作用域忠实性复核（防 scope creep）
+- [x] 19. 作用域忠实性复核（防 scope creep）
 
   **What to do**: 核查变更仅覆盖计划差异项与必要测试，不含额外功能。
   **Must NOT do**: 不扩大到新 feature。
@@ -790,7 +790,7 @@ Wave 4: hardening and release prep
 
   **Commit**: NO | Message: `n/a` | Files: []
 
-- [ ] 20. 发布前收口：变更摘要 + 执行说明
+- [x] 20. 发布前收口：变更摘要 + 执行说明
 
   **What to do**: 输出执行结果摘要、剩余风险（若有）、后续建议（可选项单列）。
   **Must NOT do**: 不声称完成未验证项。
@@ -829,10 +829,10 @@ Wave 4: hardening and release prep
 > 4 review agents run in PARALLEL. ALL must APPROVE. Present consolidated results to user and get explicit "okay" before completing.
 > **Do NOT auto-proceed after verification. Wait for user's explicit approval before marking work complete.**
 > **Never mark F1-F4 as checked before getting user's okay.** Rejection or user feedback -> fix -> re-run -> present again -> wait for okay.
-- [ ] F1. Plan Compliance Audit — oracle
-- [ ] F2. Code Quality Review — unspecified-high
-- [ ] F3. Real Manual QA — unspecified-high (+ playwright if UI)
-- [ ] F4. Scope Fidelity Check — deep
+- [x] F1. Plan Compliance Audit — oracle
+- [x] F2. Code Quality Review — unspecified-high
+- [x] F3. Real Manual QA — unspecified-high (+ playwright if UI)
+- [x] F4. Scope Fidelity Check — deep
 
 ## Commit Strategy
 - 原子提交，按任务簇提交：

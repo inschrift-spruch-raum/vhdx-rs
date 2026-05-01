@@ -1,0 +1,46 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running unittests src\lib.rs (target\debug\deps\vhdx_rs-d539657daf548747.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+
+     Running tests\api_surface_smoke.rs (target\debug\deps\api_surface_smoke-c3c0f5669fc4673b.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 0.00s
+
+     Running tests\integration_test.rs (target\debug\deps\integration_test-4a7c280cb07b11cf.exe)
+
+running 8 tests
+test t10_strict_false_allows_optional_unknown_metadata ... ok
+test t10_strict_true_rejects_optional_unknown_metadata ... ok
+test t10_strict_false_rejects_required_unknown_metadata_with_error_variant ... ok
+test t10_strict_false_rejects_required_unknown_region_with_error_variant ... ok
+test t10_strict_true_rejects_required_unknown_region_with_error_variant ... ok
+test t10_strict_true_rejects_optional_unknown_region ... ok
+test t10_strict_true_rejects_required_unknown_metadata_with_error_variant ... ok
+test t10_strict_false_allows_optional_unknown_region ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 181 filtered out; finished in 0.04s
+
+     Running unittests src\main.rs (target\debug\deps\vhdx_tool-99a4ad43c3a34e2d.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\cli_integration.rs (target\debug\deps\cli_integration-ad3da88bb27ba7fe.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 55 filtered out; finished in 0.00s
+
+   Doc-tests vhdx_rs
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+all doctests ran in 0.20s; merged doctests compilation took 0.19s

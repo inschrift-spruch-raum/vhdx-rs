@@ -1,0 +1,55 @@
+F3 Real Manual QA Evidence
+Date: 2026-05-01
+Repository: vhdx-rs (Rust library + vhdx-tool CLI)
+
+Scope and method
+- Focused on observable behavior for non-UI surfaces (library/CLI).
+- Reviewed changed-area context via current repo status (core code in src/file.rs, src/sections.rs, src/sections/bat.rs, tests/integration_test.rs).
+- Executed representative runtime/manual checks and recorded real outcomes only.
+
+Executed checks
+1) Full regression gate
+   - Command: cargo test --workspace
+   - Result: PASS
+   - Evidence summary:
+     - vhdx-rs unit tests: 48 passed, 0 failed
+     - api_surface_smoke: 32 passed, 0 failed
+     - integration_test: 194 passed, 0 failed
+     - vhdx-tool cli_integration: 55 passed, 0 failed
+     - doctests: 3 passed, 0 failed
+
+2) CLI discoverability checks
+   - Command: cargo run -p vhdx-tool -- --help
+   - Result: PASS (top-level commands listed: info/create/check/repair/sections/diff)
+   - Command: cargo run -p vhdx-tool -- create --help
+   - Result: PASS (create flags/help shown as expected)
+
+3) CLI behavior path (error path, real execution)
+   - Command: cargo run -p vhdx-tool -- create <temp>/qa-disk.vhdx --size 16MB
+   - Result: EXPECTED FAILURE
+   - Observed output:
+     - "Error creating VHDX file: Invalid parameter: Virtual size must be a multiple of logical sector size"
+   - Interpretation: input-size parsing/validation path is active and returns explicit user-facing error.
+
+4) CLI behavior path (success path, real execution)
+   - Commands executed in sequence:
+     - cargo run -p vhdx-tool -- create <temp>/qa-disk.vhdx --size 16MiB
+     - cargo run -p vhdx-tool -- info <temp>/qa-disk.vhdx --format text
+     - cargo run -p vhdx-tool -- check <temp>/qa-disk.vhdx
+   - Result: PASS
+   - Observed output highlights:
+     - create: file created successfully; type Dynamic; block size printed
+     - info: shows virtual size 16MiB, block size, logical sector size, disk type
+     - check: Header/Region Table/Metadata/Required Metadata/BAT/Log all passed; summary 6 passed, 0 failed
+
+Regression assessment
+- No user-facing regressions observed in tested CLI/library paths relevant to changed areas.
+- Existing comprehensive test matrix and manual command outcomes are consistent.
+
+Final verdict
+VERDICT: APPROVE
+
+Rationale
+- Full workspace tests passed cleanly.
+- Representative CLI success/failure behavior is practical, explicit, and stable.
+- No contradictory evidence from manual execution paths.

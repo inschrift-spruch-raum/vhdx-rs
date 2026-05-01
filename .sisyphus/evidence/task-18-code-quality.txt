@@ -1,0 +1,69 @@
+Task 18 - 非功能代码质量复核（maintainability / clarity / risk）
+Date: 2026-05-01
+Scope Baseline: staged plan-era changes from Tasks 2–16
+
+审计范围（按任务要求）
+- src/file.rs
+- src/sections.rs
+- src/sections/bat.rs
+- tests/integration_test.rs
+- docs/plan/API.md
+
+方法
+- `git diff --cached --stat` + `git diff --cached` 锁定计划阶段变更
+- 逐文件代码走读，重点检查：重复逻辑、隐藏假设、脆弱分支、不清晰不变量
+- AST 检索验证关键路径无“影子硬编码”与旧签名残留
+
+结论摘要
+- 未发现 Critical 级可维护性风险。
+- 发现 2 个非功能性风险（1 x Medium, 1 x Low），均可通过后续小范围整理降低维护成本。
+- strict=false 语义与 Task 13 的默认 Require 策略在实现与注释层保持一致，无语义漂移证据。
+
+Findings
+
+1) [MEDIUM] duplicated strict-check coverage increases brittle maintenance
+- File/Line: tests/integration_test.rs:3312-3335, 3522-3584, 7477+（同类对称测试在后段）
+- Evidence:
+  - 旧测试只断言 `is_err()`：
+    - `test_open_strict_false_rejects_required_unknown_metadata`（3312-3335）
+  - Task 10 新增矩阵测试已覆盖更强语义（错误变体+消息）：
+    - `t10_strict_false_rejects_required_unknown_metadata_with_error_variant`（3552-3584）
+- Risk:
+  - 同语义多份测试并存且断言强度不一致，会导致未来语义调整时“部分测试过、部分测试碎裂”的维护噪音。
+- Disposition: accepted
+- Rationale:
+  - 当前不做范围外重构/删测；保持现有测试稳定性优先。
+
+2) [LOW] implicit invariant spread across dynamic read/write paths
+- File/Line: src/file.rs:309-327, 355-375, 569-587, 1516-1545
+- Evidence:
+  - `chunk_ratio` 与 BAT payload index 交错规则在 read/write/create 三处重复计算。
+  - 规则一致，但依赖“多处同步维护”这一隐含前提。
+- Risk:
+  - 未来若修改 BAT 交错策略，需同步多点更新，漏改将引入行为分叉。
+- Disposition: accepted
+- Rationale:
+  - 当前实现逻辑一致且已有回归覆盖（Task 11 + Task 16 gates）；本任务禁止范围外重构。
+
+专项核对（任务强制项）
+
+A. duplicated strict/BAT logic path audit
+- BAT 参数化：
+  - `Bat::new` 已统一使用真实参数 `logical_sector_size/block_size`（src/sections/bat.rs:38-56）
+  - `SectionsConfig` 已透传真实参数到 bat()/bat_mut()（src/sections.rs:177-180, 280-285, 302-307）
+  - 生产路径无旧 `Bat::new(data, entry_count)` 残留（AST 搜索结果仅 4 参数调用）
+- chunk_ratio shadow hardcode audit:
+  - 生产代码无 `calculate_chunk_ratio(512, 32MB)` 硬编码调用；仅在单元测试存在显式 512/4096 对比（src/sections/bat.rs:569, 665, 678）
+
+B. strict=false / policy semantics alignment (Task 13 guard)
+- 默认打开策略仍为 Require：
+  - `File::open` 默认 `log_replay: LogReplayPolicy::Require`（src/file.rs:146-153）
+  - 内部 `open_file` 默认同样走 Require（src/file.rs:712-716）
+- strict=false 仅放宽 optional unknown：
+  - region: src/file.rs:948-968
+  - metadata: src/file.rs:912-931
+- 注释与行为一致，未见“策略文案说 A、代码做 B”的偏移。
+
+Final Statement
+- no critical maintainability risks found in Tasks 2–16 changed paths.
+- non-critical risks are documented above with explicit disposition.

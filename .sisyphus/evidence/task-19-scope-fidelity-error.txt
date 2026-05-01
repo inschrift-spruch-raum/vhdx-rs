@@ -1,0 +1,24 @@
+# Task 19 Scope Fidelity Error Log
+
+Detected issue:
+- Unrelated/prohibited modification found in `.sisyphus/plans/api-alignment-full.md`.
+- Violation type: read-only plan file edited (checkbox toggles).
+
+Risk:
+- Breaks plan governance contract and introduces process scope creep.
+
+Action taken/planned:
+- Revert `.sisyphus/plans/api-alignment-full.md` to HEAD.
+- Re-audit git status to confirm removal of prohibited delta.
+- Re-run `cargo test --workspace` because cleanup change is performed.
+
+## Resolution
+- Reverted prohibited plan-file delta successfully.
+- Re-ran workspace tests after cleanup; all passed.
+- Issue downgraded to resolved process violation with no remaining product-scope creep.
+
+## Current-run recurrence + closure
+- Recurrence observed: plan-file checkbox update for Task 18 reintroduced prohibited delta.
+- Disposition: removed via `git restore --staged --worktree -- .sisyphus/plans/api-alignment-full.md`.
+- Verification: `cargo test --workspace` re-run and passed.
+- Final status: resolved, no unresolved scope-violation left.

@@ -1,0 +1,6 @@
+Task 6 negative checks summary
+
+- LSP diagnostics for Markdown unavailable in current environment: no LSP server configured for `.md`.
+- No compile or test failures observed after API contract doc alignment.
+- Build verification captured at `.sisyphus/evidence/task-6-api-shape-build.txt`.
+- Test verification captured at `.sisyphus/evidence/task-6-api-shape.txt`.

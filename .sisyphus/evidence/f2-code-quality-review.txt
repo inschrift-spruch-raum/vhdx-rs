@@ -1,0 +1,56 @@
+F2 Code Quality Review — Final-Wave Approval
+Date: 2026-05-01
+Repo: vhdx-rs
+
+VERDICT: APPROVE
+
+Scope Reviewed:
+- Accumulated plan-era deltas with focus on product-impacting files:
+  - src/file.rs
+  - src/sections.rs
+  - src/sections/bat.rs
+  - tests/integration_test.rs
+  - docs/plan/API.md
+  - docs/plan/alignment-acceptance-report.md
+- Prior evidence reconciled:
+  - Task 16 quality gates: .sisyphus/evidence/task-16-quality-gates.txt
+  - Task 18 code-quality review: .sisyphus/evidence/task-18-code-quality.txt
+  - Task 19 scope-fidelity: .sisyphus/evidence/task-19-scope-fidelity.txt
+  - Task 20 final summary: .sisyphus/evidence/task-20-final-summary.txt
+
+Decision Rationale:
+1) Maintainability: ACCEPTABLE
+- Core behavior changes are localized to BAT parameterization, strict-mode semantics, and policy guardrails.
+- Tests are comprehensive and explicitly cover edge/error paths (strict matrix, BAT 4096/512 divergence, log replay/UB boundaries).
+- Task 18 identified only non-critical residual risks (1 medium + 1 low), both documented and accepted with rationale.
+
+2) Clarity: ACCEPTABLE
+- New tests use explicit naming and assertion messages; behavior intent is traceable.
+- In-code comments/doc alignment for API semantics and policy boundaries remains consistent with acceptance report.
+
+3) Invariant Safety: ACCEPTABLE
+- BAT chunk-ratio and index mapping rules are now parameter-driven and cross-checked by dedicated tests.
+- Pending-log policy invariants (Require/Auto/InMemoryOnReadOnly/ReadOnlyNoReplay) have regression coverage.
+- UB-sensitive log validation boundaries remain protected by targeted negative-path tests.
+
+4) Regression Confidence: HIGH
+- Task 16 previously reported all-green gates (test/clippy/fmt).
+- Current-run revalidation executed:
+  - cargo test --workspace: PASS
+  - No failing suites; newly added/affected tests passed in integration + unit scopes.
+
+Reconciliation with Task 18 Findings:
+- [MEDIUM] strict-related test duplication / mixed assertion strength: ACCEPTABLE as non-blocking for approval (maintenance noise only, no correctness risk).
+- [LOW] chunk-ratio/index invariant repeated across paths: ACCEPTABLE as non-blocking for approval under current no-refactor scope; behavior locked by regression coverage.
+
+Blockers (priority order):
+- None for code-quality approval.
+
+Exact Fix Guidance if Rejected:
+- Not applicable (verdict is APPROVE).
+
+Evidence References:
+- .sisyphus/evidence/task-16-quality-gates.txt
+- .sisyphus/evidence/task-18-code-quality.txt
+- .sisyphus/evidence/task-19-scope-fidelity.txt
+- .sisyphus/evidence/task-20-final-summary.txt

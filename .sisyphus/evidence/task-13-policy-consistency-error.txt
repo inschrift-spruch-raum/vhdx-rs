@@ -1,0 +1,6 @@
+Task 13 - error/issue log
+Date: 2026-05-01
+
+- lsp_diagnostics unavailable in this environment: rust-analyzer.exe missing from stable toolchain.
+  Command fallback used: cargo test (targeted + workspace) as mandatory verification source.
+- No test failures after final change.

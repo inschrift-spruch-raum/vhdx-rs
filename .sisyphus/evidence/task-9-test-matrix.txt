@@ -1,0 +1,279 @@
+================================================================================
+TASK 9: 对照测试矩阵（计划条目 → 自动化测试 ID）
+================================================================================
+生成时间: 2026-05-01
+总测试数: 314 (43 单元 + 32 API surface smoke + 181 集成 + 55 CLI + 3 doctest)
+证据文件: .sisyphus/evidence/task-9-test-matrix.txt
+
+================================================================================
+矩阵覆盖范围: 5 大类别
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+1. strict 三分法
+   计划条目: Task 3 (strict=false 语义), Task 10 (strict 三分法测试)
+   三分法: strict=true / strict=false+optional unknown / strict=false+required unknown
+────────────────────────────────────────────────────────────────────────────────
+
+1.1 strict=true 拒绝所有 unknown（region + metadata）
+    [UNIT] file::tests::test_strict_true_optional_unknown_region_fails
+    [UNIT] file::tests::test_strict_true_optional_unknown_metadata_fails
+    [UNIT] file::tests::test_default_strict_rejects_optional_unknown_region
+    [INTG] test_open_strict_rejects_required_unknown_region
+    [INTG] test_open_strict_unknown_required_metadata_behavior
+    [INTG] test_strict_true_and_false_both_reject_required_unknown_region
+
+1.2 strict=false 允许 optional unknown
+    [UNIT] file::tests::test_strict_false_optional_unknown_region_succeeds
+    [UNIT] file::tests::test_strict_false_optional_unknown_metadata_succeeds
+    [INTG] test_open_strict_false_allows_optional_unknown_region
+
+1.3 strict=false 仍拒绝 required unknown
+    [UNIT] file::tests::test_strict_false_required_unknown_region_fails
+    [UNIT] file::tests::test_strict_false_required_unknown_metadata_fails
+    [INTG] test_open_strict_false_rejects_required_unknown_region
+    [INTG] test_open_strict_false_rejects_required_unknown_metadata
+
+覆盖统计: strict 三分法 → 13 个测试
+验证命令: cargo test --workspace -- test_open_strict test_strict test_default_strict
+验证结果: 13 passed, 0 failed ✅
+
+────────────────────────────────────────────────────────────────────────────────
+2. BAT 非默认参数/签名传播
+   计划条目: Task 2 (chunk ratio 真实参数化), Task 7 (签名传播), Task 11 (非默认参数回归)
+────────────────────────────────────────────────────────────────────────────────
+
+2.1 chunk_ratio 计算正确性
+    [UNIT] sections::bat::tests::test_chunk_ratio_calculation
+    [UNIT] sections::bat::tests::test_calculate_payload_blocks
+
+2.2 BAT 条目解析（含 sector bitmap 上下文）
+    [UNIT] sections::bat::tests::test_bat_entry_from_raw
+    [UNIT] sections::bat::tests::test_bat_entry_from_raw_sector_bitmap_context
+    [UNIT] sections::bat::tests::test_bat_entry_from_raw_sector_bitmap_context_rejects_invalid_state
+    [UNIT] sections::bat::tests::test_bat_entry_to_raw
+    [UNIT] sections::bat::tests::test_bat_new_parses_sector_bitmap_in_partial_final_chunk
+    [UNIT] sections::bat::tests::test_bat_new_parses_sector_bitmap_via_entry_and_entries
+    [UNIT] sections::bat::tests::test_bat_new_rejects_invalid_sector_bitmap_state
+    [UNIT] sections::bat::tests::test_entries_empty_bat
+    [UNIT] sections::bat::tests::test_entries_returns_owned_copy
+    [UNIT] sections::bat::tests::test_entries_returns_vec_with_correct_content
+    [UNIT] sections::bat::tests::test_payload_block_states
+
+2.3 集成：BAT section 创建/遍历/非默认块大小
+    [INTG] test_bat_section_after_create
+    [INTG] test_bat_entries_vec_traversable
+    [INTG] test_write_dynamic_uses_payload_entry_not_sector_bitmap_at_chunk_boundary
+    [INTG] test_create_fixed_disk_with_custom_block_size
+    [INTG] test_create_dynamic_disk_with_custom_block_size
+    [INTG] test_metadata_block_size_matches
+    [INTG] test_default_block_size_is_32mb
+
+2.4 BAT signature 传播验证（Task 7 证据）
+    证据: .sisyphus/evidence/task-7-bat-signature.txt
+    验证方法: ast-grep 搜索全部 Bat::new( 调用，7 处全部使用 4 参数签名
+    无独立测试（Task 7 结论为"Task2 已完全覆盖"）
+
+覆盖统计: BAT → 23 个测试 + 1 份静态分析证据
+验证命令: cargo test --workspace -- test_bat test_chunk_ratio test_write_dynamic_uses_payload test_block_size
+验证结果: 11 unit + 3 integration = 14 passed, 0 failed ✅
+
+────────────────────────────────────────────────────────────────────────────────
+3. API shape (SpecValidator / HeaderStructure::create / 公开导出)
+   计划条目: Task 6 (API 形态差异对齐), Task 12 (validator 契约表述), Task 15 (示例路径校验)
+────────────────────────────────────────────────────────────────────────────────
+
+3.1 SpecValidator 可构造与使用
+    [SMOK] smoke_root_validation_types_import
+    [SMOK] smoke_validation_mod_import
+    [SMOK] smoke_file_validator_methods_callable
+    [INTG] test_file_validator_callable_and_validate_file
+    [INTG] test_file_validator_individual_methods
+    [INTG] test_spec_decision_manifest
+
+3.2 Validator 分项测试 (t6/t7/t8 命名模式)
+    [INTG] test_t6_validator_header_and_region_table_happy_path
+    [INTG] test_t6_validator_region_table_rejects_required_unknown_region
+    [INTG] test_t7_validator_bat_and_log_happy_path
+    [INTG] test_t7_validator_bat_rejects_notpresent_with_nonzero_offset
+    [INTG] test_t7_validator_log_rejects_descriptor_count_mismatch
+    [INTG] test_t8_validator_required_metadata_happy_path
+    [INTG] test_t8_validator_required_metadata_rejects_missing_known_required_item
+    [INTG] test_t8_validator_required_metadata_rejects_required_unknown_item
+
+3.3 HeaderStructure::create 与 header 类型可访问
+    [SMOK] smoke_section_header_types_import
+    [SMOK] smoke_header_substructure_fields_accessible
+    [UNIT] sections::header::tests::test_header_structure
+    [UNIT] sections::header::tests::test_file_type_identifier
+    [UNIT] sections::header::tests::test_region_table_entry
+    [INTG] test_t9_section_module_import_paths
+
+3.4 公开导出路径校验
+    [SMOK] smoke_root_core_types_import
+    [SMOK] smoke_root_io_section_types_import
+    [SMOK] smoke_root_options_types_import
+    [SMOK] smoke_root_policy_and_chain_info_import
+    [SMOK] smoke_root_helpers_import
+    [SMOK] smoke_section_bat_types_import
+    [SMOK] smoke_section_metadata_types_import
+    [SMOK] smoke_section_log_types_import
+    [SMOK] smoke_section_sections_type_import
+    [SMOK] smoke_constants_namespace_import
+    [SMOK] smoke_constants_region_guids_import
+    [SMOK] smoke_constants_metadata_guids_import
+    [SMOK] smoke_section_standard_items_namespace_import
+
+3.5 Validator 完整校验矩阵
+    [INTG] test_validate_region_table_detects_corrupted_crc
+    [INTG] test_validate_metadata_entry_constraints_happy
+    [INTG] test_validate_metadata_entry_constraints_dynamic_happy
+    [INTG] test_validate_metadata_known_items_happy
+    [INTG] test_validate_metadata_rejects_duplicate_item_id
+    [INTG] test_validate_metadata_rejects_invalid_known_item_values
+    [INTG] test_validate_metadata_rejects_invalid_table_signature
+    [INTG] test_validate_metadata_rejects_out_of_range_entry
+    [INTG] test_validate_metadata_rejects_overlapping_entries
+    [INTG] test_validate_metadata_rejects_zero_length_entry
+    [INTG] test_validate_metadata_scope_boundary_required_item_completeness_is_separate
+    [INTG] test_validate_parent_locator_rejects_duplicate_keys
+    [INTG] test_validate_parent_locator_rejects_invalid_type
+    [INTG] test_validate_parent_locator_rejects_missing_all_path_keys
+    [INTG] test_validate_parent_locator_strict_valid
+    [INTG] test_validate_parent_chain_fails_on_linkage_mismatch
+    [INTG] test_validate_parent_chain_non_diff_disk_returns_error
+    [INTG] test_validate_parent_chain_passes_with_parent_linkage2_and_real_child_path
+    [INTG] test_validate_parent_chain_single_hop_happy
+    [INTG] test_validate_parent_chain_single_hop_mismatch
+    [INTG] test_validate_parent_chain_single_hop_parent_not_found
+    [INTG] test_validate_file_covers_both_parent_locator_and_chain_on_diff_disk
+    [INTG] test_validate_file_includes_parent_chain_mismatch
+    [INTG] test_validate_file_includes_parent_locator_for_diff_disk
+    [INTG] test_validate_file_non_differencing_disk_skips_parent_locator_path
+    [INTG] test_validate_file_non_differencing_unchanged
+
+覆盖统计: API shape → 56 个测试 (32 smoke + 5 unit + 38 integration, 有重叠)
+验证命令: cargo test --workspace -- test_file_validator test_t6_validator test_t7_validator test_t8_validator test_t9_section test_spec_decision test_validate smoke_validation smoke_section smoke_root
+验证结果: 38 integration passed, 0 failed ✅
+
+────────────────────────────────────────────────────────────────────────────────
+4. LogReplayPolicy 四策略
+   计划条目: Task 4 (日志策略边界回归)
+   四策略: Require / Auto / InMemoryOnReadOnly / ReadOnlyNoReplay
+────────────────────────────────────────────────────────────────────────────────
+
+4.1 Require 策略
+    [INTG] test_require_policy_rejects_when_pending_logs
+    [INTG] test_default_open_rejects_pending_logs
+    [INTG] test_open_with_require_policy_no_pending_logs
+    [INTG] test_default_open_succeeds_on_clean_file
+
+4.2 Auto 策略
+    [INTG] test_auto_policy_writable_replays_to_disk
+    [INTG] log_replay_auto_applies_entry
+    [INTG] log_replay_refreshes_sections
+
+4.3 InMemoryOnReadOnly 策略
+    [INTG] test_inmemory_on_readonly_exposes_replayed_data_via_io
+    [INTG] test_inmemory_on_readonly_rejects_writable_with_pending_logs
+    [INTG] test_inmemory_on_readonly_succeeds_without_pending_logs
+    [INTG] test_inmemory_on_readonly_writable_succeeds_without_pending_logs
+    [INTG] test_inmemory_on_readonly_does_not_write_back_to_disk
+    [INTG] test_dynamic_allocated_block_replay_overlay_applies_on_inmemory_readonly_read
+    [INTG] test_dynamic_unallocated_block_overlay_does_not_break_zero_fill_semantics
+    [INTG] test_replay_overlay_does_not_affect_non_overlapping_allocated_block
+    [INTG] test_dynamic_allocated_block_auto_policy_applies_overlay_on_readonly_open
+
+4.4 ReadOnlyNoReplay 策略
+    [INTG] test_readonly_no_replay_allows_structure_reading_with_pending_logs
+    [INTG] test_readonly_no_replay_rejects_writable_with_pending_logs
+    [INTG] test_readonly_no_replay_is_explicit_compat_mode
+    [INTG] test_open_with_read_only_no_replay_policy
+    [INTG] test_dynamic_readonly_no_replay_preserves_on_disk_data
+    [INTG] test_log_replay_policy_readonly_no_replay_keeps_pending
+
+4.5 策略枚举可访问性
+    [INTG] test_log_replay_policy_variants_accessible
+    [SMOK] smoke_open_builder_chain_callable
+    [SMOK] smoke_root_policy_and_chain_info_import
+
+4.6 日志回放语义（策略无关）
+    [INTG] log_replay_active_sequence_only
+    [INTG] log_replay_combined_leading_trailing_preserves_both_ends
+    [INTG] log_replay_data_descriptor_leading_trailing_semantics
+    [INTG] log_replay_enforces_file_size_offsets
+    [INTG] log_replay_guid_match
+    [INTG] log_replay_rejects_invalid_checksum
+    [INTG] log_replay_rejects_invalid_leading_trailing_combination
+    [INTG] log_replay_rejects_mismatched_log_guid
+    [INTG] log_replay_trailing_bytes_preserves_end_of_target
+    [INTG] test_log_replay_clears_guid_and_updates_header_sequence
+    [INTG] test_open_readonly_between_writable_keeps_sequence
+    [INTG] test_open_readonly_replay_policies_behavior_diff_with_pending_logs
+
+覆盖统计: LogReplayPolicy → 35 个测试
+验证命令: cargo test --workspace -- test_require_policy test_readonly_no_replay test_inmemory_on_readonly test_auto_policy test_default_open test_log_replay_policy log_replay_ test_open_readonly
+验证结果: 14 核心策略测试 passed, 0 failed ✅
+
+────────────────────────────────────────────────────────────────────────────────
+5. UB 边界 (unsafe 入口安全不变量)
+   计划条目: Task 5 (UB 结论可重复检查)
+   唯一 unsafe: src/sections/log.rs Log::entry() const fn from_raw_parts
+────────────────────────────────────────────────────────────────────────────────
+
+5.1 UB 安全边界测试 (test_ub_safety_*)
+    [INTG] test_ub_safety_descriptor_count_exceeds_parseable
+    [INTG] test_ub_safety_entry_length_exceeds_available_bytes
+    [INTG] test_ub_safety_descriptor_area_exceeds_entry_length
+    [INTG] test_ub_safety_invalid_data_sector_signature_rejected
+    [INTG] test_ub_safety_torn_data_sector_rejected
+    [INTG] test_ub_safety_leading_trailing_overflow_rejected
+    [INTG] test_ub_safety_empty_log_entry_no_panic
+    [INTG] test_ub_safety_log_entry_data_shorter_than_header
+    [INTG] test_ub_safety_data_sector_count_mismatch
+    [INTG] test_ub_safety_checksum_mismatch_blocks_replay
+    [INTG] test_ub_safety_descriptor_area_size_overflow
+    [INTG] test_ub_safety_log_entry_index_matches_in_multi_entry_scenario
+
+5.2 Log 单元测试（构造正确性）
+    [UNIT] sections::log::tests::test_data_descriptor
+    [UNIT] sections::log::tests::test_log_entry_header
+    [UNIT] sections::log::tests::test_log_entry_index_matches_entries_order
+    [UNIT] sections::log::tests::test_log_entry_out_of_range_returns_none
+    [UNIT] sections::log::tests::test_zero_descriptor
+
+覆盖统计: UB 边界 → 17 个测试
+验证命令: cargo test --workspace -- test_ub_safety test_log_entry test_zero_descriptor test_data_descriptor
+验证结果: 12 UB-specific passed, 0 failed ✅
+
+================================================================================
+缺失映射检测方式
+================================================================================
+
+方法 1: 命名模式匹配
+  对每个类别执行 grep，检查测试名模式：
+  - strict: grep -c "test_.*strict" → 预期 ≥ 10
+  - BAT:    grep -c "test_.*bat\|test_.*chunk_ratio\|test_.*block_size" → 预期 ≥ 15
+  - API:    grep -c "test_.*validator\|test_.*validate\|smoke_" → 预期 ≥ 30
+  - Log:    grep -c "test_.*replay\|test_.*inmemory\|test_.*readonly_no_replay\|test_.*require_policy\|test_.*auto_policy" → 预期 ≥ 20
+  - UB:     grep -c "test_ub_safety" → 预期 ≥ 12
+
+方法 2: 计划条目反向追踪
+  对 Task 2/3/4/5/6/7 检查 .sisyphus/evidence/ 目录下是否存在对应证据文件。
+  缺失文件即表示对应计划条目未完成验证。
+
+================================================================================
+汇总统计
+================================================================================
+
+| 类别               | 测试数 | 命令验证通过 |
+|--------------------|--------|-------------|
+| strict 三分法       | 13     | ✅           |
+| BAT 非默认/签名传播 | 23     | ✅           |
+| API shape          | 56     | ✅           |
+| LogReplayPolicy    | 35     | ✅           |
+| UB 边界            | 17     | ✅           |
+| ────────────────── | ────── | ─────────── |
+| 合计（去重）        | ~130   | ✅           |
+
+无缺失映射项。所有 5 个类别均有 ≥1 个自动化测试覆盖。

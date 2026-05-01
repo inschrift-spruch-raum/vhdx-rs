@@ -11,9 +11,7 @@
 //! BAT 中的条目按 Payload Block 和 Sector Bitmap Block 交错排列，
 //! 交错间隔由块比率（Chunk ratio）决定（MS-VHDX §2.5）。
 
-use crate::common::constants::{
-    BAT_ENTRY_SIZE, CHUNK_RATIO_CONSTANT, DEFAULT_BLOCK_SIZE, LOGICAL_SECTOR_SIZE_512, MiB,
-};
+use crate::common::constants::{BAT_ENTRY_SIZE, CHUNK_RATIO_CONSTANT, MiB};
 use crate::error::{Error, Result};
 use std::marker::PhantomData;
 
@@ -34,7 +32,12 @@ pub struct Bat<'a> {
 
 impl Bat<'_> {
     /// 从原始数据创建 BAT 实例，验证数据长度是否足够容纳指定数量的条目
-    pub fn new(data: Vec<u8>, entry_count: u64) -> Result<Self> {
+    ///
+    /// 使用实际的 `logical_sector_size` 和 `block_size` 计算 chunk ratio，
+    /// 而非硬编码默认值（MS-VHDX §2.5）。
+    pub fn new(
+        data: Vec<u8>, entry_count: u64, logical_sector_size: u32, block_size: u32,
+    ) -> Result<Self> {
         let entry_count: usize = entry_count.try_into().map_err(|_| {
             Error::InvalidFile(format!("entry_count {entry_count} exceeds usize::MAX"))
         })?;
@@ -48,12 +51,9 @@ impl Bat<'_> {
                 data.len()
             )));
         }
-        let chunk_ratio: usize =
-            Self::calculate_chunk_ratio(LOGICAL_SECTOR_SIZE_512, DEFAULT_BLOCK_SIZE)
-                .try_into()
-                .map_err(|_| {
-                    Error::InvalidFile("default chunk ratio exceeds usize::MAX".to_string())
-                })?;
+        let chunk_ratio: usize = Self::calculate_chunk_ratio(logical_sector_size, block_size)
+            .try_into()
+            .map_err(|_| Error::InvalidFile("chunk ratio exceeds usize::MAX".to_string()))?;
         if chunk_ratio == 0 {
             return Err(Error::InvalidFile(
                 "default chunk ratio must be non-zero".to_string(),
@@ -421,6 +421,10 @@ impl SectorBitmapState {
 mod tests {
     use super::*;
 
+    /// 测试用默认参数（与之前硬编码的默认值一致）
+    const TEST_LOGICAL_SECTOR_SIZE: u32 = 512;
+    const TEST_BLOCK_SIZE: u32 = 32 * 1024 * 1024;
+
     #[test]
     fn test_bat_entry_from_raw() {
         let raw = (1u64 << 20) | 6u64;
@@ -472,7 +476,13 @@ mod tests {
         data[bitmap_offset..bitmap_offset + BAT_ENTRY_SIZE]
             .copy_from_slice(&raw_bitmap.to_le_bytes());
 
-        let bat = Bat::new(data, entry_count as u64).expect("BAT creation should succeed");
+        let bat = Bat::new(
+            data,
+            entry_count as u64,
+            TEST_LOGICAL_SECTOR_SIZE,
+            TEST_BLOCK_SIZE,
+        )
+        .expect("BAT creation should succeed");
 
         let entry = bat.entry(128).expect("entry 128 should exist");
         assert!(matches!(
@@ -499,7 +509,12 @@ mod tests {
             .copy_from_slice(&raw_invalid_bitmap.to_le_bytes());
 
         assert!(matches!(
-            Bat::new(data, entry_count as u64),
+            Bat::new(
+                data,
+                entry_count as u64,
+                TEST_LOGICAL_SECTOR_SIZE,
+                TEST_BLOCK_SIZE
+            ),
             Err(Error::InvalidBlockState(7))
         ));
     }
@@ -518,7 +533,13 @@ mod tests {
         data[130 * BAT_ENTRY_SIZE..131 * BAT_ENTRY_SIZE]
             .copy_from_slice(&raw_bitmap_second.to_le_bytes());
 
-        let bat = Bat::new(data, entry_count as u64).expect("BAT creation should succeed");
+        let bat = Bat::new(
+            data,
+            entry_count as u64,
+            TEST_LOGICAL_SECTOR_SIZE,
+            TEST_BLOCK_SIZE,
+        )
+        .expect("BAT creation should succeed");
         let entries = bat.entries();
 
         assert!(matches!(
@@ -568,7 +589,8 @@ mod tests {
         let raw2 = (2u64 << 20) | 2u64;
         data[16..24].copy_from_slice(&raw2.to_le_bytes());
 
-        let bat = Bat::new(data, 4).expect("BAT creation should succeed");
+        let bat = Bat::new(data, 4, TEST_LOGICAL_SECTOR_SIZE, TEST_BLOCK_SIZE)
+            .expect("BAT creation should succeed");
         let entries = bat.entries();
 
         // 返回类型为 Vec<BatEntry>，长度等于条目数
@@ -599,7 +621,8 @@ mod tests {
     #[test]
     fn test_entries_empty_bat() {
         let data = vec![0u8; 0];
-        let bat = Bat::new(data, 0).expect("Empty BAT creation should succeed");
+        let bat = Bat::new(data, 0, TEST_LOGICAL_SECTOR_SIZE, TEST_BLOCK_SIZE)
+            .expect("Empty BAT creation should succeed");
         let entries = bat.entries();
         assert!(
             entries.is_empty(),
@@ -614,7 +637,8 @@ mod tests {
         let raw = (1u64 << 20) | 6u64;
         data[0..8].copy_from_slice(&raw.to_le_bytes());
 
-        let bat = Bat::new(data, 1).expect("BAT creation should succeed");
+        let bat = Bat::new(data, 1, TEST_LOGICAL_SECTOR_SIZE, TEST_BLOCK_SIZE)
+            .expect("BAT creation should succeed");
         let mut entries = bat.entries();
 
         // 修改返回的 Vec 不应影响原数据
@@ -623,6 +647,162 @@ mod tests {
             bat.entries().len(),
             1,
             "Original BAT should not be affected by mutation of returned Vec"
+        );
+    }
+
+    // ── Task 11: BAT 非默认参数（4096 逻辑扇区 + 可变块大小）回归测试 ──
+
+    /// 测试 4096 逻辑扇区大小下 chunk_ratio 计算正确，且与 512 扇区的结果不同
+    ///
+    /// chunk_ratio = (2^23 × logical_sector_size) / block_size
+    /// - 512 + 32MB → 128（旧硬编码默认值）
+    /// - 4096 + 32MB → 1024（4096 扇区的正确值）
+    /// - 4096 + 1MB → 32768（小块大小极端值）
+    ///
+    /// 如果代码退化为硬编码 512，此测试将失败。
+    #[test]
+    fn test_chunk_ratio_calculation_4096_sector() {
+        let ratio_4096_32m = Bat::calculate_chunk_ratio(4096, 32 * 1024 * 1024);
+        assert_eq!(
+            ratio_4096_32m, 1024,
+            "4096 sector + 32MB block → chunk_ratio=1024"
+        );
+
+        let ratio_4096_1m = Bat::calculate_chunk_ratio(4096, 1024 * 1024);
+        assert_eq!(
+            ratio_4096_1m, 32768,
+            "4096 sector + 1MB block → chunk_ratio=32768"
+        );
+
+        // 负向断言：4096 扇区的 chunk_ratio 必须与 512 扇区不同
+        let ratio_512_32m = Bat::calculate_chunk_ratio(512, 32 * 1024 * 1024);
+        assert_eq!(
+            ratio_512_32m, 128,
+            "512 sector + 32MB block → chunk_ratio=128"
+        );
+        assert_ne!(
+            ratio_4096_32m, ratio_512_32m,
+            "4096 sector chunk_ratio must differ from 512 sector"
+        );
+    }
+
+    /// 测试 4096 扇区下 BAT 条目交错排列正确
+    ///
+    /// chunk_ratio=1024 时，每 1024 个 payload 条目后接 1 个 sector bitmap 条目。
+    /// 构造 1025 个条目（1024 payload + 1 bitmap），验证索引 1024 为 sector bitmap。
+    #[test]
+    fn test_bat_sector_bitmap_interleaving_4096_sector() {
+        let entry_count = 1025usize;
+        let mut data = vec![0u8; entry_count * BAT_ENTRY_SIZE];
+
+        // 在索引 1024 处写入 sector bitmap Present 状态
+        let raw_bitmap = (3u64 << 20) | 6u64;
+        let offset = 1024 * BAT_ENTRY_SIZE;
+        data[offset..offset + BAT_ENTRY_SIZE].copy_from_slice(&raw_bitmap.to_le_bytes());
+
+        let bat = Bat::new(data, entry_count as u64, 4096, 32 * 1024 * 1024)
+            .expect("BAT creation with 4096 sector should succeed");
+
+        let entry = bat.entry(1024).expect("entry 1024 should exist");
+        assert!(
+            matches!(
+                entry.state,
+                BatState::SectorBitmap(SectorBitmapState::Present)
+            ),
+            "index 1024 should be SectorBitmap(Present) under 4096 sector"
+        );
+
+        // 索引 0-1023 应为 Payload 类型
+        let entry_0 = bat.entry(0).expect("entry 0 should exist");
+        assert!(
+            matches!(entry_0.state, BatState::Payload(_)),
+            "index 0 should be Payload"
+        );
+
+        let entry_1023 = bat.entry(1023).expect("entry 1023 should exist");
+        assert!(
+            matches!(entry_1023.state, BatState::Payload(_)),
+            "index 1023 should be Payload"
+        );
+    }
+
+    /// 测试 4096 扇区下 BAT 拒绝 sector bitmap 条目的非法状态值
+    ///
+    /// chunk_ratio=1024 时索引 1024 为 sector bitmap，状态 7（PartiallyPresent）
+    /// 不是合法的 sector bitmap 状态，应返回 InvalidBlockState(7)。
+    #[test]
+    fn test_bat_4096_sector_rejects_invalid_bitmap_state() {
+        let entry_count = 1025usize;
+        let mut data = vec![0u8; entry_count * BAT_ENTRY_SIZE];
+
+        // 索引 1024（chunk_ratio=1024）为 sector bitmap，状态 7 非法
+        let raw_invalid = (1u64 << 20) | 7u64;
+        let offset = 1024 * BAT_ENTRY_SIZE;
+        data[offset..offset + BAT_ENTRY_SIZE].copy_from_slice(&raw_invalid.to_le_bytes());
+
+        assert!(
+            matches!(
+                Bat::new(data, entry_count as u64, 4096, 32 * 1024 * 1024),
+                Err(Error::InvalidBlockState(7))
+            ),
+            "state 7 at sector bitmap position should be rejected"
+        );
+    }
+
+    /// 测试 4096 扇区与 512 扇区在相同索引处的 bitmap 判定不同
+    ///
+    /// 关键负向断言：索引 128 在 512 扇区下为 SectorBitmap（chunk_ratio=128），
+    /// 但在 4096 扇区下为 Payload（chunk_ratio=1024）。
+    /// 如果代码退化为硬编码 chunk_ratio=128，索引 128 会被错误判定为 bitmap。
+    ///
+    /// entry_count=130 时：
+    /// - 4096 扇区: chunk_ratio=1024, bitmap_blocks=ceil(130/1025)=1,
+    ///   payload_blocks=129 → 索引 0-128 为 payload，索引 129 为 bitmap
+    /// - 512 扇区: chunk_ratio=128, bitmap_blocks=ceil(130/129)=2,
+    ///   payload_blocks=128 → 索引 128 为第一个 bitmap
+    #[test]
+    fn test_bat_4096_sector_bitmap_position_differs_from_512() {
+        let entry_count = 130usize;
+        let data = vec![0u8; entry_count * BAT_ENTRY_SIZE];
+
+        // 4096 扇区 + 32MB → chunk_ratio=1024 → 129 个条目全部为 payload
+        let bat_4096 = Bat::new(data.clone(), entry_count as u64, 4096, 32 * 1024 * 1024)
+            .expect("4096 BAT creation should succeed");
+        let entry_128_4096 = bat_4096.entry(128).expect("entry 128 should exist");
+        assert!(
+            matches!(entry_128_4096.state, BatState::Payload(_)),
+            "index 128 should be Payload under 4096 sector (chunk_ratio=1024)"
+        );
+
+        // 512 扇区 + 32MB → chunk_ratio=128 → 索引 128 为 sector bitmap
+        let bat_512 = Bat::new(data, entry_count as u64, 512, 32 * 1024 * 1024)
+            .expect("512 BAT creation should succeed");
+        let entry_128_512 = bat_512.entry(128).expect("entry 128 should exist");
+        assert!(
+            matches!(entry_128_512.state, BatState::SectorBitmap(_)),
+            "index 128 should be SectorBitmap under 512 sector (chunk_ratio=128)"
+        );
+    }
+
+    /// 测试 calculate_total_entries 在 4096 扇区与 512 扇区下结果不同
+    ///
+    /// 130 个 payload blocks + 32MB block_size:
+    /// - 4096 扇区: chunk_ratio=1024, 需 1 bitmap → 总条目 131
+    /// - 512 扇区: chunk_ratio=128, 需 2 bitmap → 总条目 132
+    #[test]
+    fn test_calculate_total_entries_4096_differs_from_512() {
+        let block_size = 32 * 1024 * 1024u32;
+        // 130 blocks × 32MB = 4160 MiB
+        let virtual_size = 130u64 * u64::from(block_size);
+
+        let total_4096 = Bat::calculate_total_entries(virtual_size, block_size, 4096);
+        let total_512 = Bat::calculate_total_entries(virtual_size, block_size, 512);
+
+        assert_eq!(total_4096, 131, "4096 sector: 130 payload + 1 bitmap = 131");
+        assert_eq!(total_512, 132, "512 sector: 130 payload + 2 bitmap = 132");
+        assert_ne!(
+            total_4096, total_512,
+            "total entries must differ between 4096 and 512 sectors"
         );
     }
 }

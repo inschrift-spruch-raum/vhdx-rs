@@ -174,6 +174,10 @@ pub struct SectionsConfig {
     pub log_size: u64,
     /// BAT 条目总数
     pub entry_count: u64,
+    /// 逻辑扇区大小（字节），用于 BAT chunk ratio 计算
+    pub logical_sector_size: u32,
+    /// 块大小（字节），用于 BAT chunk ratio 计算
+    pub block_size: u32,
 }
 
 /// VHDX 文件各区域的延迟加载容器
@@ -212,6 +216,11 @@ pub struct Sections<'a> {
     /// BAT 条目总数
     entry_count: u64,
 
+    /// 逻辑扇区大小（字节），用于 BAT chunk ratio 计算
+    logical_sector_size: u32,
+    /// 块大小（字节），用于 BAT chunk ratio 计算
+    block_size: u32,
+
     /// 生命周期标记
     marker: PhantomData<&'a [u8]>,
 }
@@ -237,6 +246,8 @@ impl<'a> Sections<'a> {
             log_offset: config.log_offset,
             log_size: config.log_size,
             entry_count: config.entry_count,
+            logical_sector_size: config.logical_sector_size,
+            block_size: config.block_size,
             marker: PhantomData,
         }
     }
@@ -266,7 +277,12 @@ impl<'a> Sections<'a> {
                 Error::InvalidFile(format!("BAT size {} exceeds usize::MAX", self.bat_size))
             })?;
             let bat_data = self.read_section(self.bat_offset, bat_size)?;
-            *self.bat.borrow_mut() = Some(Bat::new(bat_data, self.entry_count)?);
+            *self.bat.borrow_mut() = Some(Bat::new(
+                bat_data,
+                self.entry_count,
+                self.logical_sector_size,
+                self.block_size,
+            )?);
         }
         Ok(std::cell::Ref::map(self.bat.borrow(), |b| -> &Bat<'a> {
             b.as_ref().unwrap()
@@ -283,7 +299,12 @@ impl<'a> Sections<'a> {
                 Error::InvalidFile(format!("BAT size {} exceeds usize::MAX", self.bat_size))
             })?;
             let bat_data = self.read_section(self.bat_offset, bat_size)?;
-            *self.bat.borrow_mut() = Some(Bat::new(bat_data, self.entry_count)?);
+            *self.bat.borrow_mut() = Some(Bat::new(
+                bat_data,
+                self.entry_count,
+                self.logical_sector_size,
+                self.block_size,
+            )?);
         }
         Ok(std::cell::RefMut::map(self.bat.borrow_mut(), |b| {
             b.as_mut().unwrap()

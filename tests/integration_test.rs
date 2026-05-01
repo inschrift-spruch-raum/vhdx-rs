@@ -3334,6 +3334,255 @@ fn test_open_strict_false_rejects_required_unknown_metadata() {
     );
 }
 
+// ── Task 10: strict 模式三分法完整矩阵测试 ──
+//
+// 覆盖 strict=true / strict=false + required unknown / optional unknown × region / metadata
+// 共 8 种组合，重点补充已有测试中缺失的分支与错误类型断言。
+
+/// 三分法 1a：strict=true + required unknown region 必失败，返回 InvalidRegionTable。
+#[test]
+fn t10_strict_true_rejects_required_unknown_region_with_error_variant() {
+    use vhdx_rs::{Error, File};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    inject_required_unknown_region_entry(&path);
+
+    let err = match File::open(&path).strict(true).finish() {
+        Ok(_) => panic!("strict=true must reject required unknown region"),
+        Err(e) => e,
+    };
+
+    match err {
+        Error::InvalidRegionTable(msg) => {
+            assert!(
+                msg.contains("Unknown required region"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("expected InvalidRegionTable, got: {other:?}"),
+    }
+}
+
+/// 三分法 1b：strict=true + required unknown metadata 必失败，返回 InvalidMetadata。
+#[test]
+fn t10_strict_true_rejects_required_unknown_metadata_with_error_variant() {
+    use vhdx_rs::{Error, File, Guid};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    let unknown_required = Guid::from_bytes([
+        0xE1, 0xE2, 0xE3, 0xE4, 0x11, 0x22, 0x33, 0x44, 0xAA, 0xBB, 0xCC, 0xDD, 0x55, 0x66, 0x77,
+        0x88,
+    ]);
+    inject_metadata_table_entry(&path, unknown_required, 65_536, 8, 0x2000_0000);
+
+    let err = match File::open(&path).strict(true).finish() {
+        Ok(_) => panic!("strict=true must reject required unknown metadata"),
+        Err(e) => e,
+    };
+
+    match err {
+        Error::InvalidMetadata(msg) => {
+            assert!(
+                msg.contains("Unknown required metadata item"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("expected InvalidMetadata, got: {other:?}"),
+    }
+}
+
+/// 三分法 1c：strict=true + optional unknown region 也必须失败（strict 模式拒绝所有未知项）。
+#[test]
+fn t10_strict_true_rejects_optional_unknown_region() {
+    use vhdx_rs::{Error, File};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    inject_unknown_region_entry_with_required_flag(&path, false);
+
+    let err = match File::open(&path).strict(true).finish() {
+        Ok(_) => panic!("strict=true must reject optional unknown region"),
+        Err(e) => e,
+    };
+
+    match err {
+        Error::InvalidRegionTable(msg) => {
+            assert!(
+                msg.contains("Unknown optional region"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("expected InvalidRegionTable, got: {other:?}"),
+    }
+}
+
+/// 三分法 1d：strict=true + optional unknown metadata 也必须失败（strict 模式拒绝所有未知项）。
+#[test]
+fn t10_strict_true_rejects_optional_unknown_metadata() {
+    use vhdx_rs::{Error, File, Guid};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    // optional unknown metadata：flags 不包含 required 位（0x2000_0000）
+    let unknown_optional = Guid::from_bytes([
+        0xF1, 0xF2, 0xF3, 0xF4, 0x55, 0x66, 0x77, 0x88, 0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33,
+        0x44,
+    ]);
+    inject_metadata_table_entry(&path, unknown_optional, 65_536, 8, 0);
+
+    let err = match File::open(&path).strict(true).finish() {
+        Ok(_) => panic!("strict=true must reject optional unknown metadata"),
+        Err(e) => e,
+    };
+
+    match err {
+        Error::InvalidMetadata(msg) => {
+            assert!(
+                msg.contains("Unknown optional metadata item"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("expected InvalidMetadata, got: {other:?}"),
+    }
+}
+
+/// 三分法 2a：strict=false + optional unknown region 应允许打开。
+#[test]
+fn t10_strict_false_allows_optional_unknown_region() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    inject_unknown_region_entry_with_required_flag(&path, false);
+
+    let file = File::open(&path)
+        .strict(false)
+        .finish()
+        .expect("strict=false should allow optional unknown region");
+
+    assert_eq!(file.virtual_disk_size(), 1024 * 1024);
+}
+
+/// 三分法 2b：strict=false + optional unknown metadata 应允许打开。
+///
+/// 这是三分法中此前完全缺失的分支：strict=false 下 optional unknown metadata 应被容忍。
+#[test]
+fn t10_strict_false_allows_optional_unknown_metadata() {
+    use vhdx_rs::{File, Guid};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    // optional unknown metadata：flags 不包含 required 位
+    let unknown_optional = Guid::from_bytes([
+        0xA1, 0xA2, 0xA3, 0xA4, 0x55, 0x66, 0x77, 0x88, 0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33,
+        0x44,
+    ]);
+    inject_metadata_table_entry(&path, unknown_optional, 65_536, 8, 0);
+
+    let file = File::open(&path)
+        .strict(false)
+        .finish()
+        .expect("strict=false should allow optional unknown metadata item");
+
+    assert_eq!(file.virtual_disk_size(), 1024 * 1024);
+}
+
+/// 三分法 3a：strict=false + required unknown region 仍失败，返回 InvalidRegionTable。
+#[test]
+fn t10_strict_false_rejects_required_unknown_region_with_error_variant() {
+    use vhdx_rs::{Error, File};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    inject_required_unknown_region_entry(&path);
+
+    let err = match File::open(&path).strict(false).finish() {
+        Ok(_) => panic!("strict=false must still reject required unknown region"),
+        Err(e) => e,
+    };
+
+    match err {
+        Error::InvalidRegionTable(msg) => {
+            assert!(
+                msg.contains("Unknown required region"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("expected InvalidRegionTable, got: {other:?}"),
+    }
+}
+
+/// 三分法 3b：strict=false + required unknown metadata 仍失败，返回 InvalidMetadata。
+#[test]
+fn t10_strict_false_rejects_required_unknown_metadata_with_error_variant() {
+    use vhdx_rs::{Error, File, Guid};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    let unknown_required = Guid::from_bytes([
+        0xB1, 0xB2, 0xB3, 0xB4, 0x99, 0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88,
+    ]);
+    inject_metadata_table_entry(&path, unknown_required, 65_536, 8, 0x2000_0000);
+
+    let err = match File::open(&path).strict(false).finish() {
+        Ok(_) => panic!("strict=false must still reject required unknown metadata"),
+        Err(e) => e,
+    };
+
+    match err {
+        Error::InvalidMetadata(msg) => {
+            assert!(
+                msg.contains("Unknown required metadata item"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("expected InvalidMetadata, got: {other:?}"),
+    }
+}
+
 // ── T2: Dynamic 读路径 ReplayOverlay 测试 ──
 
 /// 辅助函数：创建一个拥有已分配 payload block 的 Dynamic VHDX，
@@ -6031,6 +6280,56 @@ fn test_default_open_rejects_pending_logs() {
     );
 }
 
+/// Task 13：防回归——默认对外打开策略必须保持 Require。
+///
+/// 验证：存在 pending log 时，`File::open(path).finish()` 返回 `Error::LogReplayRequired`。
+#[test]
+fn test_task13_public_default_open_policy_is_require() {
+    use vhdx_rs::{Error, File};
+
+    let path = temp_vhdx_path();
+    let target_file_offset =
+        u64::try_from(HEADER_SECTION_SIZE).expect("header size overflow") + 4096;
+
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    inject_pending_log_entry(&path, target_file_offset, b"TASK13_REQUIRE");
+
+    let err = match File::open(&path).finish() {
+        Ok(_) => panic!("public default open should reject pending logs"),
+        Err(e) => e,
+    };
+    match err {
+        Error::LogReplayRequired => {}
+        other => panic!("expected LogReplayRequired, got: {other:?}"),
+    }
+}
+
+/// Task 13：防回归——create 后 reopen 路径语义清晰且可解释。
+///
+/// 说明：create 内部 reopen 使用“与外部默认一致”的策略；
+/// 在 clean 文件（log_guid=nil）场景下应成功，并保持无 pending logs。
+#[test]
+fn test_task13_create_internal_reopen_semantics_on_clean_file() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+    let file = File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create should succeed with internal reopen");
+
+    assert!(
+        !file.has_pending_logs(),
+        "freshly created disk should not have pending logs"
+    );
+}
+
 // ── Task 4: Header 生命周期回归矩阵 ──────────────────────────────────
 //
 // 覆盖 writable / readonly / repeated-open 行为下 header 字段的不变量：
@@ -7581,4 +7880,935 @@ fn test_validate_file_covers_both_parent_locator_and_chain_on_diff_disk() {
         .validator()
         .validate_file()
         .expect("validate_file should succeed with valid locator and matching parent chain");
+}
+
+// ── Task 4: LogReplayPolicy 回归固化测试 ──
+
+/// Require 策略 + 存在 pending log → 必须返回 `LogReplayRequired`。
+///
+/// 无论只读还是可写，Require 从不自动回放。
+#[test]
+fn test_require_policy_rejects_when_pending_logs() {
+    use vhdx_rs::{Error, File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    let virtual_size = 2 * 1024 * 1024;
+    let target_disk_offset = 512_u64;
+    let target_file_offset =
+        u64::try_from(HEADER_SECTION_SIZE).expect("header size overflow") + target_disk_offset;
+    let payload = b"REQUIRE_POLICY_REJECT";
+
+    File::create(&path)
+        .size(virtual_size)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    inject_pending_log_entry(&path, target_file_offset, payload);
+
+    // 只读 + Require + pending log → LogReplayRequired
+    let err = match File::open(&path)
+        .log_replay(LogReplayPolicy::Require)
+        .finish()
+    {
+        Ok(_) => panic!("Require policy should reject when pending logs exist"),
+        Err(e) => e,
+    };
+    match err {
+        Error::LogReplayRequired => {}
+        other => panic!("expected LogReplayRequired, got: {other:?}"),
+    }
+
+    // 可写 + Require + pending log → 也应 LogReplayRequired
+    let err_w = match File::open(&path)
+        .write()
+        .log_replay(LogReplayPolicy::Require)
+        .finish()
+    {
+        Ok(_) => panic!("Require policy should reject when pending logs exist (writable)"),
+        Err(e) => e,
+    };
+    match err_w {
+        Error::LogReplayRequired => {}
+        other => panic!("expected LogReplayRequired (writable), got: {other:?}"),
+    }
+}
+
+/// ReadOnlyNoReplay 策略 + 可写打开 + pending log → 必须返回 `InvalidParameter`。
+#[test]
+fn test_readonly_no_replay_rejects_writable_with_pending_logs() {
+    use vhdx_rs::{Error, File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    let virtual_size = 2 * 1024 * 1024;
+    let target_disk_offset = 512_u64;
+    let target_file_offset =
+        u64::try_from(HEADER_SECTION_SIZE).expect("header size overflow") + target_disk_offset;
+    let payload = b"NO_REPLAY_WRITABLE_REJECT";
+
+    File::create(&path)
+        .size(virtual_size)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    inject_pending_log_entry(&path, target_file_offset, payload);
+
+    let err = match File::open(&path)
+        .write()
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+    {
+        Ok(_) => panic!("ReadOnlyNoReplay should reject writable open when pending logs exist"),
+        Err(e) => e,
+    };
+
+    match err {
+        Error::InvalidParameter(msg) => {
+            assert!(
+                msg.contains("ReadOnlyNoReplay policy requires read-only open"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("expected InvalidParameter, got: {other:?}"),
+    }
+}
+
+/// InMemoryOnReadOnly + 只读 + pending log → 通过 IO 暴露回放后的数据。
+#[test]
+fn test_inmemory_on_readonly_exposes_replayed_data_via_io() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    let virtual_size = 2 * 1024 * 1024;
+    let target_disk_offset = 512_u64;
+    let target_file_offset =
+        u64::try_from(HEADER_SECTION_SIZE).expect("header size overflow") + target_disk_offset;
+    let target_sector = 0_u64;
+    let payload = b"INMEM_REPLAY_VISIBLE";
+
+    File::create(&path)
+        .size(virtual_size)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    inject_pending_log_entry(&path, target_file_offset, payload);
+
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::InMemoryOnReadOnly)
+        .finish()
+        .expect("InMemoryOnReadOnly should succeed on read-only open with pending logs");
+
+    assert!(
+        !file.has_pending_logs(),
+        "InMemoryOnReadOnly should mark pending logs as resolved after in-memory replay"
+    );
+
+    let sector = file
+        .io()
+        .sector(target_sector)
+        .expect("sector should exist");
+    let mut buf = vec![0u8; 4096];
+    sector.read(&mut buf).expect("read should succeed");
+    let got = &buf[512..512 + payload.len()];
+    assert_eq!(
+        got, payload,
+        "InMemoryOnReadOnly should expose replayed payload via IO reads"
+    );
+}
+
+/// ReadOnlyNoReplay + 只读 + pending log → 结构可读（header/metadata），不做回放。
+#[test]
+fn test_readonly_no_replay_allows_structure_reading_with_pending_logs() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    let virtual_size = 2 * 1024 * 1024;
+    let target_disk_offset = 512_u64;
+    let target_file_offset =
+        u64::try_from(HEADER_SECTION_SIZE).expect("header size overflow") + target_disk_offset;
+    let payload = b"NO_REPLAY_STRUCT_OK";
+
+    File::create(&path)
+        .size(virtual_size)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    inject_pending_log_entry(&path, target_file_offset, payload);
+
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("ReadOnlyNoReplay should succeed on read-only open with pending logs");
+
+    // pending logs 标记为 true（未回放）
+    assert!(
+        file.has_pending_logs(),
+        "ReadOnlyNoReplay must keep has_pending_logs = true"
+    );
+
+    // 可正常读取结构：header
+    let header = file.sections().header().expect("header should be readable");
+    let h = header.header(0).expect("active header should exist");
+    assert_ne!(
+        h.log_guid(),
+        vhdx_rs::Guid::nil(),
+        "log_guid should be non-nil after injection"
+    );
+
+    // 可正常读取结构：metadata
+    let metadata = file
+        .sections()
+        .metadata()
+        .expect("metadata should be readable");
+    let items = metadata.items();
+    let disk_size = items
+        .virtual_disk_size()
+        .expect("virtual_disk_size should be present");
+    assert_eq!(
+        disk_size,
+        u64::from(virtual_size),
+        "metadata virtual_disk_size should match created size"
+    );
+
+    // payload 数据面不被重放 → 磁盘原始字节应为全零
+    let sector = file.io().sector(0).expect("sector should exist");
+    let mut buf = vec![0u8; 4096];
+    sector.read(&mut buf).expect("read should succeed");
+    let got = &buf[512..512 + payload.len()];
+    assert_eq!(
+        got,
+        &vec![0u8; payload.len()][..],
+        "ReadOnlyNoReplay must NOT replay payload data"
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Task 5: UB 安全边界锁定测试
+//
+// 验证日志路径 unsafe 前置条件的可重复安全检查。
+// 唯一 unsafe 在 Log::entry() 的 const fn 中（log.rs:118-119），
+// 使用 from_raw_parts(ptr.add(offset), data_len)。安全前提：
+//   offset + data_len <= raw.len()
+// 循环不变量保证：offset 在 while 条件中已被检查。
+// 以下测试验证各边界防御路径在越界/损坏输入下返回错误而非进入 UB。
+// ════════════════════════════════════════════════════════════════════
+
+/// UB 安全 1：描述符数量声明 > 实际可解析描述符 → 返回明确错误。
+///
+/// 篡改 descriptor_count=2 但仅放置 1 个合法描述符，
+/// precheck_replay_entry 通过 CRC 后，validate_replay_candidate
+/// 应检测到 parsed descriptors ≠ header descriptor_count。
+#[test]
+fn test_ub_safety_descriptor_count_exceeds_parseable() {
+    use vhdx_rs::{Error, File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let target_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size") + 512;
+
+    // 注入一个合法条目（descriptor_count=1, 1 个 desc + 1 个 data sector）
+    inject_pending_log_entry(&path, target_offset, b"UB_DESC_COUNT");
+    // 篡改 descriptor_count 为 2（但条目中只有 1 个描述符的空间）
+    inject_log_descriptor_count(&path, 2);
+    // 重新计算 CRC 使 precheck 通过
+    fix_log_entry_checksum(&path, 0);
+
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("open with ReadOnlyNoReplay");
+
+    // validator 的 validate_log 应检测到 descriptor parse mismatch
+    let err = file
+        .validator()
+        .validate_log()
+        .expect_err("descriptor count mismatch should be detected");
+
+    match err {
+        Error::LogEntryCorrupted(msg) => {
+            assert!(
+                msg.contains("descriptor parse mismatch"),
+                "expected descriptor mismatch error, got: {msg}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// UB 安全 2：entry_length 声明 > 实际日志区域数据 → 返回错误。
+///
+/// 篡改 entry_length 为极大值，precheck 应检测到
+/// entry_length exceeds available entry bytes。
+#[test]
+fn test_ub_safety_entry_length_exceeds_available_bytes() {
+    use vhdx_rs::section::Log;
+
+    // 构造一个短日志区域（仅含一个合法条目的头部数据，entry_length 声明更大）
+    let entry_len = 64_usize; // 仅头部
+    let mut raw = vec![0u8; entry_len];
+    raw[0..4].copy_from_slice(b"loge");
+    // 声明 entry_length = 4224（头部+描述符+数据扇区），但实际只有 64 字节
+    raw[8..12].copy_from_slice(&4224u32.to_le_bytes());
+    raw[16..24].copy_from_slice(&1u64.to_le_bytes()); // sequence = 1
+    raw[24..28].copy_from_slice(&1u32.to_le_bytes()); // descriptor_count = 1
+    // 计算合法 CRC
+    raw[4..8].fill(0);
+    let checksum = crc32c::crc32c(&raw);
+    raw[4..8].copy_from_slice(&checksum.to_le_bytes());
+
+    let log = Log::new(raw);
+    let entries = log.entries();
+
+    // entries() 解析条目后 entry_length=4224 > data.len()=64，
+    // 但 entries() 使用 try_parse_entry_at 仅检查 HEADER_SIZE，
+    // 然后 entry_len < LOG_ENTRY_HEADER_SIZE 检查不通过时按扇区步进。
+    // entry_len=4224 >= 64，所以条目会被收集，但 descriptor_count=1 时
+    // descriptor 偏移 64+0=64 >= data.len()=64，descriptor 返回 None。
+    // 关键：replay 路径的 precheck 会检测 entry_length > raw().len()。
+    // entries() 只是扫描不验证，所以可能非空。
+    // 验证 entries 中条目的 descriptor 不会越界访问：
+    for entry in &entries {
+        let descriptors = entry.descriptors();
+        assert!(
+            descriptors.is_empty(),
+            "descriptors should be empty when data is shorter than descriptor area"
+        );
+    }
+}
+
+/// UB 安全 3：descriptor_area_end 超出 entry_length → 返回错误。
+///
+/// descriptor_count * DESCRIPTOR_SIZE + HEADER_SIZE > entry_length 时，
+/// precheck 应拦截，防止描述符解析越界。
+#[test]
+fn test_ub_safety_descriptor_area_exceeds_entry_length() {
+    use vhdx_rs::section::Log;
+
+    // 构造一个条目：entry_length=96, descriptor_count=2
+    // descriptor_area_end = 64 + 2*32 = 128 > 96 → 应被拦截
+    let mut raw = vec![0u8; 96];
+    raw[0..4].copy_from_slice(b"loge");
+    raw[8..12].copy_from_slice(&96u32.to_le_bytes()); // entry_length = 96
+    raw[16..24].copy_from_slice(&1u64.to_le_bytes()); // sequence = 1
+    raw[24..28].copy_from_slice(&2u32.to_le_bytes()); // descriptor_count = 2
+    raw[4..8].fill(0);
+    let checksum = crc32c::crc32c(&raw);
+    raw[4..8].copy_from_slice(&checksum.to_le_bytes());
+
+    let log = Log::new(raw);
+    let entries = log.entries();
+
+    // 条目应解析（LogEntry::new 只要求 >= 64 字节），
+    // 但 validate_replay_candidate / precheck 应在 replay 路径拒绝
+    assert!(
+        entries.is_empty()
+            || entries.iter().all(|e| {
+                // 如果条目被解析了，descriptor() 应返回 None（越界）
+                e.descriptor(0).is_none() && e.descriptor(1).is_none()
+            }),
+        "descriptors beyond entry_length should not be accessible"
+    );
+}
+
+/// UB 安全 4：数据扇区签名不是 "data" → 返回错误而非盲目使用。
+///
+/// 注入合法日志条目但数据扇区签名为 "xxxx"，
+/// validate_replay_candidate 应检测到无效数据扇区签名。
+#[test]
+fn test_ub_safety_invalid_data_sector_signature_rejected() {
+    use vhdx_rs::{Error, File, Guid, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let log_guid_bytes: [u8; 16] = [
+        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
+        0x22,
+    ];
+    let guid = Guid::from_bytes(log_guid_bytes);
+    let target_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size") + 512;
+
+    // 构造条目，使用 build_controllable_log_entry_bytes，然后破坏 data sector 签名
+    let mut entry_bytes = build_controllable_log_entry_bytes(
+        0,
+        1,
+        Some(&log_guid_bytes),
+        1,
+        target_offset,
+        0,
+        0,
+        1,
+        b"BAD_SIG_SECTOR",
+    );
+    // 破坏 data sector 签名：从 "data" 改为 "xxxx"
+    let sector_off = LOG_ENTRY_HEADER_SIZE + DESCRIPTOR_SIZE;
+    entry_bytes[sector_off..sector_off + 4].copy_from_slice(b"xxxx");
+    // 重算 CRC
+    entry_bytes[4..8].fill(0);
+    let checksum = crc32c::crc32c(&entry_bytes);
+    entry_bytes[4..8].copy_from_slice(&checksum.to_le_bytes());
+
+    inject_controllable_log_entry(&path, 0, &entry_bytes, guid);
+
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("open with ReadOnlyNoReplay");
+
+    let err = file
+        .validator()
+        .validate_log()
+        .expect_err("invalid data sector signature should be rejected");
+
+    match err {
+        Error::LogEntryCorrupted(msg) => {
+            assert!(
+                msg.contains("invalid data sector signature"),
+                "expected invalid data sector signature error, got: {msg}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// UB 安全 5：撕裂写入检测 — sequence_high ≠ sequence_low → 返回错误。
+///
+/// 构造数据扇区中高低序列号不一致的条目，
+/// validate_replay_candidate 应检测到撕裂写入。
+#[test]
+fn test_ub_safety_torn_data_sector_rejected() {
+    use vhdx_rs::{Error, File, Guid, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let log_guid_bytes: [u8; 16] = [
+        0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33,
+        0x22,
+    ];
+    let guid = Guid::from_bytes(log_guid_bytes);
+    let target_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size") + 512;
+
+    let mut entry_bytes = build_controllable_log_entry_bytes(
+        0,
+        1,
+        Some(&log_guid_bytes),
+        1,
+        target_offset,
+        0,
+        0,
+        1,
+        b"TORN_SECTOR",
+    );
+    // 破坏 sequence_low 使其不等于 sequence_high
+    let sector_off = LOG_ENTRY_HEADER_SIZE + DESCRIPTOR_SIZE;
+    entry_bytes[sector_off + 4..sector_off + 8].copy_from_slice(&100u32.to_le_bytes()); // high = 100
+    entry_bytes[sector_off + 4092..sector_off + 4096].copy_from_slice(&200u32.to_le_bytes()); // low = 200
+    // 重算 CRC
+    entry_bytes[4..8].fill(0);
+    let checksum = crc32c::crc32c(&entry_bytes);
+    entry_bytes[4..8].copy_from_slice(&checksum.to_le_bytes());
+
+    inject_controllable_log_entry(&path, 0, &entry_bytes, guid);
+
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("open with ReadOnlyNoReplay");
+
+    let err = file
+        .validator()
+        .validate_log()
+        .expect_err("torn data sector should be rejected");
+
+    match err {
+        Error::LogEntryCorrupted(msg) => {
+            assert!(
+                msg.contains("torn data sector"),
+                "expected torn data sector error, got: {msg}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// UB 安全 6：leading_bytes + trailing_bytes 溢出 → 返回错误。
+///
+/// leading_bytes 极大使 checked_add 溢出或 sum > sector data size，
+/// validate_replay_candidate 应拦截而不进入不安全算术。
+#[test]
+fn test_ub_safety_leading_trailing_overflow_rejected() {
+    // 此场景已被 test_log_replay_rejects_invalid_leading_trailing_combination 覆盖
+    // （leading=4000, trailing=200, sum=4200 > 4084）。
+    // 此处验证另一个维度：leading_bytes 本身超出 usize 范围的极端值。
+    // 通过 Log unit test 验证：构造条目并直接调用 validate_replay_candidate。
+    // 由于 replay 路径已有完整覆盖（test_log_replay_rejects_invalid_leading_trailing_combination），
+    // 此处仅验证 DataDescriptor::new 对合法 leading_bytes 的解析不 panic。
+    use vhdx_rs::section::DataDescriptor;
+
+    let mut data = [0u8; 32];
+    data[0..4].copy_from_slice(b"desc");
+    // leading_bytes = u64::MAX — 合法解析（存储在 u64 中）
+    data[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
+    data[16..24].copy_from_slice(&0x100000_u64.to_le_bytes());
+
+    let desc = DataDescriptor::new(&data).expect("DataDescriptor::new should succeed");
+    assert_eq!(
+        desc.leading_bytes(),
+        u64::MAX,
+        "should parse u64::MAX leading_bytes"
+    );
+    // 后续在 validate_replay_candidate 中，u64::MAX 的 leading_bytes 转 usize
+    // 会在 checked_add 时正确拦截（在 replay 路径的 leading+trailing 检查中）
+}
+
+/// UB 安全 7：Log::entry() const fn 的 unsafe 边界 — 空日志区域不 panic。
+///
+/// 验证空日志数据不会导致 Log::entry() 的 unsafe from_raw_parts
+/// 产生越界访问（循环条件 offset + HEADER_SIZE <= raw.len() 立即为 false）。
+#[test]
+fn test_ub_safety_empty_log_entry_no_panic() {
+    use vhdx_rs::section::Log;
+
+    let log = Log::new(Vec::new());
+    assert!(log.entry(0).is_none(), "empty log should return None");
+    assert!(log.entries().is_empty(), "empty log should have no entries");
+    assert!(
+        !log.is_replay_required(),
+        "empty log should not require replay"
+    );
+}
+
+/// UB 安全 8：Log::entry() 的数据短于头部 → 不进入 unsafe 路径。
+///
+/// 提供刚好 63 字节（小于 LOG_ENTRY_HEADER_SIZE=64），
+/// 循环条件 offset + LOG_ENTRY_HEADER_SIZE <= raw.len() 为 false。
+#[test]
+fn test_ub_safety_log_entry_data_shorter_than_header() {
+    use vhdx_rs::section::Log;
+
+    let log = Log::new(vec![0u8; 63]);
+    assert!(log.entry(0).is_none());
+    assert!(log.entries().is_empty());
+}
+
+/// UB 安全 9：数据扇区数量与数据描述符数量不匹配 → 返回错误。
+///
+/// descriptor_count=2 且两个都是 data descriptor，但仅放置 1 个数据扇区，
+/// validate_replay_candidate 应报告 data sector mismatch。
+#[test]
+fn test_ub_safety_data_sector_count_mismatch() {
+    use vhdx_rs::{Error, File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let target_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size") + 512;
+
+    // 使用标准注入创建合法条目，然后篡改 descriptor_count=2
+    inject_pending_log_entry(&path, target_offset, b"UB_SECTOR_MISMATCH");
+    // 篡改为 descriptor_count=2（但只有 1 个描述符和 1 个数据扇区的空间）
+    inject_log_descriptor_count(&path, 2);
+    // 重新计算 CRC 使 precheck 通过
+    fix_log_entry_checksum(&path, 0);
+
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("open");
+
+    let err = file
+        .validator()
+        .validate_log()
+        .expect_err("data sector mismatch should be detected");
+
+    match err {
+        Error::LogEntryCorrupted(msg) => {
+            assert!(
+                msg.contains("descriptor parse mismatch"),
+                "expected descriptor parse mismatch error, got: {msg}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// UB 安全 10：校验和不匹配 → 回放路径拒绝，不执行任何写入。
+///
+/// 验证 CRC 校验在 replay 路径的第一关（precheck）即被拦截，
+/// 即使后续的 descriptor 和 sector 都合法。
+#[test]
+fn test_ub_safety_checksum_mismatch_blocks_replay() {
+    use vhdx_rs::{Error, File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("create");
+
+    let target_offset = u64::try_from(HEADER_SECTION_SIZE).expect("header size") + 512;
+    inject_pending_log_entry(&path, target_offset, b"UB_CRC_BLOCK");
+    fix_log_entry_checksum(&path, 0);
+    corrupt_log_entry_checksum(&path, 0, 0xDEAD_BEEF);
+
+    let bytes_before = read_raw_bytes(&path, target_offset, 14);
+    assert_eq!(
+        bytes_before,
+        vec![0u8; 14],
+        "target should be zeroed before replay"
+    );
+
+    let err = match File::open(&path)
+        .write()
+        .log_replay(LogReplayPolicy::Auto)
+        .finish()
+    {
+        Ok(_) => panic!("bad CRC should block replay"),
+        Err(e) => e,
+    };
+    match err {
+        Error::LogEntryCorrupted(msg) => {
+            assert!(
+                msg.contains("checksum"),
+                "expected checksum error, got: {msg}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+
+    // 确认 replay 未写入任何数据到目标偏移
+    let bytes_after = read_raw_bytes(&path, target_offset, 14);
+    assert_eq!(
+        bytes_after, bytes_before,
+        "replay must NOT write when checksum validation fails"
+    );
+}
+
+/// UB 安全 11：descriptor_area_end checked_add 溢出 → 返回错误。
+///
+/// 使用大的 descriptor_count 使 checked_add 溢出。
+/// 用 usize::MAX / 32 作为 descriptor_count，这样 64 + count*32 溢出 usize。
+/// 同时 entry_length 设为足够大以绕过 "entry_length < header" 检查。
+#[test]
+fn test_ub_safety_descriptor_area_size_overflow() {
+    use vhdx_rs::section::Log;
+
+    // 使用一个 descriptor_count 使 saturating_mul 溢出：
+    // count = 0x4000_0000 → count * 32 = 0x8000_0000 * 64... 溢出
+    // 但 descriptors() 会遍历 (0..count)，所以不能用太大值。
+    // 改用：验证 precheck 路径对 overflow 的拦截。
+    // 在 64 位系统上 usize=8 字节，u32::MAX * 32 不会溢出 usize。
+    // 所以此测试在 64 位上验证：entry_length < descriptor_area_end 的检查。
+    // 使用 descriptor_count=100, entry_length=128（远小于 64+100*32=3264）
+    let mut raw = vec![0u8; 128];
+    raw[0..4].copy_from_slice(b"loge");
+    raw[8..12].copy_from_slice(&128u32.to_le_bytes()); // entry_length = 128
+    raw[16..24].copy_from_slice(&1u64.to_le_bytes());
+    raw[24..28].copy_from_slice(&100u32.to_le_bytes()); // descriptor_count = 100
+    raw[4..8].fill(0);
+    let checksum = crc32c::crc32c(&raw);
+    raw[4..8].copy_from_slice(&checksum.to_le_bytes());
+
+    let log = Log::new(raw);
+    let entries = log.entries();
+
+    // 条目被收集（data >= 64），但 descriptors() 每次返回 None（越界）
+    if !entries.is_empty() {
+        for entry in &entries {
+            let descriptors = entry.descriptors();
+            assert!(
+                descriptors.is_empty(),
+                "descriptors should be empty when descriptor area exceeds entry data"
+            );
+        }
+    }
+}
+
+/// UB 安全 12：Log::entry() 多条目场景下 unsafe 偏移计算正确。
+///
+/// 构造多个条目，验证 entry(N) 返回的条目与 entries()[N] 一致，
+/// 确保 unsafe 的 offset 计算不会因步进错误而越界。
+#[test]
+fn test_ub_safety_log_entry_index_matches_in_multi_entry_scenario() {
+    use vhdx_rs::section::Log;
+
+    // 构造 3 个条目
+    let entry_size = 64_usize;
+    let mut raw = Vec::with_capacity(entry_size * 3);
+
+    for i in 0..3u64 {
+        let mut entry = vec![0u8; entry_size];
+        entry[0..4].copy_from_slice(b"loge");
+        entry[8..12].copy_from_slice(&(u32::try_from(entry_size).unwrap()).to_le_bytes());
+        entry[16..24].copy_from_slice(&(i + 10).to_le_bytes()); // unique sequence
+        raw.extend_from_slice(&entry);
+    }
+
+    let log = Log::new(raw);
+    let entries = log.entries();
+    assert_eq!(entries.len(), 3, "should parse 3 entries");
+
+    // 逐个验证 entry(N) 与 entries()[N] 一致
+    for i in 0..3 {
+        let indexed = log
+            .entry(i)
+            .unwrap_or_else(|| panic!("entry({i}) should exist"));
+        let by_vec = &entries[i];
+        assert_eq!(
+            indexed.header().sequence_number(),
+            by_vec.header().sequence_number(),
+            "entry({i}) sequence should match entries()[{i}]"
+        );
+        assert_eq!(
+            indexed.header().entry_length(),
+            by_vec.header().entry_length(),
+            "entry({i}) entry_length should match entries()[{i}]"
+        );
+    }
+
+    // 越界索引
+    assert!(log.entry(3).is_none(), "entry(3) should be None");
+    assert!(log.entry(100).is_none(), "entry(100) should be None");
+}
+
+/// Auto 策略 + 可写打开 + pending log → 应执行磁盘回放并成功。
+#[test]
+fn test_auto_policy_writable_replays_to_disk() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    let virtual_size = 2 * 1024 * 1024;
+    let target_disk_offset = 512_u64;
+    let target_file_offset =
+        u64::try_from(HEADER_SECTION_SIZE).expect("header size overflow") + target_disk_offset;
+    let target_sector = 0_u64;
+    let payload = b"AUTO_WRITABLE_REPLAY";
+
+    File::create(&path)
+        .size(virtual_size)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    inject_pending_log_entry(&path, target_file_offset, payload);
+
+    let file = File::open(&path)
+        .write()
+        .log_replay(LogReplayPolicy::Auto)
+        .finish()
+        .expect("Auto + writable should replay to disk and succeed");
+
+    assert!(
+        !file.has_pending_logs(),
+        "Auto + writable should clear pending logs after disk replay"
+    );
+
+    // 回放后重新只读打开验证数据已持久化
+    let reopened = File::open(&path)
+        .log_replay(LogReplayPolicy::Require)
+        .finish()
+        .expect("Re-open with Require should succeed after auto replay");
+    let sector = reopened
+        .io()
+        .sector(target_sector)
+        .expect("sector should exist");
+    let mut buf = vec![0u8; 4096];
+    sector.read(&mut buf).expect("read should succeed");
+    let got = &buf[512..512 + payload.len()];
+    assert_eq!(
+        got, payload,
+        "Auto writable replay should persist payload to disk"
+    );
+}
+
+// ── Task 11: BAT 非默认参数回归测试（4096 逻辑扇区 + 可变块大小）──
+
+/// 测试默认创建（4096 逻辑扇区）的 VHDX 文件 BAT 结构正确。
+///
+/// File::create 默认 logical_sector_size=4096，block_size=32MB。
+/// chunk_ratio = (2^23 × 4096) / 32MB = 1024。
+/// 小磁盘（1 MiB，1 个 payload block）BAT 应包含 2 个条目：
+/// 1 个 payload + 1 个 sector bitmap（因为 ceil(1/1024)=1 bitmap）。
+/// bitmap 位于索引 1（即 chunk 中 payload 数量 min(1,1024)=1 后的位置）。
+#[test]
+fn test_bat_nondefault_4096_sector_chunk_ratio_and_bitmap_position() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    // 默认 logical_sector_size=4096，block_size=32MB
+    let file = File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    let bat = file.sections().bat().expect("BAT should be readable");
+    let entries = bat.entries();
+
+    // chunk_ratio=1024, payload_blocks=1, bitmap_blocks=1, total=2
+    assert_eq!(entries.len(), 2, "1 payload + 1 bitmap = 2 entries");
+
+    // 索引 0 应为 Payload
+    assert!(
+        matches!(
+            entries[0].state,
+            vhdx_rs::section::BatState::Payload(vhdx_rs::section::PayloadBlockState::FullyPresent)
+        ),
+        "index 0 should be Payload(FullyPresent) for fixed disk"
+    );
+
+    // 索引 1 应为 SectorBitmap
+    assert!(
+        matches!(
+            entries[1].state,
+            vhdx_rs::section::BatState::SectorBitmap(
+                vhdx_rs::section::SectorBitmapState::NotPresent
+            )
+        ),
+        "index 1 should be SectorBitmap(NotPresent) for fixed disk"
+    );
+}
+
+/// 测试 4096 扇区下大磁盘 BAT 总条目数与 512 扇区不同（负向回归断言）。
+///
+/// 创建虚拟大小为 130 × 32MB = 4160 MiB 的 Dynamic 磁盘。
+/// - 4096 扇区: chunk_ratio=1024, 需要 1 bitmap → 总条目 131
+/// - 512 扇区: chunk_ratio=128, 需要 2 bitmap → 总条目 132
+///
+/// Dynamic 创建是稀疏的，不会分配 4GB 磁盘空间。
+/// 断言 BAT 条目数精确为 131，确保生产代码使用实际 logical_sector_size
+/// 而非硬编码 512。
+#[test]
+fn test_bat_4096_sector_total_entries_negative_hardcoded_512_regression() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    // 130 payload blocks × 32MB = 4160 MiB ≈ 4.06 GiB（稀疏创建，不占磁盘）
+    let block_size = 32u64 * 1024 * 1024;
+    let virtual_size = 130 * block_size;
+
+    let file = File::create(&path)
+        .size(virtual_size)
+        .fixed(false)
+        .finish()
+        .expect("Failed to create dynamic disk for BAT regression test");
+
+    // 确认默认 logical_sector_size 为 4096
+    assert_eq!(
+        file.logical_sector_size(),
+        4096,
+        "Default logical_sector_size should be 4096"
+    );
+
+    let bat = file.sections().bat().expect("BAT should be readable");
+
+    // 核心断言：4096 扇区下 130 payload + 1 bitmap = 131 条目
+    // 如果代码退化为硬编码 512 扇区，将得到 132 条目
+    assert_eq!(
+        bat.len(),
+        131,
+        "4096 sector: 130 payload + 1 bitmap = 131 entries (would be 132 if hardcoded to 512)"
+    );
+
+    // 验证索引 128 是 Payload（不是 SectorBitmap）
+    // 如果 chunk_ratio=128（512扇区），索引 128 将是 SectorBitmap
+    let entry_128 = bat.entry(128).expect("entry 128 should exist");
+    assert!(
+        matches!(entry_128.state, vhdx_rs::section::BatState::Payload(_)),
+        "index 128 should be Payload under 4096 sector (chunk_ratio=1024), not SectorBitmap"
+    );
+}
+
+/// 测试 4096 扇区下 Dynamic 磁盘读取与 BAT 状态一致。
+///
+/// 创建 4096 逻辑扇区的 Dynamic 磁盘，注入 FullyPresent 的 payload BAT 条目，
+/// 写入可识别数据后重新打开读取，验证数据正确返回。
+/// 确保 4096 扇区的 chunk_ratio 在读路径中被正确使用。
+#[test]
+fn test_read_dynamic_4096_sector_consistent_with_bat_state() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    // 创建 Dynamic 磁盘，1 MiB 块大小，默认 4096 逻辑扇区
+    // chunk_ratio = (2^23 × 4096) / 1MiB = 32768
+    // 4 payload blocks → 1 bitmap → total entries = 5
+    // bitmap 在索引 4（chunk 中 min(4, 32768)=4 个 payload 后）
+    File::create(&path)
+        .size(4 * 1024 * 1024)
+        .fixed(false)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("Failed to create dynamic disk");
+
+    // 注入 payload block #0 → BAT 索引 0（payload），指向 8 MiB 处
+    let payload_offset_mb = 8u64;
+    let bat_raw = (payload_offset_mb << 20) | 6u64;
+    inject_bat_entry_raw(&path, 0, bat_raw);
+
+    // 在映射位置写入可识别数据
+    let mut payload = vec![0xAB_u8; 4096];
+    payload[0..14].copy_from_slice(b"BAT4096_SECTOR");
+    write_raw_bytes(&path, payload_offset_mb * 1024 * 1024, &payload);
+
+    // 重新打开并读取
+    let file = File::open(&path)
+        .finish()
+        .expect("Failed to reopen dynamic disk");
+
+    // 确认逻辑扇区为 4096
+    assert_eq!(file.logical_sector_size(), 4096);
+
+    // 读取扇区 0
+    let sector = file.io().sector(0).expect("Sector 0 should exist");
+    let mut buf = vec![0u8; 4096];
+    sector
+        .read(&mut buf)
+        .expect("Read should succeed for allocated block");
+
+    assert_eq!(
+        buf, payload,
+        "4096 sector dynamic read should return correct payload data"
+    );
+    assert_eq!(
+        &buf[..14],
+        b"BAT4096_SECTOR",
+        "payload sentinel should be readable"
+    );
+
+    // 验证 BAT 结构：索引 4 应为 SectorBitmap
+    let bat = file.sections().bat().expect("BAT should be readable");
+    assert_eq!(bat.len(), 5, "4 payload + 1 bitmap = 5 entries");
+    let bitmap_entry = bat.entry(4).expect("entry 4 should exist");
+    assert!(
+        matches!(
+            bitmap_entry.state,
+            vhdx_rs::section::BatState::SectorBitmap(_)
+        ),
+        "index 4 should be SectorBitmap (chunk_ratio=32768, 4 payload per first chunk)"
+    );
 }

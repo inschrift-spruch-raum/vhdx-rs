@@ -1,0 +1,54 @@
+F4 Scope Fidelity Check — Final Approval Gate (Re-audit)
+Date: 2026-05-01
+Plan Reference: .sisyphus/plans/api-alignment-full.md
+
+VERDICT: APPROVE
+
+Rationale (binary gate basis):
+
+1) Plan-file governance: CLEAN
+   - `git diff --cached --stat -- .sisyphus/plans/api-alignment-full.md` → empty (no staged changes)
+   - `git diff --stat -- .sisyphus/plans/api-alignment-full.md` → empty (no worktree changes)
+   - Previous blocker (checkbox mutations for Tasks 18-20) has been fully reverted to HEAD.
+   - All 849 lines of plan file remain at original state with all checkboxes as `[ ]`.
+
+2) Scope mapping of all 55 changed artifacts — 100% classified, 0 scope creep:
+
+   A) Product implementation code (maps to Tasks 1-17 deliverables):
+      - `src/file.rs` → Tasks 2, 3, 7, 13 (strict semantics, BAT config plumbing, open/create policy)
+      - `src/sections.rs` → Tasks 2, 7 (SectionsConfig parameter propagation)
+      - `src/sections/bat.rs` → Tasks 2, 7, 11 (chunk-ratio real parameterization, signature propagation)
+      - `tests/integration_test.rs` → Tasks 4, 5, 9, 10, 11, 13 (replay policy, UB boundary, strict/BAT regressions)
+
+   B) Product documentation (maps to Tasks 6, 8, 12, 14, 15, 17):
+      - `docs/plan/API.md` → Tasks 6, 8, 12, 14, 15 (API contract parity, error mapping, validator parity, header create, examples)
+      - `docs/plan/alignment-acceptance-report.md` → Task 17 (alignment acceptance summary)
+
+   C) Process evidence artifacts (`.sisyphus/evidence/`) — 36 files:
+      - `task-1-*` through `task-20-*`: QA scenario evidence for each plan task — in scope as defined by plan Verification Strategy §Evidence.
+      - `f1-*`, `f2-*`, `f3-*`, `f4-*`: Final verification wave evidence — in scope per plan Final Verification Wave section.
+
+   D) Orchestration metadata (not product scope):
+      - `.sisyphus/notepads/api-alignment-full/` (4 files): Process knowledge capture — not product functionality.
+      - `.sisyphus/boulder.json`: Orchestrator runtime state — not product functionality.
+
+3) Scope-creep check:
+   - No files outside the plan's declared scope exist in the change set.
+   - No modifications to `misc/` directory (plan guardrail: MUST NOT modify).
+   - No new dependencies added (plan guardrail: MUST NOT add deps).
+   - No unrelated refactoring or feature additions beyond plan tasks 1-20.
+   - All code changes are traceable to specific plan task numbers.
+
+4) Governance compliance summary:
+   - Plan file: READ-ONLY, verified clean ✓
+   - misc/ directory: untouched ✓
+   - Dependencies: unchanged ✓
+   - No out-of-scope product changes ✓
+
+Audit commands executed:
+- `git diff --cached --stat -- .sisyphus/plans/api-alignment-full.md` → empty
+- `git diff --stat -- .sisyphus/plans/api-alignment-full.md` → empty
+- `git status --short` → 55 files, all classified above
+- `git diff --stat HEAD` → confirmed change set scope
+- Read `.sisyphus/evidence/task-19-scope-fidelity.txt` for prior scope mapping reference
+- Read `.sisyphus/plans/api-alignment-full.md` confirming all checkboxes at `[ ]`

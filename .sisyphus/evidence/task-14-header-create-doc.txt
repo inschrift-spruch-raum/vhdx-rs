@@ -1,0 +1,16 @@
+# Task 14 HeaderStructure::create 文档语义对照
+
+## 实现签名与语义（src/sections/header.rs）
+- 签名：`pub fn create(...) -> Vec<u8>`。
+- 语义：构造固定 4KB Header 原始字节，填充字段后计算并写入 CRC32C，返回可写盘字节缓冲。
+
+## 调用消费方式（src/file.rs）
+- 创建与更新路径将 `HeaderStructure::create` 返回值作为字节缓冲直接写入文件偏移位置。
+- 未将返回值作为 `HeaderStructure<'_>` 结构视图借用使用。
+
+## 文档修订（docs/plan/API.md）
+- API 树新增 `HeaderStructure::new(...)` 与 `HeaderStructure::create(...) -> Vec<u8>`，并注明 create 产物为可写盘 4KB 序列化字节缓冲。
+- 详细 API 设计中 create 注释明确：返回 `Vec<u8>` 字节缓冲，不是 `HeaderStructure<'a>` 视图对象，也不携带借用语义。
+
+## 结论
+- 文档语义已与实现一致，消除“返回结构视图”的误读风险。

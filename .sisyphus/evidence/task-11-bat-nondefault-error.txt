@@ -1,0 +1,3 @@
+Task 11: 无错误
+- 初次运行 test_bat_4096_sector_bitmap_position_differs_from_512 失败：entry_count=129 导致 4096 扇区下 payload_blocks=128，索引 128 恰好是 bitmap。修正为 entry_count=130（payload=129，bitmap 在索引 129）。
+- 初次运行 test_read_dynamic_4096_sector_consistent_with_bat_state 失败：b"BAT4096_SECTOR" 为 14 字节但 slice 写为 [0..13]（13 字节）。修正为 [0..14]。

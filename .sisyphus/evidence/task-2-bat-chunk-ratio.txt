@@ -1,0 +1,66 @@
+## Task 2 Evidence: 修复 BAT chunk ratio 默认值硬编码
+
+### Date: 2026-05-01
+
+### Changes Made
+
+#### 1. `src/sections/bat.rs` — Bat::new 签名扩展
+- **Before**: `pub fn new(data: Vec<u8>, entry_count: u64) -> Result<Self>`
+- **After**: `pub fn new(data: Vec<u8>, entry_count: u64, logical_sector_size: u32, block_size: u32) -> Result<Self>`
+- 内部 `calculate_chunk_ratio(LOGICAL_SECTOR_SIZE_512, DEFAULT_BLOCK_SIZE)` → `calculate_chunk_ratio(logical_sector_size, block_size)`
+- 移除未使用的导入 `DEFAULT_BLOCK_SIZE`, `LOGICAL_SECTOR_SIZE_512`
+- 错误消息从 "default chunk ratio" → "chunk ratio"
+- 测试中新增 `TEST_LOGICAL_SECTOR_SIZE` / `TEST_BLOCK_SIZE` 常量，5 处 `Bat::new` 调用全部更新
+
+#### 2. `src/sections.rs` — SectionsConfig + Sections 字段扩展
+- `SectionsConfig` 新增字段：
+  - `pub logical_sector_size: u32`
+  - `pub block_size: u32`
+- `Sections` struct 新增存储字段：
+  - `logical_sector_size: u32`
+  - `block_size: u32`
+- `Sections::new()` 存储新字段
+- `Sections::bat()` 和 `Sections::bat_mut()` 调用 `Bat::new` 时透传 `self.logical_sector_size`, `self.block_size`
+
+#### 3. `src/file.rs` — SectionsConfig 构造点更新
+- `open_file_with_options()` 中 `SectionsConfig { ... }` 新增：
+  - `logical_sector_size,`
+  - `block_size,`
+- 这两个值来自元数据解析的真实参数（`read_metadata` 返回值），与 `entry_count` 计算使用的参数一致
+
+### Parameter Flow (完整透传链)
+
+```
+file.rs: read_metadata() → (logical_sector_size, block_size)
+  ↓
+file.rs: SectionsConfig { logical_sector_size, block_size, ... }
+  ↓
+sections.rs: Sections::new(config) → stored as self.logical_sector_size, self.block_size
+  ↓
+sections.rs: Sections::bat() / bat_mut() → Bat::new(data, entry_count, logical_sector_size, block_size)
+  ↓
+bat.rs: Bat::new() → calculate_chunk_ratio(logical_sector_size, block_size)
+```
+
+### Consistency Verification
+
+- Read path (file.rs:309): `Bat::calculate_chunk_ratio(self.logical_sector_size, self.block_size)` ✓ matches
+- Write path (file.rs:569): `Bat::calculate_chunk_ratio(self.logical_sector_size, self.block_size)` ✓ matches
+- Bat::new: `Self::calculate_chunk_ratio(logical_sector_size, block_size)` ✓ matches (now uses real params)
+
+### Test Results
+
+```
+cargo test --workspace — ALL PASS
+- 36 unit tests (vhdx-rs)
+- 32 API surface smoke tests
+- 164 integration tests
+- 55 CLI integration tests
+- 3 doctests
+Total: 290 tests, 0 failures
+```
+
+### Files Modified
+- `src/sections/bat.rs` (signature + import cleanup + test updates)
+- `src/sections.rs` (SectionsConfig/Sections field additions + bat/bat_mut call updates)
+- `src/file.rs` (SectionsConfig construction with real params)

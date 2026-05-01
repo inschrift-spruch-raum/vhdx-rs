@@ -1,0 +1,19 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running tests\integration_test.rs (target\debug\deps\integration_test-8c36168b70fe7da0.exe)
+
+running 12 tests
+test test_ub_safety_descriptor_area_exceeds_entry_length ... ok
+test test_ub_safety_descriptor_area_size_overflow ... ok
+test test_ub_safety_entry_length_exceeds_available_bytes ... ok
+test test_ub_safety_empty_log_entry_no_panic ... ok
+test test_ub_safety_leading_trailing_overflow_rejected ... ok
+test test_ub_safety_log_entry_data_shorter_than_header ... ok
+test test_ub_safety_log_entry_index_matches_in_multi_entry_scenario ... ok
+test test_ub_safety_invalid_data_sector_signature_rejected ... ok
+test test_ub_safety_checksum_mismatch_blocks_replay ... ok
+test test_ub_safety_torn_data_sector_rejected ... ok
+test test_ub_safety_descriptor_count_exceeds_parseable ... ok
+test test_ub_safety_data_sector_count_mismatch ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 169 filtered out; finished in 0.03s
+

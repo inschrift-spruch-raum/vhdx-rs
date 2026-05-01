@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running unittests src\lib.rs (target\debug\deps\vhdx_rs-d539657daf548747.exe)
+     Running tests\api_surface_smoke.rs (target\debug\deps\api_surface_smoke-c3c0f5669fc4673b.exe)
+     Running tests\integration_test.rs (target\debug\deps\integration_test-4a7c280cb07b11cf.exe)
+     Running unittests src\main.rs (target\debug\deps\vhdx_tool-99a4ad43c3a34e2d.exe)
+     Running tests\cli_integration.rs (target\debug\deps\cli_integration-ad3da88bb27ba7fe.exe)
+   Doc-tests vhdx_rs
+
+=== Task 12 mismatch scan note ===
+- cargo test --workspace completed successfully
+- LSP diagnostics unavailable for Markdown (.md has no configured LSP server in this environment)
+- No runtime/test failure indicates validator contract drift introduced by this task

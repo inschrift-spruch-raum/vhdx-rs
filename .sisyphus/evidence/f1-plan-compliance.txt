@@ -1,0 +1,120 @@
+F1 Plan Compliance Audit — Re-run
+Date: 2026-05-01
+Auditor: oracle (F1 re-gate after blocker remediation)
+
+================================================================
+VERDICT: APPROVE
+================================================================
+
+Previous run REJECTED solely on plan-file checkbox mutation.
+That blocker is resolved — confirmed below.
+
+================================================================
+1. PLAN FILE IMMUTABILITY — SATISFIED
+================================================================
+
+  git diff --cached --stat -- .sisyphus/plans/api-alignment-full.md → (empty)
+  git diff --stat -- .sisyphus/plans/api-alignment-full.md        → (empty)
+  git diff HEAD -- .sisyphus/plans/api-alignment-full.md          → (empty)
+
+  The plan file is byte-identical to HEAD across index, worktree,
+  and HEAD comparison. No staged or unstaged mutations detected.
+
+================================================================
+2. DELIVERABLE CATEGORY EVALUATION
+================================================================
+
+2a. Strict Semantics (D1 — Plan Tasks 3, 10)
+    Status: PASS
+    Evidence:
+    - task-3-strict-optional.txt:  strict=false + optional unknown → open succeeds ✅
+    - task-3-strict-required-error.txt:  strict=false + required unknown → rejects ✅
+    - task-10-strict-matrix.txt:  3-way strict matrix (true/false+opt/false+req) ✅
+    - task-9-test-matrix.txt §1:  13 tests covering strict three-way classification ✅
+    Plan requirement: "strict=false 仅放宽 optional unknown; required unknown 始终拒绝"
+    Verdict: Fully implemented and verified.
+
+2b. BAT Parameterization (D2 — Plan Tasks 2, 7, 11)
+    Status: PASS
+    Evidence:
+    - task-2-bat-chunk-ratio.txt:  Bat::new signature expanded to 4 params; full
+      parameter flow documented from file.rs → sections.rs → bat.rs ✅
+    - task-7-bat-signature.txt:  All 7 Bat::new callsites updated to 4-param form ✅
+    - task-11-bat-nondefault.txt:  8 new tests for 4096-sector BAT; negative assertions
+      confirm hardcoded-512 behavior would fail ✅
+    Plan requirement: "BAT 解析基于真实 logical_sector_size + block_size"
+    Verdict: Hardcoded defaults removed; real params propagated end-to-end.
+
+2c. API Parity (D3 — Plan Tasks 6, 8, 12, 14, 15)
+    Status: PASS
+    Evidence:
+    - task-6-api-shape.txt:  43 unit + 32 smoke + 181 integration + 55 CLI = 311 tests pass ✅
+    - task-8-error-map.txt:  Error variant superset documented ✅
+    - task-12-validator-parity.txt:  SpecValidator signature and exports aligned ✅
+    - task-14-header-create-doc.txt:  HeaderStructure::create return semantics aligned ✅
+    - task-15-doc-examples.txt:  Stale `vhdx::` imports corrected to `vhdx_rs::`; 0 stale paths ✅
+    Plan requirement: "API 形态差异完成对齐（代码或计划文档）"
+    Verdict: Documentation updated to match implementation; no breaking changes.
+
+2d. UB Safety (Plan Task 5)
+    Status: PASS
+    Evidence:
+    - task-5-ub-safety.txt:  12 UB boundary tests pass (descriptor overflow, empty entry,
+      short header, checksum mismatch, torn sector, etc.) ✅
+    - task-9-test-matrix.txt §5:  17 tests total covering unsafe entry boundary invariants ✅
+    Plan requirement: "唯一 unsafe 使用的前置边界条件有自动化检查覆盖"
+    Verdict: Boundary invariants enforced by negative tests; no new unsafe introduced.
+
+2e. Quality Gates (D4 — Plan Task 16)
+    Status: PASS
+    Evidence:
+    - task-16-quality-gates.txt:  cargo test (332 pass/0 fail), clippy (clean), fmt --check (clean) ✅
+    - Live re-verification:  cargo test --workspace → 332 passed, 0 failed ✅
+    Plan Definition of Done: "cargo test/clippy/fmt 全部通过"
+    Verdict: All three gates GREEN at time of audit.
+
+2f. Log Policy Boundaries (Plan Task 4)
+    Status: PASS
+    Evidence:
+    - task-4-policy-require-and-auto.txt:  Require rejects pending; Auto replays to disk ✅
+    - task-4-policy-readonly-structure.txt:  ReadOnlyNoReplay structure access succeeds ✅
+    - task-4-policy-writable-error.txt:  InMemoryOnReadOnly + writable → InvalidParameter ✅
+    - task-9-test-matrix.txt §4:  35 tests covering all 4 policies ✅
+
+2g. Summary & Traceability (Plan Tasks 17, 20)
+    Status: PASS
+    Evidence:
+    - task-17-alignment-report.txt:  Acceptance report generated; all 6 deliverable categories
+      covered with evidence links; 332 tests verified ✅
+    - task-20-final-summary.txt:  7 outcomes with inline evidence links; 2 residual risks
+      documented (accepted, non-blocking); 0 unsupported claims ✅
+
+================================================================
+3. SCOPE VERIFICATION
+================================================================
+
+Changed production files (from git status):
+  M  docs/plan/API.md              — documentation alignment (Tasks 6,8,12,14,15)
+  M  src/file.rs                    — strict implementation + BAT config propagation (Tasks 2,3,7,13)
+  M  src/sections.rs                — SectionsConfig field additions (Tasks 2,7)
+  M  src/sections/bat.rs            — Bat::new signature change (Tasks 2,7,11)
+  M  tests/integration_test.rs      — new tests (Tasks 4,5,9,10,11)
+  A  docs/plan/alignment-acceptance-report.md  — Task 17 deliverable
+
+All changes map to plan tasks. No scope creep detected (F4 also APPROVED).
+
+================================================================
+4. RESIDUAL NOTES (non-blocking)
+================================================================
+
+- Residual Risk A: Some strict test redundancy (maintenance noise, not functional error)
+- Residual Risk B: BAT index/ratio calculation has multi-point duplication
+- Environment: LSP/rg unavailable; compensated by Rust native gates + AST search
+
+================================================================
+FINAL VERDICT: APPROVE
+================================================================
+
+All 7 deliverable categories verified against concrete evidence.
+Plan file immutability constraint SATISFIED (byte-identical to HEAD).
+Quality gates GREEN. No blocking issues remain.

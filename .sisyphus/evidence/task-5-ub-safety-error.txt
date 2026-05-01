@@ -1,0 +1,33 @@
+Task 5: UB Safety Negative Path Evidence
+=========================================
+
+All negative paths (error rejection scenarios) are covered by the 12 test_ub_safety_* tests.
+None of these tests panic or enter undefined behavior — all return structured errors.
+
+Error rejection matrix:
+| Test | Input Corruption | Expected Error | Verified |
+|------|-----------------|----------------|----------|
+| 1  descriptor_count_exceeds_parseable | descriptor_count=2, only 1 desc | LogEntryCorrupted("descriptor parse mismatch") | YES |
+| 2  entry_length_exceeds_available_bytes | entry_length=4224, data=64 bytes | descriptors empty (safe), precheck blocks replay | YES |
+| 3  descriptor_area_exceeds_entry_length | entry_length=96, desc_count=2 | descriptors empty (safe) | YES |
+| 4  invalid_data_sector_signature_rejected | sector sig="xxxx" | LogEntryCorrupted("invalid data sector signature") | YES |
+| 5  torn_data_sector_rejected | seq_high=100, seq_low=200 | LogEntryCorrupted("torn data sector detected") | YES |
+| 6  leading_trailing_overflow_rejected | leading=u64::MAX parsed safely | DataDescriptor::new succeeds, checked_add blocks replay | YES |
+| 7  empty_log_entry_no_panic | empty Vec<u8> | entry(0)=None, no panic | YES |
+| 8  log_entry_data_shorter_than_header | 63 bytes (< 64 header) | entry(0)=None, no panic | YES |
+| 9  data_sector_count_mismatch | desc_count=2, only 1 sector space | LogEntryCorrupted("descriptor parse mismatch") | YES |
+| 10 checksum_mismatch_blocks_replay | bad CRC=0xDEADBEEF | LogEntryCorrupted("checksum"), no disk writes | YES |
+| 11 descriptor_area_size_overflow | desc_count=100, entry=128 | descriptors empty (safe) | YES |
+| 12 log_entry_index_matches_multi_entry | 3 entries + out-of-range | entry(N)==entries()[N], entry(3)=None | YES |
+
+Additional existing tests that reinforce UB safety boundaries:
+- test_log_replay_rejects_invalid_leading_trailing_combination (leading=4000+trailing=200>4084)
+- log_replay_rejects_invalid_checksum (invalid CRC)
+- test_t7_validator_log_rejects_descriptor_count_mismatch (descriptor count mismatch)
+- t12_validator_log_rejects_invalid_checksum (validator CRC check)
+- t12_validator_log_rejects_guid_mismatch (GUID mismatch)
+
+Conclusion: No Rust-level UB exists. The single unsafe in Log::entry() (log.rs:118-119)
+is protected by the while loop invariant: offset + LOG_ENTRY_HEADER_SIZE <= raw.len().
+The from_raw_parts(ptr.add(offset), data_len) is safe because data_len = raw.len() - offset,
+guaranteeing ptr.add(offset) + data_len == raw.as_ptr() + raw.len(), within the allocation.

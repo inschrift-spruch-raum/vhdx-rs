@@ -1,0 +1,72 @@
+Task 7: Bat::new signature propagation to SectionsConfig/Sections
+===================================================================
+VERDICT: ALREADY COMPLETE — no code changes required
+
+## Bat::new signature (src/sections/bat.rs:38-40)
+
+    pub fn new(
+        data: Vec<u8>, entry_count: u64, logical_sector_size: u32, block_size: u32,
+    ) -> Result<Self>
+
+## All Bat::new call sites (7 total)
+
+### Production code (src/sections.rs):
+
+1. Line 280 — Sections::bat() lazy load:
+   Bat::new(bat_data, self.entry_count, self.logical_sector_size, self.block_size)
+   ✅ Passes all 4 parameters from Sections fields
+
+2. Line 302 — Sections::bat_mut() lazy load:
+   Bat::new(bat_data, self.entry_count, self.logical_sector_size, self.block_size)
+   ✅ Passes all 4 parameters from Sections fields
+
+### Test code (src/sections/bat.rs):
+
+3. Line 482 — test_bat_new_parses_sector_bitmap_via_entry_and_entries
+4. Line 529 — test_bat_new_parses_sector_bitmap_in_partial_final_chunk
+5. Line 581 — test_entries_returns_vec_with_correct_content
+6. Line 614 — test_entries_empty_bat
+7. Line 631 — test_entries_returns_owned_copy
+   All ✅ pass (data, count, TEST_LOGICAL_SECTOR_SIZE, TEST_BLOCK_SIZE)
+
+## SectionsConfig (src/sections.rs:160-181)
+
+Fields present:
+  - logical_sector_size: u32  (line 178)
+  - block_size: u32           (line 180)
+
+## Sections (src/sections.rs:190-226)
+
+Fields stored and forwarded:
+  - logical_sector_size: u32  (line 220)
+  - block_size: u32           (line 222)
+  Both copied from SectionsConfig in Sections::new() (lines 249-250)
+
+## SectionsConfig construction (src/file.rs:772-783)
+
+    SectionsConfig {
+        file: file_clone2,
+        bat_offset,
+        bat_size,
+        metadata_offset,
+        metadata_size,
+        log_offset,
+        log_size,
+        entry_count,
+        logical_sector_size,    // ✅ from read_metadata()
+        block_size,             // ✅ from read_metadata()
+    }
+
+## Build & Test Results
+
+- cargo build --workspace: PASS
+- cargo test --workspace: 314 tests PASS (43 + 32 + 181 + 0 + 55 + 3)
+  - All bat-related tests pass
+  - All sections lazy-load tests pass
+  - All integration tests pass
+
+## Conclusion
+
+Task2 already fully implemented the Bat::new 4-parameter signature propagation.
+All call sites use the new signature. No residual old-signature calls found.
+No code modifications were needed for this task.

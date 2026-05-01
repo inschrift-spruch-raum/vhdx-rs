@@ -710,7 +710,9 @@ impl File {
     /// 6. 读取元数据，提取虚拟磁盘参数
     /// 7. 处理日志回放（如有未完成的日志条目）
     fn open_file(path: &Path, writable: bool) -> Result<Self> {
-        Self::open_file_with_options(path, writable, true, LogReplayPolicy::Auto)
+        // 约定：内部默认策略与外部 `File::open(...).finish()` 保持一致，均为 Require。
+        // 若调用方需要 Auto/InMemory/NoReplay 语义，必须显式传入策略。
+        Self::open_file_with_options(path, writable, true, LogReplayPolicy::Require)
     }
 
     /// 打开 VHDX 文件的核心实现（带策略选项）
@@ -747,9 +749,10 @@ impl File {
             .region_table(0)
             .ok_or_else(|| Error::InvalidRegionTable("No valid region table found".to_string()))?;
 
-        // required unknown 区域条目始终拒绝（strict=false 仅放宽 optional unknown）
-        let _ = strict;
-        Self::validate_required_region_entries_are_known(&region_table)?;
+        // 区域条目校验：
+        // - strict=true：required 和 optional unknown 均拒绝
+        // - strict=false：仅拒绝 required unknown，允许 optional unknown
+        Self::validate_region_entries(&region_table, strict)?;
 
         // 从区域表中提取 BAT 和元数据区域的位置和大小
         let (bat_offset, bat_size, metadata_offset, metadata_size) =
@@ -777,6 +780,8 @@ impl File {
             log_offset,
             log_size,
             entry_count,
+            logical_sector_size,
+            block_size,
         });
 
         // 步骤 7：处理日志回放
@@ -867,9 +872,10 @@ impl File {
         let mut metadata_data = vec![0u8; usize::try_from(metadata_size).unwrap_or(0)];
         file_clone.read_exact(&mut metadata_data)?;
         let temp_metadata = crate::sections::Metadata::new(metadata_data)?;
-        // required unknown metadata 项始终拒绝（strict=false 仅放宽 optional unknown）
-        let _ = strict;
-        Self::validate_required_metadata_items_are_known(&temp_metadata)?;
+        // 元数据项校验：
+        // - strict=true：required 和 optional unknown 均拒绝
+        // - strict=false：仅拒绝 required unknown，允许 optional unknown
+        Self::validate_metadata_items(&temp_metadata, strict)?;
         let temp_items = temp_metadata.items();
 
         // 提取虚拟磁盘大小
@@ -899,15 +905,26 @@ impl File {
         ))
     }
 
-    /// 校验 required 元数据项是否均为已知项（strict 模式）
-    fn validate_required_metadata_items_are_known(
-        metadata: &crate::sections::Metadata<'_>,
+    /// 校验元数据项是否均为已知项
+    ///
+    /// - `strict=true`：required 和 optional unknown 均拒绝
+    /// - `strict=false`：仅拒绝 required unknown，允许 optional unknown
+    fn validate_metadata_items(
+        metadata: &crate::sections::Metadata<'_>, strict: bool,
     ) -> Result<()> {
         for entry in metadata.table().entries() {
             let item_id = entry.item_id();
-            if entry.flags().is_required() && !Self::is_known_metadata_item_id(&item_id) {
+            let is_known = Self::is_known_metadata_item_id(&item_id);
+            if entry.flags().is_required() && !is_known {
+                // required unknown 始终拒绝
                 return Err(Error::InvalidMetadata(format!(
                     "Unknown required metadata item: {item_id:?}"
+                )));
+            }
+            if strict && !is_known {
+                // strict=true 时 optional unknown 也拒绝
+                return Err(Error::InvalidMetadata(format!(
+                    "Unknown optional metadata item (strict mode): {item_id:?}"
                 )));
             }
         }
@@ -924,14 +941,26 @@ impl File {
             || *item_id == crate::common::constants::metadata_guids::PARENT_LOCATOR
     }
 
-    /// 校验 required 区域条目是否均为已知项（strict 模式）
-    fn validate_required_region_entries_are_known(
-        region_table: &crate::sections::RegionTable<'_>,
+    /// 校验区域条目是否均为已知项
+    ///
+    /// - `strict=true`：required 和 optional unknown 均拒绝
+    /// - `strict=false`：仅拒绝 required unknown，允许 optional unknown
+    fn validate_region_entries(
+        region_table: &crate::sections::RegionTable<'_>, strict: bool,
     ) -> Result<()> {
         for entry in region_table.entries() {
-            if entry.required() && !Self::is_known_region_guid(&entry.guid()) {
+            let is_known = Self::is_known_region_guid(&entry.guid());
+            if entry.required() && !is_known {
+                // required unknown 始终拒绝
                 return Err(Error::InvalidRegionTable(format!(
                     "Unknown required region: {:?}",
+                    entry.guid()
+                )));
+            }
+            if strict && !is_known {
+                // strict=true 时 optional unknown 也拒绝
+                return Err(Error::InvalidRegionTable(format!(
+                    "Unknown optional region (strict mode): {:?}",
                     entry.guid()
                 )));
             }
@@ -1374,6 +1403,8 @@ impl File {
         file.sync_all()?;
 
         // 步骤 10：关闭文件并重新打开以验证完整性
+        // 说明：此处复用 open_file 的内部默认（Require），
+        // 与外部 File::open 默认契约保持一致，避免策略分裂。
         drop(file);
         Self::open_file(path, true)
     }
@@ -2086,5 +2117,301 @@ mod tests {
         let mut buf = vec![0u8; 10];
         file.read_raw(0, &mut buf).expect("Failed to read");
         assert_eq!(&buf, b"flush test");
+    }
+
+    // ── strict 语义测试 ──────────────────────────────────────────────
+
+    /// 向 VHDX 文件的两个区域表副本注入一个额外的区域条目
+    ///
+    /// 参数：
+    /// - `required`：注入条目的 required 标志（true=1, false=0）
+    fn inject_unknown_region_entry(path: &Path, required: bool) {
+        let unknown_guid = Guid::from(uuid::Uuid::new_v4());
+
+        let mut raw = StdOpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .expect("Failed to open VHDX for region injection");
+
+        for &rt_offset in &[REGION_TABLE_1_OFFSET as u64, REGION_TABLE_2_OFFSET as u64] {
+            // 读取区域表
+            raw.seek(SeekFrom::Start(rt_offset)).expect("seek failed");
+            let mut rt_data = vec![0u8; REGION_TABLE_SIZE];
+            raw.read_exact(&mut rt_data)
+                .expect("read region table failed");
+
+            // 修改 entry_count：+1
+            let count = u16::from_le_bytes([rt_data[8], rt_data[9]]) as u32;
+            let new_count = count + 1;
+            rt_data[8..12].copy_from_slice(&new_count.to_le_bytes());
+
+            // 计算新条目的写入偏移（紧跟已有条目之后）
+            let entry_offset = 16 + count as usize * 32;
+            if entry_offset + 32 <= REGION_TABLE_SIZE {
+                // 写入新条目：GUID(16) + offset(8) + length(4) + required(4)
+                rt_data[entry_offset..entry_offset + 16].copy_from_slice(unknown_guid.as_bytes());
+                // 文件偏移设为 0（无实际数据区域）
+                rt_data[entry_offset + 16..entry_offset + 24]
+                    .copy_from_slice(&0x0050_0000_u64.to_le_bytes());
+                // 长度设为 1MB
+                rt_data[entry_offset + 24..entry_offset + 28]
+                    .copy_from_slice(&0x0010_0000_u32.to_le_bytes());
+                // required 标志
+                let req_flag: u32 = if required { 1 } else { 0 };
+                rt_data[entry_offset + 28..entry_offset + 32]
+                    .copy_from_slice(&req_flag.to_le_bytes());
+            }
+
+            // 重算 CRC32C 校验和（校验和字段本身置零后计算）
+            rt_data[4..8].copy_from_slice(&[0; 4]);
+            let checksum = crc32c::crc32c(&rt_data);
+            rt_data[4..8].copy_from_slice(&checksum.to_le_bytes());
+
+            // 写回
+            raw.seek(SeekFrom::Start(rt_offset)).expect("seek failed");
+            raw.write_all(&rt_data).expect("write region table failed");
+        }
+        raw.flush().expect("flush failed");
+    }
+
+    /// 向 VHDX 文件的元数据表注入一个额外的元数据条目
+    ///
+    /// 参数：
+    /// - `is_required`：注入条目的 is_required 标志（true=设置 bit 29, false=0）
+    fn inject_unknown_metadata_entry(path: &Path, is_required: bool) {
+        // 使用一个不属于已知元数据项的 GUID
+        let unknown_guid = Guid::from(uuid::Uuid::new_v4());
+
+        // 元数据区域固定起始于 2 * 1MiB（与 create_layout 一致）
+        let metadata_offset: u64 = HEADER_SECTION_SIZE as u64 * 2;
+
+        let mut raw = StdOpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .expect("Failed to open VHDX for metadata injection");
+
+        // 读取元数据头部 + 条目区域
+        raw.seek(SeekFrom::Start(metadata_offset))
+            .expect("seek failed");
+        let mut meta_data = vec![0u8; METADATA_TABLE_SIZE];
+        raw.read_exact(&mut meta_data)
+            .expect("read metadata failed");
+
+        // 当前 entry_count（字节 10..12，u16 LE）
+        let count = u16::from_le_bytes([meta_data[10], meta_data[11]]);
+        let new_count = count + 1;
+        meta_data[10..12].copy_from_slice(&new_count.to_le_bytes());
+
+        // 新条目写入偏移（头部 32 字节 + count 个已有条目）
+        let entry_offset = 32 + count as usize * 32;
+        if entry_offset + 32 <= METADATA_TABLE_SIZE {
+            // GUID(16) + offset(4) + length(4) + flags(4) + reserved(4)
+            meta_data[entry_offset..entry_offset + 16].copy_from_slice(unknown_guid.as_bytes());
+            // offset=0, length=0
+            meta_data[entry_offset + 16..entry_offset + 20].copy_from_slice(&0u32.to_le_bytes());
+            meta_data[entry_offset + 20..entry_offset + 24].copy_from_slice(&0u32.to_le_bytes());
+            // flags：is_required 对应 bit 29 (0x2000_0000)
+            let flags: u32 = if is_required { 0x2000_0000 } else { 0 };
+            meta_data[entry_offset + 24..entry_offset + 28].copy_from_slice(&flags.to_le_bytes());
+            // reserved
+            meta_data[entry_offset + 28..entry_offset + 32].copy_from_slice(&0u32.to_le_bytes());
+        }
+
+        // 写回
+        raw.seek(SeekFrom::Start(metadata_offset))
+            .expect("seek failed");
+        raw.write_all(&meta_data).expect("write metadata failed");
+        raw.flush().expect("flush failed");
+    }
+
+    /// strict=false + optional unknown region => 打开成功
+    #[test]
+    fn test_strict_false_optional_unknown_region_succeeds() {
+        let path = temp_vhdx_path();
+
+        File::create(&path)
+            .size(1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk");
+
+        inject_unknown_region_entry(&path, false);
+
+        let result = File::open(&path)
+            .strict(false)
+            .log_replay(LogReplayPolicy::Require)
+            .finish();
+        assert!(
+            result.is_ok(),
+            "strict=false should allow optional unknown region, got: {:?}",
+            result.err()
+        );
+    }
+
+    /// strict=true + optional unknown region => 打开失败
+    #[test]
+    fn test_strict_true_optional_unknown_region_fails() {
+        let path = temp_vhdx_path();
+
+        File::create(&path)
+            .size(1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk");
+
+        inject_unknown_region_entry(&path, false);
+
+        let result = File::open(&path)
+            .strict(true)
+            .log_replay(LogReplayPolicy::Require)
+            .finish();
+        match result {
+            Err(Error::InvalidRegionTable(msg)) => {
+                assert!(
+                    msg.contains("Unknown optional region (strict mode)"),
+                    "Error should mention strict mode, got: {msg}"
+                );
+            }
+            Err(e) => {
+                panic!("Expected InvalidRegionTable with strict mode, got different error: {e}")
+            }
+            Ok(_) => panic!("Expected error, but open succeeded"),
+        }
+    }
+
+    /// strict=false + required unknown region => 打开失败
+    #[test]
+    fn test_strict_false_required_unknown_region_fails() {
+        let path = temp_vhdx_path();
+
+        File::create(&path)
+            .size(1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk");
+
+        inject_unknown_region_entry(&path, true);
+
+        let result = File::open(&path)
+            .strict(false)
+            .log_replay(LogReplayPolicy::Require)
+            .finish();
+        match result {
+            Err(Error::InvalidRegionTable(msg)) => {
+                assert!(
+                    msg.contains("Unknown required region"),
+                    "Error should mention required region, got: {msg}"
+                );
+            }
+            Err(e) => panic!("Expected InvalidRegionTable, got different error: {e}"),
+            Ok(_) => panic!("Expected error, but open succeeded"),
+        }
+    }
+
+    /// strict=false + optional unknown metadata => 打开成功
+    #[test]
+    fn test_strict_false_optional_unknown_metadata_succeeds() {
+        let path = temp_vhdx_path();
+
+        File::create(&path)
+            .size(1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk");
+
+        inject_unknown_metadata_entry(&path, false);
+
+        let result = File::open(&path)
+            .strict(false)
+            .log_replay(LogReplayPolicy::Require)
+            .finish();
+        assert!(
+            result.is_ok(),
+            "strict=false should allow optional unknown metadata, got: {:?}",
+            result.err()
+        );
+    }
+
+    /// strict=true + optional unknown metadata => 打开失败
+    #[test]
+    fn test_strict_true_optional_unknown_metadata_fails() {
+        let path = temp_vhdx_path();
+
+        File::create(&path)
+            .size(1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk");
+
+        inject_unknown_metadata_entry(&path, false);
+
+        let result = File::open(&path)
+            .strict(true)
+            .log_replay(LogReplayPolicy::Require)
+            .finish();
+        match result {
+            Err(Error::InvalidMetadata(msg)) => {
+                assert!(
+                    msg.contains("Unknown optional metadata item (strict mode)"),
+                    "Error should mention strict mode, got: {msg}"
+                );
+            }
+            Err(e) => panic!("Expected InvalidMetadata with strict mode, got different error: {e}"),
+            Ok(_) => panic!("Expected error, but open succeeded"),
+        }
+    }
+
+    /// strict=false + required unknown metadata => 打开失败
+    #[test]
+    fn test_strict_false_required_unknown_metadata_fails() {
+        let path = temp_vhdx_path();
+
+        File::create(&path)
+            .size(1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk");
+
+        inject_unknown_metadata_entry(&path, true);
+
+        let result = File::open(&path)
+            .strict(false)
+            .log_replay(LogReplayPolicy::Require)
+            .finish();
+        match result {
+            Err(Error::InvalidMetadata(msg)) => {
+                assert!(
+                    msg.contains("Unknown required metadata item"),
+                    "Error should mention required metadata, got: {msg}"
+                );
+            }
+            Err(e) => panic!("Expected InvalidMetadata, got different error: {e}"),
+            Ok(_) => panic!("Expected error, but open succeeded"),
+        }
+    }
+
+    /// 默认打开（strict=true）对未知 optional region 的拒绝行为
+    #[test]
+    fn test_default_strict_rejects_optional_unknown_region() {
+        let path = temp_vhdx_path();
+
+        File::create(&path)
+            .size(1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk");
+
+        inject_unknown_region_entry(&path, false);
+
+        // 默认 strict=true
+        let result = File::open(&path)
+            .log_replay(LogReplayPolicy::Require)
+            .finish();
+        assert!(
+            result.is_err(),
+            "Default strict=true should reject optional unknown region"
+        );
     }
 }
