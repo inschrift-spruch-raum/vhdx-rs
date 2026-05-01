@@ -318,6 +318,13 @@ impl<'a> Sections<'a> {
         self.bat_offset
     }
 
+    /// 获取元数据区域在文件中的偏移量（字节）
+    ///
+    /// 用于将更新后的元数据持久化到磁盘。
+    pub(crate) fn metadata_disk_offset(&self) -> u64 {
+        self.metadata_offset
+    }
+
     /// 获取元数据区域（延迟加载），首次调用时从文件读取并缓存
     pub fn metadata(&self) -> Result<std::cell::Ref<'_, Metadata<'a>>> {
         if self.metadata.borrow().is_none() {

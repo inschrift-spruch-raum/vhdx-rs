@@ -68,6 +68,7 @@ use crate::types::Guid;
 /// - `is_fixed` — 是否为 Fixed 类型（`leave_block_allocated` 标志）
 /// - `has_parent` — 是否为差分磁盘（有父磁盘引用）
 /// - `has_pending_logs` — 是否存在未回放的日志条目
+/// - `writable` — 是否以写入模式打开
 pub struct File {
     /// 底层操作系统文件句柄
     inner: StdFile,
@@ -86,6 +87,8 @@ pub struct File {
     /// 是否存在未回放的日志条目
     #[allow(dead_code)]
     has_pending_logs: bool,
+    /// 是否以写入模式打开
+    writable: bool,
     /// 打开该文件时使用的路径
     opened_path: PathBuf,
     /// 只读内存回放覆盖层（按文件绝对偏移覆盖读取结果）
@@ -251,6 +254,108 @@ impl File {
         self.has_parent
     }
 
+    /// 检查当前文件是否以写入模式打开
+    #[must_use]
+    pub const fn is_writable(&self) -> bool {
+        self.writable
+    }
+
+    /// 更新差分盘父定位器中的 `relative_path` 路径
+    ///
+    /// 仅对以写入模式打开的差分 VHDX 文件有效。
+    /// 保留父定位器中所有其他键值对不变，仅修改 `relative_path` 键的值。
+    /// 若当前不存在 `relative_path` 键，则新增该条目。
+    ///
+    /// # 错误
+    ///
+    /// - `Error::ReadOnly` — 文件以只读模式打开
+    /// - `Error::InvalidParameter` — 非差分磁盘
+    /// - `Error::InvalidMetadata` — 缺少父定位器元数据或重建失败
+    pub fn update_parent_locator_path(&self, new_relative_path: &str) -> Result<()> {
+        use crate::common::constants::metadata_guids;
+
+        // 守卫：必须以写入模式打开
+        if !self.writable {
+            return Err(Error::ReadOnly);
+        }
+
+        // 守卫：必须为差分磁盘
+        if !self.has_parent {
+            return Err(Error::InvalidParameter(
+                "update_parent_locator_path requires a differencing disk".to_string(),
+            ));
+        }
+
+        // 在第一阶段提取所有需要的数据，控制 RefCell 借用范围
+        let (new_payload, new_length, data_offset_in_region, metadata_file_offset, entry_index) = {
+            let metadata = self.sections.metadata()?;
+            let items = metadata.items();
+            let locator = items.parent_locator().ok_or_else(|| {
+                Error::InvalidMetadata(
+                    "Missing required metadata item: parent_locator".to_string(),
+                )
+            })?;
+
+            let new_payload = locator.rebuild_payload_with_path(new_relative_path)?;
+            let new_length = u32::try_from(new_payload.len()).unwrap_or(u32::MAX);
+
+            let table = metadata.table();
+            let parent_locator_entry = table.entry(&metadata_guids::PARENT_LOCATOR).ok_or_else(
+                || Error::InvalidMetadata("Parent locator table entry not found".to_string()),
+            )?;
+            let data_offset = u64::from(parent_locator_entry.offset());
+
+            let entries = table.entries();
+            let idx = entries
+                .iter()
+                .position(|e| e.item_id() == metadata_guids::PARENT_LOCATOR)
+                .ok_or_else(|| {
+                    Error::InvalidMetadata(
+                        "Parent locator table entry index not found".to_string(),
+                    )
+                })?;
+
+            let meta_file_offset = self.sections.metadata_disk_offset();
+
+            (
+                new_payload,
+                new_length,
+                data_offset,
+                meta_file_offset,
+                idx,
+            )
+        }; // 此处释放 metadata / items / locator / table 的所有 RefCell 借用
+
+        // 第二阶段：写入新负载到元数据数据区域
+        {
+            let mut file = self.inner.try_clone()?;
+            file.seek(SeekFrom::Start(
+                metadata_file_offset + data_offset_in_region,
+            ))?;
+            file.write_all(&new_payload)?;
+        }
+
+        // 第三阶段：更新元数据表项中的长度字段
+        {
+            // 表项在文件中的字节偏移：表头 32 字节 + entry_index * 32
+            // 长度字段位于表项偏移 + 20 处（4 字节）
+            let entry_file_offset = metadata_file_offset
+                + 32u64
+                + u64::try_from(entry_index).unwrap_or(u64::MAX) * 32u64;
+            let length_field_offset = entry_file_offset + 20u64;
+
+            let mut file = self.inner.try_clone()?;
+            file.seek(SeekFrom::Start(length_field_offset))?;
+            file.write_all(&new_length.to_le_bytes())?;
+            file.sync_all()?;
+        }
+
+        // 失效缓存，使后续读取反映更新后的数据
+        self.sections.invalidate_caches();
+
+        Ok(())
+    }
+
     /// 检查是否存在未回放的日志条目
     #[allow(dead_code)]
     pub(crate) const fn has_pending_logs(&self) -> bool {
@@ -284,6 +389,77 @@ impl File {
         }
 
         File::open(&parent_path).finish()
+    }
+
+    /// 显式更新差分盘父定位器中的陈旧路径。
+    ///
+    /// 该方法仅在可写句柄上可用；只读句柄会返回 `Error::ReadOnly`。
+    /// 调用方应先完成父链校验，再显式调用本方法执行回写。
+    pub fn update_stale_parent_paths(&self, parent_path: impl AsRef<Path>) -> Result<()> {
+        if !self.writable {
+            return Err(Error::ReadOnly);
+        }
+        if !self.has_parent {
+            return Err(Error::InvalidParameter(
+                "update_stale_parent_paths requires a differencing disk".to_string(),
+            ));
+        }
+
+        let parent_path = parent_path.as_ref();
+        if !parent_path.exists() {
+            return Err(Error::ParentNotFound {
+                path: parent_path.to_path_buf(),
+            });
+        }
+
+        let parent_file = File::open(parent_path).finish()?;
+        let parent_sections_header = parent_file.sections().header()?;
+        let parent_header = parent_sections_header
+            .header(0)
+            .ok_or_else(|| Error::CorruptedHeader("No valid header found".to_string()))?;
+        let parent_linkage = parent_header.data_write_guid();
+
+        let (updated_payload, locator_data_offset, existing_len) = {
+            let metadata = self.sections.metadata()?;
+            let items = metadata.items();
+            let locator = items.parent_locator().ok_or_else(|| {
+                Error::InvalidMetadata("Missing required metadata item: parent_locator".to_string())
+            })?;
+
+            let updated_payload = locator.rebuild_with_parent_path(parent_path, parent_linkage)?;
+            let table = metadata.table();
+            let locator_entry = table
+                .entry(&crate::common::constants::metadata_guids::PARENT_LOCATOR)
+                .ok_or(Error::MetadataNotFound {
+                    guid: crate::common::constants::metadata_guids::PARENT_LOCATOR,
+                })?;
+
+            (
+                updated_payload,
+                u64::from(locator_entry.offset()),
+                usize::try_from(locator_entry.length()).unwrap_or(0),
+            )
+        };
+
+        if updated_payload.len() > existing_len {
+            return Err(Error::InvalidParameter(format!(
+                "Updated parent locator payload {} exceeds existing size {}",
+                updated_payload.len(),
+                existing_len
+            )));
+        }
+
+        let metadata_disk_offset = self.sections.metadata_disk_offset();
+        let mut file = self.inner.try_clone()?;
+        file.seek(SeekFrom::Start(metadata_disk_offset + locator_data_offset))?;
+        file.write_all(&updated_payload)?;
+        if updated_payload.len() < existing_len {
+            file.write_all(&vec![0u8; existing_len - updated_payload.len()])?;
+        }
+        file.sync_all()?;
+
+        self.sections.invalidate_caches();
+        Ok(())
     }
 
     /// 从父链读取指定虚拟偏移范围（按需懒加载父盘句柄）。
@@ -843,6 +1019,7 @@ impl File {
             is_fixed,
             has_parent,
             has_pending_logs,
+            writable,
             opened_path: path.to_path_buf(),
             replay_overlay,
         })
@@ -2450,6 +2627,172 @@ mod tests {
         assert!(
             result.is_err(),
             "Default strict=true should reject optional unknown region"
+        );
+    }
+
+    // ── update_parent_locator_path 测试 ──────────────────────────────
+
+    /// 创建父盘和指向它的差分盘，打开差分盘后可写更新 relative_path，
+    /// 重新打开后验证路径已持久化。
+    #[test]
+    fn test_update_parent_locator_path_persisted() {
+        let parent_path = temp_vhdx_path();
+        let child_path = temp_vhdx_path();
+
+        // 创建父盘
+        File::create(&parent_path)
+            .size(1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create parent disk");
+
+        // 创建差分盘，指向父盘
+        File::create(&child_path)
+            .size(1024 * 1024)
+            .parent_path(&parent_path)
+            .finish()
+            .expect("Failed to create child disk");
+
+        // 获取原始的 relative_path
+        let orig_path = {
+            let orig_child = File::open(&child_path).finish().expect("open child ro");
+            let orig_metadata = orig_child.sections().metadata().expect("metadata");
+            let orig_items = orig_metadata.items();
+            let orig_locator = orig_items.parent_locator().expect("parent_locator");
+            orig_locator.resolve_parent_path().expect("orig path")
+        };
+
+        // 以可写模式打开并更新路径
+        let new_path_str = r"D:\moved_parent.vhdx";
+        {
+            let child = File::open(&child_path)
+                .write()
+                .finish()
+                .expect("open child writable");
+            assert!(child.is_writable());
+
+            child
+                .update_parent_locator_path(new_path_str)
+                .expect("update_parent_locator_path should succeed");
+        }
+
+        // 重新打开（只读），验证路径已更新
+        let child = File::open(&child_path).finish().expect("reopen child");
+        let metadata = child.sections().metadata().expect("metadata");
+        let items = metadata.items();
+        let locator = items.parent_locator().expect("parent_locator");
+        let updated_path = locator.resolve_parent_path().expect("updated path");
+
+        assert_eq!(updated_path, PathBuf::from(new_path_str));
+        assert_ne!(updated_path, orig_path);
+    }
+
+    /// 只读模式下调用 update_parent_locator_path 应返回 Error::ReadOnly
+    #[test]
+    fn test_update_parent_locator_path_read_only_rejected() {
+        let parent_path = temp_vhdx_path();
+        let child_path = temp_vhdx_path();
+
+        File::create(&parent_path)
+            .size(1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create parent disk");
+
+        File::create(&child_path)
+            .size(1024 * 1024)
+            .parent_path(&parent_path)
+            .finish()
+            .expect("Failed to create child disk");
+
+        let child = File::open(&child_path).finish().expect("open child ro");
+        assert!(!child.is_writable());
+
+        let result = child.update_parent_locator_path("C:\\foobar.vhdx");
+        match result {
+            Err(Error::ReadOnly) => {} // expected
+            Err(e) => panic!("Expected Error::ReadOnly, got: {e}"),
+            Ok(()) => panic!("Expected error but update succeeded"),
+        }
+    }
+
+    /// 对非差分盘（Fixed）调用 update_parent_locator_path 应返回 Error::InvalidParameter
+    #[test]
+    fn test_update_parent_locator_path_non_differencing_rejected() {
+        let path = temp_vhdx_path();
+
+        let file = File::create(&path)
+            .size(1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create fixed disk");
+
+        assert!(!file.has_parent());
+        assert!(file.is_writable());
+
+        let result = file.update_parent_locator_path("C:\\foobar.vhdx");
+        match result {
+            Err(Error::InvalidParameter(msg)) => {
+                assert!(
+                    msg.contains("differencing"),
+                    "Error should mention differencing disk, got: {msg}"
+                );
+            }
+            Err(e) => panic!("Expected Error::InvalidParameter, got: {e}"),
+            Ok(()) => panic!("Expected error but update succeeded"),
+        }
+    }
+
+    /// 更新为与原始相同的路径应成功（幂等性）
+    #[test]
+    fn test_update_parent_locator_path_idempotent() {
+        let parent_path = temp_vhdx_path();
+        let child_path = temp_vhdx_path();
+
+        File::create(&parent_path)
+            .size(1024 * 1024)
+            .fixed(true)
+            .finish()
+            .expect("Failed to create parent disk");
+
+        File::create(&child_path)
+            .size(1024 * 1024)
+            .parent_path(&parent_path)
+            .finish()
+            .expect("Failed to create child disk");
+
+        let child = File::open(&child_path)
+            .write()
+            .finish()
+            .expect("open child writable");
+
+        // 获取当前 relative_path 路径字符串
+        let current_path = {
+            let metadata = child.sections().metadata().expect("metadata");
+            let items = metadata.items();
+            let locator = items.parent_locator().expect("parent_locator");
+            locator
+                .resolve_parent_path()
+                .expect("resolve")
+                .to_string_lossy()
+                .to_string()
+        };
+
+        // 用相同路径调用更新（幂等操作）
+        child
+            .update_parent_locator_path(&current_path)
+            .expect("idempotent update should succeed");
+
+        // 验证路径未变
+        let metadata = child.sections().metadata().expect("metadata");
+        let items = metadata.items();
+        let locator = items.parent_locator().expect("parent_locator");
+        let path_after = locator.resolve_parent_path().expect("resolve");
+
+        assert_eq!(
+            path_after.to_string_lossy(),
+            current_path.as_str(),
+            "Path should remain unchanged after idempotent update"
         );
     }
 }

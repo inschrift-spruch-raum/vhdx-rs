@@ -1,0 +1,20 @@
+=========================================================================
+TASK 3: STALE PARENT-PATH WRITEBACK — HAPPY PATH + PERSISTENCE
+Generated: 2026-05-01
+=========================================================================
+
+Test command:
+  cargo test -p vhdx-rs -- test_update_stale_parent_paths_happy_path test_update_parent_locator_path_persisted test_update_parent_locator_path_idempotent
+
+Output:
+  running 3 tests
+  test file::tests::test_update_parent_locator_path_persisted ... ok
+  test file::tests::test_update_parent_locator_path_idempotent ... ok
+  test test_update_stale_parent_paths_happy_path ... ok
+
+  test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured
+
+Verdict: PASS — three scenarios:
+  1. test_update_stale_parent_paths_happy_path: writeback + reopen + chain validation passes
+  2. test_update_parent_locator_path_persisted: path persisted across reopen; differs from original
+  3. test_update_parent_locator_path_idempotent: same-path update succeeds, path remains unchanged

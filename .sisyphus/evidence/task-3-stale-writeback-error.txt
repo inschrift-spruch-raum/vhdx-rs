@@ -1,0 +1,21 @@
+=========================================================================
+TASK 3: STALE PARENT-PATH WRITEBACK — ERROR PATHS
+Generated: 2026-05-01
+=========================================================================
+
+Test command:
+  cargo test -p vhdx-rs -- test_update_stale_parent_paths_read_only_rejected test_update_stale_parent_paths_missing_parent_fails test_update_parent_locator_path_read_only_rejected test_update_parent_locator_path_non_differencing_rejected
+
+Output:
+  running 4 tests
+  test file::tests::test_update_parent_locator_path_non_differencing_rejected ... ok
+  test file::tests::test_update_parent_locator_path_read_only_rejected ... ok
+  test test_update_stale_parent_paths_read_only_rejected ... ok
+  test test_update_stale_parent_paths_missing_parent_fails ... ok
+
+  test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured
+
+Verdict: PASS — all four error-path scenarios return correct controlled errors:
+  1. Read-only open → Error::ReadOnly (both writeback methods)
+  2. Non-differencing disk → Error::InvalidParameter
+  3. Missing target parent file → Error::ParentNotFound

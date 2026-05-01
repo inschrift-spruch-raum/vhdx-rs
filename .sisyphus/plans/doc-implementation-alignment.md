@@ -82,7 +82,7 @@ Wave 2: decisioned integration and hardening
 
 ## TODOs
 
-- [ ] 1. Add missing `ValidationIssue` accessors
+- [x] 1. Add missing `ValidationIssue` accessors
 
   **What to do**:
   - 在 `src/validation.rs` 的 `impl ValidationIssue` 中新增：
@@ -128,7 +128,7 @@ Wave 2: decisioned integration and hardening
 
   **Commit**: YES | Message: `fix(validation): align ValidationIssue accessors with API baseline` | Files: `src/validation.rs`, `tests/*`
 
-- [ ] 2. Enforce differencing `parent_locator` in required metadata validation
+- [x] 2. Enforce differencing `parent_locator` in required metadata validation
 
   **What to do**:
   - 在 `validate_required_metadata_items()` 中，读取 `file_parameters` 并在 `has_parent()==true` 时强制 `PARENT_LOCATOR` 存在。
@@ -174,7 +174,7 @@ Wave 2: decisioned integration and hardening
 
   **Commit**: YES | Message: `fix(validation): enforce parent_locator for differencing required metadata` | Files: `src/validation.rs`, `tests/*`
 
-- [ ] 3. [DECISION NEEDED-1] Implement stale parent-path writeback strategy
+- [x] 3. [DECISION NEEDED-1] Implement stale parent-path writeback strategy
 
   **What to do**:
   - 在不破坏 `SpecValidator` 只读语义前提下实现 stale path 回写。
@@ -220,7 +220,7 @@ Wave 2: decisioned integration and hardening
 
   **Commit**: YES | Message: `feat(file): add explicit stale parent path writeback flow` | Files: `src/file.rs`, `src/sections/metadata.rs`, `tests/*`
 
-- [ ] 4. Consolidate regression verification and docs-baseline assertions
+- [x] 4. Consolidate regression verification and docs-baseline assertions
 
   **What to do**:
   - 运行并收集任务 1-3 相关测试与全量回归结果。
@@ -268,10 +268,10 @@ Wave 2: decisioned integration and hardening
 > 4 review agents run in PARALLEL. ALL must APPROVE. Present consolidated results to user and get explicit "okay" before completing.
 > **Do NOT auto-proceed after verification. Wait for user's explicit approval before marking work complete.**
 > **Never mark F1-F4 as checked before getting user's okay.** Rejection or user feedback -> fix -> re-run -> present again -> wait for okay.
-- [ ] F1. Plan Compliance Audit — oracle
-- [ ] F2. Code Quality Review — unspecified-high
-- [ ] F3. Real Manual QA — unspecified-high (+ playwright if UI)
-- [ ] F4. Scope Fidelity Check — deep
+- [x] F1. Plan Compliance Audit — oracle
+- [x] F2. Code Quality Review — unspecified-high
+- [x] F3. Real Manual QA — unspecified-high (+ playwright if UI)
+- [x] F4. Scope Fidelity Check — deep
 
 ## Commit Strategy
 - 每个任务单独原子提交，避免混合语义。

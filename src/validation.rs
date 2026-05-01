@@ -77,6 +77,18 @@ impl ValidationIssue {
     pub const fn code(&self) -> &'static str {
         self.code
     }
+
+    /// 返回人类可读问题描述
+    #[must_use]
+    pub fn message(&self) -> String {
+        self.message.clone()
+    }
+
+    /// 返回规范参考章节
+    #[must_use]
+    pub const fn spec_ref(&self) -> &'static str {
+        self.spec_ref
+    }
 }
 
 /// 规范一致性校验器（只读）
@@ -602,6 +614,18 @@ impl<'a> SpecValidator<'a> {
             return Err(Error::InvalidMetadata(
                 "Missing required metadata item: physical_sector_size".to_string(),
             ));
+        }
+
+        // 差分盘必须包含 parent_locator（MS-VHDX §2.6.2）
+        if self.file.has_parent() {
+            let has_parent_locator = entries
+                .iter()
+                .any(|entry| entry.item_id() == metadata_guids::PARENT_LOCATOR);
+            if !has_parent_locator {
+                return Err(Error::InvalidMetadata(
+                    "Missing required metadata item: parent_locator".to_string(),
+                ));
+            }
         }
 
         Ok(())

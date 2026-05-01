@@ -1464,6 +1464,124 @@ fn test_create_differencing_disk_writes_parent_locator_payload() {
     );
 }
 
+/// 测试显式父路径回写：更新后应可解析到新父盘并通过父链校验。
+#[test]
+fn test_update_stale_parent_paths_happy_path() {
+    use vhdx_rs::File;
+
+    let dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let parent_old_path = dir.path().join("parent-old-very-long-name.vhdx");
+    let parent_new_path = dir.path().join("p.vhdx");
+    let child_path = dir.path().join("child.vhdx");
+
+    File::create(&parent_old_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create old parent");
+    File::create(&parent_new_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create new parent");
+
+    File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_old_path)
+        .finish()
+        .expect("Failed to create child differencing disk");
+
+    let child_rw = File::open(&child_path)
+        .write()
+        .finish()
+        .expect("Failed to open child with write access");
+    child_rw
+        .update_stale_parent_paths(&parent_new_path)
+        .expect("Failed to update stale parent paths");
+
+    let child = File::open(&child_path)
+        .finish()
+        .expect("Failed to reopen child after writeback");
+    let metadata = child
+        .sections()
+        .metadata()
+        .expect("Failed to read metadata");
+    let items = metadata.items();
+    let locator = items.parent_locator().expect("Expected parent locator");
+    assert_eq!(
+        locator.resolve_parent_path(),
+        Some(parent_new_path.clone()),
+        "Parent locator should resolve to updated parent path"
+    );
+
+    let chain = child
+        .validator()
+        .validate_parent_chain()
+        .expect("Parent chain should remain valid after explicit writeback");
+    assert_eq!(chain.parent(), parent_new_path.as_path());
+}
+
+/// 测试只读句柄调用显式父路径回写会被拒绝。
+#[test]
+fn test_update_stale_parent_paths_read_only_rejected() {
+    use vhdx_rs::{Error, File};
+
+    let parent_path = temp_vhdx_path();
+    let child_path = temp_vhdx_path();
+
+    File::create(&parent_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent");
+    File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create child");
+
+    let child_ro = File::open(&child_path)
+        .finish()
+        .expect("Failed to open child read-only");
+    match child_ro.update_stale_parent_paths(&parent_path) {
+        Err(Error::ReadOnly) => {}
+        Err(other) => panic!("Expected ReadOnly, got {other}"),
+        Ok(_) => panic!("Expected read-only rejection"),
+    }
+}
+
+/// 测试显式父路径回写在父盘不存在时返回 ParentNotFound。
+#[test]
+fn test_update_stale_parent_paths_missing_parent_fails() {
+    use vhdx_rs::{Error, File};
+
+    let parent_path = temp_vhdx_path();
+    let child_path = temp_vhdx_path();
+
+    File::create(&parent_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent");
+    File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create child");
+
+    let missing_parent = child_path.with_file_name("missing-parent.vhdx");
+    let child_rw = File::open(&child_path)
+        .write()
+        .finish()
+        .expect("Failed to open child with write access");
+
+    match child_rw.update_stale_parent_paths(&missing_parent) {
+        Err(Error::ParentNotFound { path }) => assert_eq!(path, missing_parent),
+        Err(other) => panic!("Expected ParentNotFound, got {other}"),
+        Ok(_) => panic!("Expected missing parent rejection"),
+    }
+}
+
 /// 测试非差分磁盘不应有父磁盘。
 #[test]
 fn test_has_parent_false_for_non_differencing() {
@@ -2123,6 +2241,8 @@ fn test_validation_api_import_and_validate_file() {
     );
     assert_eq!(issue.section(), "metadata");
     assert_eq!(issue.code(), "EXAMPLE");
+    assert_eq!(issue.message(), "example issue");
+    assert_eq!(issue.spec_ref(), "MS-VHDX §2.6");
 }
 
 /// 测试差分盘缺少 Parent Locator 必需键时返回错误而非 panic。
@@ -3309,6 +3429,81 @@ fn test_t8_validator_required_metadata_rejects_missing_known_required_item() {
         Error::InvalidMetadata(msg) => {
             assert!(
                 msg.contains("Missing required metadata item: physical_sector_size"),
+                "unexpected error message: {msg}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// T2 正向：差分盘包含 parent_locator 时应通过 required metadata 校验。
+#[test]
+fn test_validation_required_metadata_items_accepts_parent_locator_for_differencing() {
+    use vhdx_rs::File;
+
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    let child = File::create(&child_path)
+        .size(1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create differencing child");
+    drop(child);
+
+    let file = File::open(&child_path)
+        .finish()
+        .expect("Failed to reopen differencing child");
+    assert!(file_has_parent(&file), "differencing disk must have parent");
+
+    file.validator()
+        .validate_required_metadata_items()
+        .expect("differencing disk with complete metadata should pass required metadata validation");
+}
+
+/// T2 负向：差分盘缺少 parent_locator 时应返回 InvalidMetadata 错误。
+#[test]
+fn test_validation_required_metadata_items_rejects_missing_parent_locator_for_differencing() {
+    use vhdx_rs::{Error, File};
+
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    let child = File::create(&child_path)
+        .size(1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create differencing child");
+    drop(child);
+
+    // 移除最后一个 metadata entry（即 parent_locator）
+    remove_last_metadata_entry(&child_path);
+
+    let file = File::open(&child_path)
+        .strict(false)
+        .finish()
+        .expect("Failed to reopen differencing child with strict=false");
+    assert!(file_has_parent(&file), "differencing disk must have parent");
+
+    let err = file
+        .validator()
+        .validate_required_metadata_items()
+        .expect_err("Expected missing parent_locator validation error");
+
+    match err {
+        Error::InvalidMetadata(msg) => {
+            assert!(
+                msg.contains("Missing required metadata item: parent_locator"),
                 "unexpected error message: {msg}"
             );
         }

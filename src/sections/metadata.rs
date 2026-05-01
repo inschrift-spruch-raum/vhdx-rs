@@ -49,6 +49,11 @@ fn read_guid(data: &[u8], start: usize) -> Guid {
     Guid::from_bytes(read_array::<16>(data, start))
 }
 
+/// 将字符串编码为 UTF-16LE 字节序列。
+fn encode_utf16le(value: &str) -> Vec<u8> {
+    value.encode_utf16().flat_map(u16::to_le_bytes).collect()
+}
+
 /// VHDX 元数据区域（MS-VHDX §2.6）
 ///
 /// 包装元数据区域的原始数据，提供对元数据表和类型化元数据项的访问。
@@ -568,6 +573,201 @@ impl<'a> ParentLocator<'a> {
         }
 
         None
+    }
+
+    /// 基于当前条目重建 Parent Locator 负载，并更新 `relative_path` 的值
+    ///
+    /// 保留所有现有键值对不变，仅更新 `relative_path` 键的值。
+    /// 若当前不存在 `relative_path` 键，则新增该条目。
+    ///
+    /// 返回可写入文件的新 Parent Locator 原始字节。
+    pub fn rebuild_payload_with_path(&self, new_path: &str) -> Result<Vec<u8>> {
+        let data = self.key_value_data();
+        let entries = self.entries();
+        let header = self.header();
+        let locator_type = header.locator_type();
+
+        // 收集当前所有键值对
+        let mut kv_pairs: Vec<(String, String)> = Vec::new();
+        for entry in &entries {
+            let key = entry.key(data).ok_or_else(|| {
+                Error::InvalidMetadata("Parent locator key decode failed during rebuild".to_string())
+            })?;
+            let value = entry.value(data).ok_or_else(|| {
+                Error::InvalidMetadata(
+                    "Parent locator value decode failed during rebuild".to_string(),
+                )
+            })?;
+            kv_pairs.push((key, value));
+        }
+
+        // 更新或新增 relative_path
+        let mut has_relative = false;
+        for (key, value) in &mut kv_pairs {
+            if key.eq_ignore_ascii_case("relative_path") {
+                *value = new_path.to_string();
+                has_relative = true;
+                break;
+            }
+        }
+        if !has_relative {
+            kv_pairs.push(("relative_path".to_string(), new_path.to_string()));
+        }
+
+        Self::build_payload(locator_type, &kv_pairs)
+    }
+
+    /// 从定位器类型 GUID 和键值对列表构造完整的 Parent Locator 字节负载
+    fn build_payload(
+        locator_type: Guid, kv_pairs: &[(String, String)],
+    ) -> Result<Vec<u8>> {
+        let key_value_count = u16::try_from(kv_pairs.len()).map_err(|_| {
+            Error::InvalidMetadata("Parent locator key/value count exceeds u16::MAX".to_string())
+        })?;
+
+        // 头部 20 字节：LocatorType(16) + Reserved(2) + KeyValueCount(2)
+        let mut payload = vec![0u8; 20];
+        payload[0..16].copy_from_slice(locator_type.as_bytes());
+        // Reserved 保持为零
+        payload[18..20].copy_from_slice(&key_value_count.to_le_bytes());
+
+        let mut entry_table = Vec::with_capacity(kv_pairs.len() * 12);
+        let mut key_value_data = Vec::new();
+
+        for (key, value) in kv_pairs {
+            let key_bytes: Vec<u8> =
+                key.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            let value_bytes: Vec<u8> =
+                value.encode_utf16().flat_map(u16::to_le_bytes).collect();
+
+            let key_offset = u32::try_from(key_value_data.len()).map_err(|_| {
+                Error::InvalidMetadata(
+                    "Parent locator key offset exceeds u32::MAX".to_string(),
+                )
+            })?;
+            key_value_data.extend_from_slice(&key_bytes);
+
+            let value_offset = u32::try_from(key_value_data.len()).map_err(|_| {
+                Error::InvalidMetadata(
+                    "Parent locator value offset exceeds u32::MAX".to_string(),
+                )
+            })?;
+            key_value_data.extend_from_slice(&value_bytes);
+
+            let key_length = u16::try_from(key_bytes.len()).map_err(|_| {
+                Error::InvalidMetadata(
+                    "Parent locator key length exceeds u16::MAX".to_string(),
+                )
+            })?;
+            let value_length = u16::try_from(value_bytes.len()).map_err(|_| {
+                Error::InvalidMetadata(
+                    "Parent locator value length exceeds u16::MAX".to_string(),
+                )
+            })?;
+
+            entry_table.extend_from_slice(&key_offset.to_le_bytes());
+            entry_table.extend_from_slice(&value_offset.to_le_bytes());
+            entry_table.extend_from_slice(&key_length.to_le_bytes());
+            entry_table.extend_from_slice(&value_length.to_le_bytes());
+        }
+
+        payload.extend_from_slice(&entry_table);
+        payload.extend_from_slice(&key_value_data);
+        Ok(payload)
+    }
+
+    /// 使用新的父盘路径与链路 GUID 重建父定位器负载。
+    ///
+    /// 规则：
+    /// - 已存在的 `relative_path` / `volume_path` / `absolute_win32_path` 会被统一更新；
+    /// - 若不存在任何路径键，则追加 `relative_path`；
+    /// - `parent_linkage`（以及存在时的 `parent_linkage2`）会更新为新的 GUID 文本；
+    /// - 其他键值对保持不变。
+    pub fn rebuild_with_parent_path(&self, parent_path: &std::path::Path, linkage: Guid) -> Result<Vec<u8>> {
+        let data = self.key_value_data();
+        let linkage_text = format!("{linkage}");
+        let parent_path_text = parent_path.to_string_lossy().to_string();
+
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        let mut has_path_key = false;
+
+        for entry in self.entries() {
+            let Some(key) = entry.key(data) else {
+                continue;
+            };
+            let Some(value) = entry.value(data) else {
+                continue;
+            };
+
+            let updated_value = if key.eq_ignore_ascii_case("parent_linkage")
+                || key.eq_ignore_ascii_case("parent_linkage2")
+            {
+                linkage_text.clone()
+            } else if key.eq_ignore_ascii_case("relative_path")
+                || key.eq_ignore_ascii_case("volume_path")
+                || key.eq_ignore_ascii_case("absolute_win32_path")
+            {
+                has_path_key = true;
+                parent_path_text.clone()
+            } else {
+                value
+            };
+
+            pairs.push((key, updated_value));
+        }
+
+        if !has_path_key {
+            pairs.push(("relative_path".to_string(), parent_path_text));
+        }
+
+        if !pairs
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("parent_linkage"))
+        {
+            pairs.push(("parent_linkage".to_string(), linkage_text));
+        }
+
+        let key_value_count = u16::try_from(pairs.len()).map_err(|_| {
+            Error::InvalidMetadata("Parent locator key/value count exceeds u16::MAX".to_string())
+        })?;
+
+        let mut payload = vec![0u8; 20];
+        payload[0..16].copy_from_slice(self.header().locator_type().as_bytes());
+        payload[18..20].copy_from_slice(&key_value_count.to_le_bytes());
+
+        let mut entry_table = Vec::with_capacity(pairs.len() * 12);
+        let mut key_value_data = Vec::new();
+
+        for (key, value) in &pairs {
+            let key_bytes = encode_utf16le(key);
+            let value_bytes = encode_utf16le(value);
+
+            let key_offset = u32::try_from(key_value_data.len()).map_err(|_| {
+                Error::InvalidMetadata("Parent locator key offset exceeds u32::MAX".to_string())
+            })?;
+            key_value_data.extend_from_slice(&key_bytes);
+
+            let value_offset = u32::try_from(key_value_data.len()).map_err(|_| {
+                Error::InvalidMetadata("Parent locator value offset exceeds u32::MAX".to_string())
+            })?;
+            key_value_data.extend_from_slice(&value_bytes);
+
+            let key_length = u16::try_from(key_bytes.len()).map_err(|_| {
+                Error::InvalidMetadata("Parent locator key length exceeds u16::MAX".to_string())
+            })?;
+            let value_length = u16::try_from(value_bytes.len()).map_err(|_| {
+                Error::InvalidMetadata("Parent locator value length exceeds u16::MAX".to_string())
+            })?;
+
+            entry_table.extend_from_slice(&key_offset.to_le_bytes());
+            entry_table.extend_from_slice(&value_offset.to_le_bytes());
+            entry_table.extend_from_slice(&key_length.to_le_bytes());
+            entry_table.extend_from_slice(&value_length.to_le_bytes());
+        }
+
+        payload.extend_from_slice(&entry_table);
+        payload.extend_from_slice(&key_value_data);
+        Ok(payload)
     }
 }
 

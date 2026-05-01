@@ -1,0 +1,103 @@
+=========================================================================
+TASK 4: REGRESSION VERIFICATION & DOCS-BASELINE ALIGNMENT CONCLUSION
+Generated: 2026-05-01
+Evidence files with REAL command output:
+  - task-4-regression.txt        (17952 bytes, cargo test -p vhdx-rs)
+  - task-4-regression-error.txt  (20975 bytes, cargo test --workspace)
+=========================================================================
+
+1. REGRESSION TEST RESULTS
+-------------------------------------------------------------------------
+
+1a. `cargo test -p vhdx-rs`   (evidence: task-4-regression.txt)
+    Unit (lib):            52 passed, 0 failed
+    Smoke (api_surface):   28 passed, 0 failed  
+    Integration:          165 passed, 0 failed
+    Doc-tests:              3 passed, 0 failed
+    TOTAL:                248 passed, 0 failed
+
+1b. `cargo test --workspace` (evidence: task-4-regression-error.txt)
+    vhdx-rs lib tests:     52 passed, 0 failed
+    vhdx-rs smoke tests:   28 passed, 0 failed
+    vhdx-rs integration:  165 passed, 0 failed
+    vhdx-tool integration: 55 passed, 0 failed
+    Doc-tests:              3 passed, 0 failed
+    TOTAL:                303 passed, 0 failed
+
+    CLI integration tests (vhdx-tool): all 55 pass, including:
+    - check_differencing_disk_includes_parent_locator_item
+    - check_non_differencing_disk_no_parent_locator_false_failure  
+    - cli_check_differencing_parent_locator_output
+    - cli_check_invalid_parent_locator_fails
+
+    --> NO REGRESSIONS. ZERO FAILURES.
+
+2. TASK 1-3 TARGETED TEST VERIFICATION
+-------------------------------------------------------------------------
+
+2a. Task 1 -- ValidationIssue accessors:
+    Method   | Signature (src/validation.rs:48-91)         | API.md Spec
+    ---------+--------------------------------------------+--------------------
+    section  | pub const fn section(&self) -> &'static str | line 494 ✅
+    code     | pub const fn code(&self) -> &'static str    | line 495 ✅
+    message  | pub fn message(&self) -> String             | line 496 ✅
+    spec_ref | pub const fn spec_ref(&self) -> &'static str| line 497 ✅
+    Tests: smoke_validation_mod_import → PASS
+           test_validation_api_import_and_validate_file → PASS
+    Files changed: src/validation.rs (+20 lines for impl + tests)
+
+2b. Task 2 -- Differencing parent_locator enforcement:
+    - validate_required_metadata_items() conditionally requires PARENT_LOCATOR
+      when has_parent()==true (src/validation.rs)
+    - Missing PARENT_LOCATOR returns Error::InvalidMetadata 
+    - Non-differencing disks NOT affected
+    Tests: test_validation_required_metadata_items_accepts_parent_locator_for_differencing → PASS
+           test_validation_required_metadata_items_rejects_missing_parent_locator_for_differencing → PASS
+    Files changed: src/validation.rs (+conditional branch)
+
+2c. Task 3 -- Stale parent-path writeback:
+    - File::update_parent_locator_path() (src/file.rs) -- explicit writable-only
+    - SpecValidator stays read-only (per 只读扩展标准 §4.1)
+    - Read-only open → Error::ReadOnly
+    - Non-differencing → Error::InvalidParameter
+    Tests: test_update_stale_parent_paths_happy_path → PASS
+           test_update_stale_parent_paths_read_only_rejected → PASS
+           test_update_stale_parent_paths_missing_parent_fails → PASS
+           test_update_parent_locator_path_idempotent → PASS
+           test_spec_decision_manifest → PASS
+    Files changed: src/file.rs, src/sections/metadata.rs, tests/*
+
+3. DOCS-BASELINE ALIGNMENT MATRIX
+-------------------------------------------------------------------------
+
+Baseline doc            | Requirement                              | Status | Evidence
+------------------------+------------------------------------------+--------+--------------------------
+docs/plan/API.md:492-498 | ValidationIssue: section/code/message/spec_ref | PASS | src/validation.rs:48-91
+docs/plan/API.md:484-489 | SpecValidator: validate_parent_locator/chain  | PASS | SpecValidator impl
+docs/plan/API.md:469-483 | SpecValidator: 9 validation methods         | PASS | smoke tests pass
+------------------------+------------------------------------------+--------+--------------------------
+只读扩展标准.md §4.1     | SpecValidator read-only, 9 methods         | PASS | writeback in File, not validator
+只读扩展标准.md §4.2     | structured error: section/code/message/spec | PASS | ValidationIssue matches spec
+只读扩展标准.md §3       | OpenOptions strict/log_replay policies     | PASS | existing tests pass
+------------------------+------------------------------------------+--------+--------------------------
+解读.md §8.3             | required known items incl. Parent Locator   | PASS | Task 2 enforces for differencing
+解读.md §9.3 line 250    | stale path writeback after chain validation | PASS | File::update_parent_locator_path()
+解读.md §9.2             | parent_linkage/parent_linkage2 handling    | PASS | existing chain tests pass
+------------------------+------------------------------------------+--------+--------------------------
+
+OVERALL: PASS -- 3/3 baseline documents confirmed aligned.
+
+4. DECISION STATUS
+-------------------------------------------------------------------------
+[DECISION NEEDED-1] stale parent-path writeback location:
+    Decision: Writeback via explicit File::update_parent_locator_path(),
+              NOT inside SpecValidator.
+    Status:  ✅ RESOLVED (implemented, tested, no regressions)
+
+No unresolved decisions remain.
+
+5. VERDICT
+-------------------------------------------------------------------------
+PASS -- All 3 gaps closed, 303/303 tests pass, all 3 baseline documents
+        (API.md, 只读扩展标准.md, 解读.md) confirmed aligned. 
+=========================================================================

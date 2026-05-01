@@ -99,6 +99,8 @@ fn smoke_root_validation_types_import() {
 
     let issue = ValidationIssue::new("test", "SMOKE", "smoke issue".to_string(), "MS-VHDX §1");
     assert_eq!(issue.section(), "test");
+    assert_eq!(issue.message(), "smoke issue");
+    assert_eq!(issue.spec_ref(), "MS-VHDX §1");
 
     let _ = std::marker::PhantomData::<SpecValidator<'_>>;
 }
@@ -233,6 +235,8 @@ fn smoke_validation_mod_import() {
 
     let issue = ValidationIssue::new("bat", "TEST", "ok".to_string(), "§2.5");
     assert_eq!(issue.code(), "TEST");
+    assert_eq!(issue.message(), "ok");
+    assert_eq!(issue.spec_ref(), "§2.5");
 }
 
 // ════════════════════════════════════════════
