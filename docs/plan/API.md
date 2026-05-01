@@ -239,18 +239,25 @@ vhdx::
 │   └── linkage_matched: bool               # 是否匹配 parent_linkage / parent_linkage2
 │
 └── Error                                   # 错误类型
-    ├── Io(std::io::Error)
-    ├── InvalidFile(String)
-    ├── CorruptedHeader(String)
-    ├── InvalidChecksum { expected: u32, actual: u32 }
-    ├── UnsupportedVersion(u16)
-    ├── InvalidBlockState(u8)
-    ├── ParentNotFound { path: PathBuf }
-    ├── ParentMismatch { expected: Guid, actual: Guid }
-    ├── LogReplayRequired
-    ├── InvalidParameter(String)
-    ├── MetadataNotFound { guid: Guid }
-    └── ReadOnly
+    ├── Io(std::io::Error)                  # 底层 IO 错误
+    ├── FileLocked                          # 文件被其他进程锁定（Windows）
+    ├── InvalidFile(String)                 # 无效的 VHDX 文件
+    ├── InvalidSignature { expected, found }# 签名不匹配
+    ├── CorruptedHeader(String)             # 头部损坏
+    ├── InvalidChecksum { expected: u32, actual: u32 }  # CRC32C 校验和不匹配
+    ├── InvalidBlockState(u8)               # 无效的 BAT 块状态值
+    ├── InvalidRegionTable(String)          # 区域表格式错误
+    ├── InvalidMetadata(String)             # 元数据格式错误
+    ├── MetadataNotFound { guid: Guid }     # 元数据项未找到
+    ├── LogReplayRequired                   # 需要日志回放
+    ├── LogEntryCorrupted(String)           # 日志条目损坏
+    ├── BatEntryNotFound { index: u64 }     # BAT 条目未找到
+    ├── BlockNotPresent { block_idx: u64, state: String }  # 数据块未分配
+    ├── SectorOutOfBounds { sector: u64, max: u64 }  # 扇区索引越界
+    ├── ParentNotFound { path: PathBuf }    # 父磁盘未找到
+    ├── ParentMismatch { expected: Guid, actual: Guid }  # 父磁盘 GUID 不匹配
+    ├── InvalidParameter(String)            # 参数无效
+    └── ReadOnly                            # 只读模式
 ```
 
 ### CLI 工具树
