@@ -157,7 +157,7 @@ impl Log<'_> {
 ///
 /// 包含各区域在文件中的偏移量、大小和文件句柄，
 /// 用于创建 [`Sections`] 实例时提供必要的定位信息。
-pub struct SectionsConfig {
+pub(crate) struct SectionsConfig {
     /// VHDX 文件句柄
     pub file: std::fs::File,
     /// BAT 区域在文件中的偏移量（字节）
@@ -231,7 +231,7 @@ impl<'a> Sections<'a> {
     /// 仅保存配置信息（偏移量、大小等），不执行任何文件 I/O。
     /// 各区域数据在首次调用对应的 getter 方法时才会从文件读取。
     #[must_use]
-    pub fn new(config: SectionsConfig) -> Self {
+    pub(crate) fn new(config: SectionsConfig) -> Self {
         Self {
             file: config.file,
             // 所有区域初始化为 None，等待延迟加载
@@ -393,7 +393,7 @@ impl<'a> Sections<'a> {
 /// - `zero_offset` — 需要置零的字段起始偏移
 /// - `zero_len` — 需要置零的字段长度
 #[must_use]
-pub fn crc32c_with_zero_field(data: &[u8], zero_offset: usize, zero_len: usize) -> u32 {
+pub(crate) fn crc32c_with_zero_field(data: &[u8], zero_offset: usize, zero_len: usize) -> u32 {
     // 复制数据，避免修改原始输入
     let mut data_copy = data.to_vec();
     // 将校验和字段区域置零

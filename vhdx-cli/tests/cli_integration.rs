@@ -4,6 +4,18 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::Path;
 
+/// 最小 CRC-32C（Castagnoli）实现，用于测试中计算校验和。
+fn crc32c(data: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if (crc & 1) != 0 { (crc >> 1) ^ 0x82F6_3B78 } else { crc >> 1 };
+        }
+    }
+    !crc
+}
+
 /// 构造一个指向 vhdx-tool 可执行文件的 Command 实例。
 fn vhdx_tool() -> Command {
     Command::cargo_bin("vhdx-tool").unwrap()
@@ -1079,7 +1091,7 @@ fn inject_pending_log_for_cli(path: &std::path::Path) {
 
     // 生成合法 checksum，满足 Task 4 replay precheck。
     entry[4..8].fill(0);
-    let checksum = vhdx_rs::crc32c_with_zero_field(&entry, 4, 4);
+    let checksum = crc32c(&entry);
     entry[4..8].copy_from_slice(&checksum.to_le_bytes());
 
     // 写入日志条目

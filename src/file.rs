@@ -84,6 +84,7 @@ pub struct File {
     /// 是否为差分磁盘（有父磁盘引用）
     has_parent: bool,
     /// 是否存在未回放的日志条目
+    #[allow(dead_code)]
     has_pending_logs: bool,
     /// 打开该文件时使用的路径
     opened_path: PathBuf,
@@ -190,32 +191,33 @@ impl File {
     }
 
     /// 获取虚拟磁盘大小（字节）
-    pub const fn virtual_disk_size(&self) -> u64 {
+    pub(crate) const fn virtual_disk_size(&self) -> u64 {
         self.virtual_disk_size
     }
 
     /// 获取块大小（字节）
-    pub const fn block_size(&self) -> u32 {
+    pub(crate) const fn block_size(&self) -> u32 {
         self.block_size
     }
 
     /// 获取逻辑扇区大小（字节）
-    pub const fn logical_sector_size(&self) -> u32 {
+    pub(crate) const fn logical_sector_size(&self) -> u32 {
         self.logical_sector_size
     }
 
     /// 检查是否为 Fixed 类型
-    pub const fn is_fixed(&self) -> bool {
+    pub(crate) const fn is_fixed(&self) -> bool {
         self.is_fixed
     }
 
     /// 检查是否为差分磁盘
-    pub const fn has_parent(&self) -> bool {
+    pub(crate) const fn has_parent(&self) -> bool {
         self.has_parent
     }
 
     /// 检查是否存在未回放的日志条目
-    pub const fn has_pending_logs(&self) -> bool {
+    #[allow(dead_code)]
+    pub(crate) const fn has_pending_logs(&self) -> bool {
         self.has_pending_logs
     }
 

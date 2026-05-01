@@ -112,17 +112,6 @@ fn smoke_root_validation_types_import() {
     let _ = std::marker::PhantomData::<SpecValidator<'_>>;
 }
 
-/// 根级辅助导出：SectionsConfig / crc32c_with_zero_field。
-#[test]
-fn smoke_root_helpers_import() {
-    use vhdx_rs::{SectionsConfig, crc32c_with_zero_field};
-
-    let _ = std::marker::PhantomData::<SectionsConfig>;
-    // crc32c_with_zero_field 可调用
-    let data = [0u8; 32];
-    let _checksum: u32 = crc32c_with_zero_field(&data, 4, 4);
-}
-
 // ════════════════════════════════════════════
 // 2. section 模块导入 smoke
 // ════════════════════════════════════════════
@@ -229,75 +218,17 @@ fn smoke_section_sections_type_import() {
 // 3. constants 命名空间导入 smoke
 // ════════════════════════════════════════════
 
-/// constants 命名空间中基本常量和函数可导入。
-#[test]
-fn smoke_constants_namespace_import() {
-    use vhdx_rs::constants::{
-        DEFAULT_BLOCK_SIZE, FILE_TYPE_SIZE, KiB, MAX_BLOCK_SIZE, MIN_BLOCK_SIZE, MiB, align_1mib,
-        align_up,
-    };
-
-    assert_eq!(KiB, 1024);
-    assert_eq!(MiB, 1024 * 1024);
-    assert!(DEFAULT_BLOCK_SIZE >= MIN_BLOCK_SIZE);
-    assert!(DEFAULT_BLOCK_SIZE <= MAX_BLOCK_SIZE);
-    assert!(FILE_TYPE_SIZE > 0);
-    assert_eq!(align_up(1, MiB), MiB);
-    assert_eq!(align_1mib(1), MiB);
-}
-
-/// constants::region_guids 子命名空间可导入。
-#[test]
-fn smoke_constants_region_guids_import() {
-    use vhdx_rs::constants::region_guids;
-
-    assert!(!region_guids::BAT_REGION.is_nil());
-    assert!(!region_guids::METADATA_REGION.is_nil());
-}
-
-/// constants::metadata_guids 子命名空间可导入。
-#[test]
-fn smoke_constants_metadata_guids_import() {
-    use vhdx_rs::constants::metadata_guids;
-
-    assert!(!metadata_guids::FILE_PARAMETERS.is_nil());
-    assert!(!metadata_guids::VIRTUAL_DISK_SIZE.is_nil());
-    assert!(!metadata_guids::VIRTUAL_DISK_ID.is_nil());
-    assert!(!metadata_guids::LOGICAL_SECTOR_SIZE.is_nil());
-    assert!(!metadata_guids::PHYSICAL_SECTOR_SIZE.is_nil());
-    assert!(!metadata_guids::PARENT_LOCATOR.is_nil());
-}
-
-/// section::StandardItems 命名空间可导入且与 legacy constants 路径一致。
+/// section::StandardItems 命名空间可导入且所有 GUID 非 nil。
 #[test]
 fn smoke_section_standard_items_namespace_import() {
-    use vhdx_rs::constants::metadata_guids;
     use vhdx_rs::section::StandardItems;
 
-    assert_eq!(
-        StandardItems::FILE_PARAMETERS,
-        metadata_guids::FILE_PARAMETERS
-    );
-    assert_eq!(
-        StandardItems::VIRTUAL_DISK_SIZE,
-        metadata_guids::VIRTUAL_DISK_SIZE
-    );
-    assert_eq!(
-        StandardItems::VIRTUAL_DISK_ID,
-        metadata_guids::VIRTUAL_DISK_ID
-    );
-    assert_eq!(
-        StandardItems::LOGICAL_SECTOR_SIZE,
-        metadata_guids::LOGICAL_SECTOR_SIZE
-    );
-    assert_eq!(
-        StandardItems::PHYSICAL_SECTOR_SIZE,
-        metadata_guids::PHYSICAL_SECTOR_SIZE
-    );
-    assert_eq!(
-        StandardItems::PARENT_LOCATOR,
-        metadata_guids::PARENT_LOCATOR
-    );
+    assert!(!StandardItems::FILE_PARAMETERS.is_nil());
+    assert!(!StandardItems::VIRTUAL_DISK_SIZE.is_nil());
+    assert!(!StandardItems::VIRTUAL_DISK_ID.is_nil());
+    assert!(!StandardItems::LOGICAL_SECTOR_SIZE.is_nil());
+    assert!(!StandardItems::PHYSICAL_SECTOR_SIZE.is_nil());
+    assert!(!StandardItems::PARENT_LOCATOR.is_nil());
     assert!(!StandardItems::LOCATOR_TYPE_VHDX.is_nil());
 }
 
@@ -477,18 +408,15 @@ fn smoke_file_inner_callable() {
     let _inner: &std::fs::File = file.inner();
 }
 
-/// File 公共 getter 方法可调用：virtual_disk_size / block_size / logical_sector_size /
-/// is_fixed / has_parent / has_pending_logs。
+/// File 公共 getter 方法仅含 sections() / io() / validator() / inner()（按计划 API.md 定义）。
 #[test]
-fn smoke_file_public_methods_callable() {
+fn smoke_file_planned_public_methods_callable() {
     let file = create_fixed_disk();
 
-    let _vds = file.virtual_disk_size();
-    let _bs = file.block_size();
-    let _lss = file.logical_sector_size();
-    let _fixed = file.is_fixed();
-    let _parent = file.has_parent();
-    let _pending = file.has_pending_logs();
+    let _ = file.sections();
+    let _ = file.io();
+    let _ = file.validator();
+    let _ = file.inner();
 }
 
 // ════════════════════════════════════════════

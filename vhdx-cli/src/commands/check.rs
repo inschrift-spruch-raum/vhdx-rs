@@ -95,7 +95,10 @@ pub fn cmd_check(file: &Path, repair: bool, log_replay: bool) {
             ];
 
             // 差分盘额外校验 Parent Locator；非差分盘不计入检查项。
-            if vhdx_file.has_parent() {
+            let is_diff = vhdx_file.sections().metadata().is_ok_and(|m| {
+                m.items().file_parameters().is_some_and(|fp| fp.has_parent())
+            });
+            if is_diff {
                 results.push(CheckResult {
                     name: "Parent Locator",
                     result: validator.validate_parent_locator(),

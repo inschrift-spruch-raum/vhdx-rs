@@ -90,18 +90,7 @@ pub use io_module::{IO, PayloadBlock, Sector};
 // 文件操作类型
 pub use file::{CreateOptions, File, LogReplayPolicy, OpenOptions, ParentChainInfo};
 
-// 区域初始化配置
-pub use sections::SectionsConfig;
 
-// CRC32C 校验辅助函数
-pub use sections::crc32c_with_zero_field;
-
-/// VHDX 格式常量与 GUID 命名空间
-///
-/// 提供对 VHDX 布局常量、签名、块大小限制、对齐函数及已知区域/元数据 GUID 的访问。
-pub mod constants {
-    pub use crate::common::constants::*;
-}
 
 // 内部模块
 mod common;
