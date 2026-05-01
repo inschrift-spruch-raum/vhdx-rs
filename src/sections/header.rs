@@ -161,11 +161,11 @@ impl Header<'_> {
 /// 前 8 字节为签名 "vhdxfile"，随后 512 字节为 UTF-16 LE 编码的创建者字符串。
 pub struct FileTypeIdentifier<'a> {
     /// 文件类型签名（应为 "vhdxfile"）
-    pub signature: [u8; 8],
+    signature: [u8; 8],
     /// 创建者原始字节（UTF-16 LE）
-    pub creator: &'a [u8],
+    creator: &'a [u8],
     /// 原始字节视图
-    pub raw: &'a [u8],
+    raw: &'a [u8],
 }
 
 impl<'a> FileTypeIdentifier<'a> {
@@ -251,27 +251,27 @@ impl<'a> FileTypeIdentifier<'a> {
 /// | 72 | 8 | 日志偏移量 |
 pub struct HeaderStructure<'a> {
     /// 头部签名（应为 "head"）
-    pub signature: [u8; 4],
+    signature: [u8; 4],
     /// CRC32C 校验和
-    pub checksum: u32,
+    checksum: u32,
     /// 序列号
-    pub sequence_number: u64,
+    sequence_number: u64,
     /// 文件写入 GUID
-    pub file_write_guid: Guid,
+    file_write_guid: Guid,
     /// 数据写入 GUID
-    pub data_write_guid: Guid,
+    data_write_guid: Guid,
     /// 日志 GUID
-    pub log_guid: Guid,
+    log_guid: Guid,
     /// 日志版本
-    pub log_version: u16,
+    log_version: u16,
     /// VHDX 版本
-    pub version: u16,
+    version: u16,
     /// 日志长度
-    pub log_length: u32,
+    log_length: u32,
     /// 日志偏移
-    pub log_offset: u64,
+    log_offset: u64,
     /// 原始字节视图
-    pub raw: &'a [u8],
+    raw: &'a [u8],
 }
 
 impl<'a> HeaderStructure<'a> {
@@ -409,9 +409,11 @@ pub struct RegionTable<'a> {
     /// 原始字节数据（私有，供 `raw()` 方法向后兼容）
     data: &'a [u8],
     /// 区域表头部（MS-VHDX §2.2.3.1）
-    pub header: RegionTableHeader<'a>,
+    #[allow(dead_code)]
+    header: RegionTableHeader<'a>,
     /// 区域表条目列表（MS-VHDX §2.2.3.2）
-    pub entries: Vec<RegionTableEntry<'a>>,
+    #[allow(dead_code)]
+    entries: Vec<RegionTableEntry<'a>>,
 }
 
 impl<'a> RegionTable<'a> {
@@ -490,15 +492,16 @@ impl<'a> RegionTable<'a> {
 #[derive(Clone, Copy)]
 pub struct RegionTableHeader<'a> {
     /// 区域表签名（应为 "regi"）
-    pub signature: [u8; 4],
+    signature: [u8; 4],
     /// CRC32C 校验和
-    pub checksum: u32,
+    checksum: u32,
     /// 表项数量
-    pub entry_count: u32,
+    entry_count: u32,
     /// 保留字段
-    pub reserved: u32,
+    #[allow(dead_code)]
+    reserved: u32,
     /// 原始字节视图
-    pub raw: &'a [u8],
+    raw: &'a [u8],
 }
 
 impl<'a> RegionTableHeader<'a> {
@@ -559,15 +562,15 @@ impl<'a> RegionTableHeader<'a> {
 #[derive(Clone, Copy)]
 pub struct RegionTableEntry<'a> {
     /// 区域 GUID
-    pub guid: Guid,
+    guid: Guid,
     /// 区域文件偏移
-    pub file_offset: u64,
+    file_offset: u64,
     /// 区域长度
-    pub length: u32,
+    length: u32,
     /// required 标志（原始值）
-    pub required: u32,
+    required: u32,
     /// 原始字节视图
-    pub raw: &'a [u8],
+    raw: &'a [u8],
 }
 
 impl<'a> RegionTableEntry<'a> {

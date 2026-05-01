@@ -1,0 +1,25 @@
+Task-2 Targeted Tests Evidence
+Timestamp: 2026-05-01T22:09:10+08:00
+
+COMMAND 1: cargo test --test integration_test test_t6_validator_header_and_region_table_happy_path
+RESULT 1:
+running 1 test
+test test_t6_validator_header_and_region_table_happy_path ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 159 filtered out
+EXIT_CODE: 0
+
+COMMAND 2: cargo test --test integration_test test_t7_validator_bat_and_log_happy_path
+RESULT 2:
+running 1 test
+test test_t7_validator_bat_and_log_happy_path ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 159 filtered out
+EXIT_CODE: 0
+
+COMMAND 3: cargo test --test integration_test test_t8_validator_required_metadata_happy_path
+RESULT 3:
+running 1 test
+test test_t8_validator_required_metadata_happy_path ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 159 filtered out
+EXIT_CODE: 0
+
+CONCLUSION: PASS

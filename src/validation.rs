@@ -36,13 +36,47 @@ fn parse_locator_guid(value: &str) -> Option<Guid> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationIssue {
     /// 问题所属区域
-    pub section: &'static str,
+    section: &'static str,
     /// 问题代码
-    pub code: &'static str,
+    code: &'static str,
     /// 人类可读问题描述
-    pub message: String,
+    message: String,
     /// 规范参考章节
-    pub spec_ref: &'static str,
+    spec_ref: &'static str,
+}
+
+impl ValidationIssue {
+    /// 创建结构化校验问题
+    ///
+    /// # 参数
+    ///
+    /// - `section` — 问题所属区域
+    /// - `code` — 问题代码
+    /// - `message` — 人类可读问题描述
+    /// - `spec_ref` — 规范参考章节
+    #[must_use]
+    pub fn new(
+        section: &'static str, code: &'static str, message: String, spec_ref: &'static str,
+    ) -> Self {
+        Self {
+            section,
+            code,
+            message,
+            spec_ref,
+        }
+    }
+
+    /// 返回问题所属区域
+    #[must_use]
+    pub const fn section(&self) -> &'static str {
+        self.section
+    }
+
+    /// 返回问题代码
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        self.code
+    }
 }
 
 /// 规范一致性校验器（只读）
@@ -255,29 +289,30 @@ impl<'a> SpecValidator<'a> {
             );
 
             if expected_sector_bitmap {
-                let bitmap_state = match entry.state {
+                let bitmap_state = match entry.state() {
                     BatState::SectorBitmap(state) => state,
-                    _ => return Err(Error::InvalidBlockState(entry.state.to_bits())),
+                    _ => return Err(Error::InvalidBlockState(entry.state().to_bits())),
                 };
 
                 if matches!(bitmap_state, SectorBitmapState::NotPresent)
-                    && entry.file_offset_mb != 0
+                    && entry.file_offset_mb() != 0
                 {
                     return Err(Error::InvalidMetadata(format!(
                         "BAT sector-bitmap entry {index} is NotPresent but file_offset_mb={}",
-                        entry.file_offset_mb
+                        entry.file_offset_mb()
                     )));
                 }
 
-                if matches!(bitmap_state, SectorBitmapState::Present) && entry.file_offset_mb == 0 {
+                if matches!(bitmap_state, SectorBitmapState::Present) && entry.file_offset_mb() == 0
+                {
                     return Err(Error::InvalidMetadata(format!(
                         "BAT sector-bitmap entry {index} is Present but file_offset_mb=0"
                     )));
                 }
             } else {
-                let payload_state = match entry.state {
+                let payload_state = match entry.state() {
                     BatState::Payload(state) => state,
-                    _ => return Err(Error::InvalidBlockState(entry.state.to_bits())),
+                    _ => return Err(Error::InvalidBlockState(entry.state().to_bits())),
                 };
 
                 if !self.file.has_parent()
@@ -289,15 +324,15 @@ impl<'a> SpecValidator<'a> {
                 }
 
                 if matches!(payload_state, PayloadBlockState::NotPresent)
-                    && entry.file_offset_mb != 0
+                    && entry.file_offset_mb() != 0
                 {
                     return Err(Error::InvalidMetadata(format!(
                         "BAT payload entry {index} is NotPresent but file_offset_mb={}",
-                        entry.file_offset_mb
+                        entry.file_offset_mb()
                     )));
                 }
 
-                if payload_state.is_allocated() && entry.file_offset_mb == 0 {
+                if payload_state.is_allocated() && entry.file_offset_mb() == 0 {
                     return Err(Error::InvalidMetadata(format!(
                         "BAT payload entry {index} is allocated but file_offset_mb=0"
                     )));
@@ -307,7 +342,7 @@ impl<'a> SpecValidator<'a> {
                     if !matches!(payload_state, PayloadBlockState::FullyPresent) {
                         return Err(Error::InvalidBlockState(payload_state.to_bits()));
                     }
-                    if entry.file_offset_mb == 0 {
+                    if entry.file_offset_mb() == 0 {
                         return Err(Error::InvalidMetadata(format!(
                             "BAT payload entry {index} in fixed disk has zero file_offset_mb"
                         )));
@@ -352,17 +387,17 @@ impl<'a> SpecValidator<'a> {
         }
 
         // 保留字段校验（MS-VHDX §2.6.1.1）
-        if table_header.reserved != [0u8; 2] {
+        if table_header.reserved() != &[0u8; 2] {
             return Err(Error::InvalidMetadata(format!(
                 "Metadata table header reserved field is not zero: {:?}",
-                table_header.reserved
+                table_header.reserved()
             )));
         }
 
-        if table_header.reserved2 != [0u8; 20] {
+        if table_header.reserved2() != &[0u8; 20] {
             return Err(Error::InvalidMetadata(format!(
                 "Metadata table header reserved2 field is not zero: {:?}",
-                table_header.reserved2
+                table_header.reserved2()
             )));
         }
 
@@ -725,7 +760,7 @@ impl<'a> SpecValidator<'a> {
                             ))
                         })?;
 
-                        if sector.signature != *b"data" {
+                        if sector.signature() != b"data" {
                             return Err(Error::LogEntryCorrupted(format!(
                                 "Log entry {entry_index} contains invalid data sector signature"
                             )));
@@ -823,12 +858,12 @@ impl<'a> SpecValidator<'a> {
 
         for (entry_index, entry) in entries.iter().enumerate() {
             // 规则 2：key/value 偏移和长度必须 > 0
-            if entry.key_length == 0 {
+            if entry.key_length() == 0 {
                 return Err(Error::InvalidMetadata(format!(
                     "Parent locator entry {entry_index} has key_length=0 (must be > 0)"
                 )));
             }
-            if entry.value_length == 0 {
+            if entry.value_length() == 0 {
                 return Err(Error::InvalidMetadata(format!(
                     "Parent locator entry {entry_index} has value_length=0 (must be > 0)"
                 )));
@@ -838,7 +873,7 @@ impl<'a> SpecValidator<'a> {
                 // key_offset 超出 key_value_data 范围时解码失败，视为偏移无效
                 return Err(Error::InvalidMetadata(format!(
                     "Parent locator entry {entry_index} key_offset ({}) out of key_value_data bounds",
-                    entry.key_offset
+                    entry.key_offset()
                 )));
             };
 
@@ -854,7 +889,7 @@ impl<'a> SpecValidator<'a> {
                     let value = entry.value(data).ok_or_else(|| {
                         Error::InvalidMetadata(format!(
                             "Parent locator entry {entry_index} value_offset ({}) out of key_value_data bounds",
-                            entry.value_offset
+                            entry.value_offset()
                         ))
                     })?;
                     parent_linkage = parse_locator_guid(&value);
@@ -868,7 +903,7 @@ impl<'a> SpecValidator<'a> {
                     let value = entry.value(data).ok_or_else(|| {
                         Error::InvalidMetadata(format!(
                             "Parent locator entry {entry_index} value_offset ({}) out of key_value_data bounds",
-                            entry.value_offset
+                            entry.value_offset()
                         ))
                     })?;
 
@@ -997,10 +1032,10 @@ impl<'a> SpecValidator<'a> {
             });
         }
 
-        Ok(ParentChainInfo {
-            child: self.file.opened_path().to_path_buf(),
+        Ok(ParentChainInfo::new(
+            self.file.opened_path().to_path_buf(),
             parent,
             linkage_matched,
-        })
+        ))
     }
 }

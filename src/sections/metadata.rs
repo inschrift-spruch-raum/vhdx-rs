@@ -157,15 +157,15 @@ impl<'a> MetadataTable<'a> {
 /// 固定 32 字节，包含签名 "metadata" 和表项数量。
 pub struct TableHeader<'a> {
     /// 表签名（应为 "metadata"）
-    pub signature: [u8; 8],
+    signature: [u8; 8],
     /// 保留字段（2 字节）
-    pub reserved: [u8; 2],
+    reserved: [u8; 2],
     /// 表项数量
-    pub entry_count: u16,
+    entry_count: u16,
     /// 保留字段（20 字节）
-    pub reserved2: [u8; 20],
+    reserved2: [u8; 20],
     /// 原始字节视图
-    pub raw: &'a [u8],
+    raw: &'a [u8],
 }
 
 impl<'a> TableHeader<'a> {
@@ -202,6 +202,18 @@ impl<'a> TableHeader<'a> {
     pub const fn entry_count(&self) -> u16 {
         self.entry_count
     }
+
+    /// 保留字段（2 字节）（MS-VHDX §2.6.1.1）
+    #[must_use]
+    pub const fn reserved(&self) -> &[u8; 2] {
+        &self.reserved
+    }
+
+    /// 保留字段（20 字节）（MS-VHDX §2.6.1.1）
+    #[must_use]
+    pub const fn reserved2(&self) -> &[u8; 20] {
+        &self.reserved2
+    }
 }
 
 /// 元数据表项（MS-VHDX §2.6.1.2）
@@ -213,17 +225,18 @@ impl<'a> TableHeader<'a> {
 /// - Flags（4 字节）— 属性标志位（IsUser / `IsVirtualDisk` / `IsRequired`）
 pub struct TableEntry<'a> {
     /// 元数据项 GUID
-    pub item_id: Guid,
+    item_id: Guid,
     /// 数据偏移（相对于元数据区域起始）
-    pub offset: u32,
+    offset: u32,
     /// 数据长度（字节）
-    pub length: u32,
+    length: u32,
     /// 原始标志位
-    pub flags: u32,
+    flags: u32,
     /// 保留字段
-    pub reserved: u32,
+    #[allow(dead_code)]
+    reserved: u32,
     /// 原始字节视图
-    pub raw: &'a [u8],
+    raw: &'a [u8],
 }
 
 impl<'a> TableEntry<'a> {
@@ -416,11 +429,11 @@ impl<'a> MetadataItems<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct FileParameters<'a> {
     /// 块大小（字节），必须为 1MB 的幂次（1MB-256MB）
-    pub block_size: u32,
+    block_size: u32,
     /// 标志位（bit 0: `LeaveBlockAllocated`, bit 1: `HasParent`）
-    pub flags: u32,
+    flags: u32,
     /// 原始字节视图
-    pub raw: &'a [u8],
+    raw: &'a [u8],
 }
 
 impl<'a> FileParameters<'a> {
@@ -563,13 +576,14 @@ impl<'a> ParentLocator<'a> {
 /// 固定 20 字节，包含定位器类型 GUID 和键值对数量。
 pub struct LocatorHeader<'a> {
     /// 定位器类型 GUID
-    pub locator_type: Guid,
+    locator_type: Guid,
     /// 保留字段
-    pub reserved: u16,
+    #[allow(dead_code)]
+    reserved: u16,
     /// 键值对数量
-    pub key_value_count: u16,
+    key_value_count: u16,
     /// 原始字节视图
-    pub raw: &'a [u8],
+    raw: &'a [u8],
 }
 
 impl<'a> LocatorHeader<'a> {
@@ -612,15 +626,15 @@ impl<'a> LocatorHeader<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct KeyValueEntry<'a> {
     /// 键数据在定位器数据区域中的偏移量（字节）
-    pub key_offset: u32,
+    key_offset: u32,
     /// 值数据在定位器数据区域中的偏移量（字节）
-    pub value_offset: u32,
+    value_offset: u32,
     /// 键数据的字节长度（UTF-16 LE 编码）
-    pub key_length: u16,
+    key_length: u16,
     /// 值数据的字节长度（UTF-16 LE 编码）
-    pub value_length: u16,
+    value_length: u16,
     /// 原始字节视图（12 字节）
-    pub raw: &'a [u8],
+    raw: &'a [u8],
 }
 
 impl<'a> KeyValueEntry<'a> {
@@ -642,10 +656,51 @@ impl<'a> KeyValueEntry<'a> {
         })
     }
 
+    /// 从显式字段值创建键值对条目（不含原始字节引用）
+    ///
+    /// `raw` 字段设为空切片，适用于不需要通过 `key()`/`value()` 方法
+    /// 访问数据的场景（如测试中的字段验证）。
+    #[must_use]
+    pub const fn from_parts(
+        key_offset: u32, value_offset: u32, key_length: u16, value_length: u16,
+    ) -> Self {
+        Self {
+            key_offset,
+            value_offset,
+            key_length,
+            value_length,
+            raw: &[],
+        }
+    }
+
     /// 返回键值对条目的原始字节数据
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
         self.raw
+    }
+
+    /// 键数据在定位器数据区域中的偏移量（MS-VHDX §2.6.2.6.2）
+    #[must_use]
+    pub const fn key_offset(&self) -> u32 {
+        self.key_offset
+    }
+
+    /// 值数据在定位器数据区域中的偏移量（MS-VHDX §2.6.2.6.2）
+    #[must_use]
+    pub const fn value_offset(&self) -> u32 {
+        self.value_offset
+    }
+
+    /// 键数据的字节长度（UTF-16 LE 编码）（MS-VHDX §2.6.2.6.2）
+    #[must_use]
+    pub const fn key_length(&self) -> u16 {
+        self.key_length
+    }
+
+    /// 值数据的字节长度（UTF-16 LE 编码）（MS-VHDX §2.6.2.6.2）
+    #[must_use]
+    pub const fn value_length(&self) -> u16 {
+        self.value_length
     }
 
     /// 从定位器数据区域中读取键字符串
@@ -725,13 +780,12 @@ mod tests {
             kv_data[32 + i * 2..32 + i * 2 + 2].copy_from_slice(&c.to_le_bytes());
         }
 
-        let entry = KeyValueEntry {
-            key_offset: 0,
-            value_offset: 32,
-            key_length: u16::try_from(key.len() * 2).unwrap_or(0),
-            value_length: u16::try_from(value.len() * 2).unwrap_or(0),
-            raw: &[0u8; 12],
-        };
+        let entry = KeyValueEntry::from_parts(
+            0,
+            32,
+            u16::try_from(key.len() * 2).unwrap_or(0),
+            u16::try_from(value.len() * 2).unwrap_or(0),
+        );
 
         assert_eq!(entry.key(&kv_data).unwrap(), key);
         assert_eq!(entry.value(&kv_data).unwrap(), value);

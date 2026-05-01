@@ -131,11 +131,11 @@ pub struct Sector<'a> {
     /// 所属的 Payload Block 索引（内部实现细节）
     block_idx: u64,
     /// 在所属 Payload Block 内的扇区索引
-    pub block_sector_index: u32,
+    block_sector_index: u32,
     /// 扇区大小（字节，内部实现细节）
     size: u32,
     /// 所属的 Payload Block 视图
-    pub payload: PayloadBlock<'a>,
+    payload: PayloadBlock<'a>,
 }
 
 impl Clone for Sector<'_> {
@@ -166,6 +166,12 @@ impl PartialEq for Sector<'_> {
 }
 
 impl Sector<'_> {
+    /// 返回在所属 Payload Block 内的扇区索引
+    #[must_use]
+    pub const fn block_sector_index(&self) -> u32 {
+        self.block_sector_index
+    }
+
     /// 读取扇区数据到缓冲区，缓冲区大小必须匹配扇区大小
     ///
     /// 兼容模式行为：当扇区跨越虚拟磁盘末尾（尾部非整扇区）时，
@@ -251,5 +257,19 @@ impl Sector<'_> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PayloadBlock<'a> {
     /// 块数据的字节切片视图
-    pub bytes: &'a [u8],
+    bytes: &'a [u8],
+}
+
+impl<'a> PayloadBlock<'a> {
+    /// 从字节切片创建 Payload Block 视图
+    #[must_use]
+    pub const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes }
+    }
+
+    /// 返回块数据的字节切片视图
+    #[must_use]
+    pub const fn bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
 }

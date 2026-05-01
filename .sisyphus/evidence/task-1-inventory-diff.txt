@@ -1,0 +1,130 @@
+Task-1 Inventory Diff Summary
+=============================
+Generated: 2026-05-01
+
+This file summarizes the delta between current pub-field direct access
+and the target accessor-only API.
+
+LEGEND:
+  [MISSING] = No accessor method exists yet → must add before migration
+  [EXISTS]  = Accessor method already exists → just migrate call sites
+  [CONSTR]  = Struct constructed via field init in tests → need new() constructor
+
+================================================================================
+STRUCT: BatEntry (bat.rs)
+================================================================================
+  state           [MISSING]  accessed in: file.rs, validation.rs, integration, api_surface
+  file_offset_mb  [MISSING]  accessed in: file.rs, validation.rs, integration, api_surface
+
+ACTION: Add state() -> BatState, file_offset_mb() -> u64
+
+================================================================================
+STRUCT: KeyValueEntry (metadata.rs)
+================================================================================
+  key_offset      [MISSING]  accessed in: validation.rs, integration, api_surface
+  value_offset    [MISSING]  accessed in: validation.rs, integration, api_surface
+  key_length      [MISSING]  accessed in: validation.rs, integration, api_surface
+  value_length    [MISSING]  accessed in: validation.rs, integration, api_surface
+  raw             [EXISTS]   accessed in: integration (direct field + method)
+
+ACTION: Add key_offset(), value_offset(), key_length(), value_length()
+CONSTR: Add KeyValueEntry::new() or keep pub for construction
+
+================================================================================
+STRUCT: DataSector (log.rs)
+================================================================================
+  signature       [MISSING]  accessed in: log.rs internal, validation.rs, api_surface
+  sequence_high   [EXISTS]   accessed in: api_surface (direct field)
+  data            [EXISTS]   accessed in: api_surface (direct field)
+  sequence_low    [EXISTS]   accessed in: api_surface (direct field)
+
+ACTION: Add signature() -> &[u8; 4]; migrate all direct field access to methods
+
+================================================================================
+STRUCT: DataDescriptor (log.rs)
+================================================================================
+  signature         [MISSING]  accessed in: api_surface
+  trailing_bytes    [EXISTS]   accessed in: api_surface (direct field)
+  leading_bytes     [EXISTS]   accessed in: api_surface (direct field)
+  file_offset       [EXISTS]   accessed in: api_surface (direct field)
+  sequence_number   [EXISTS]   accessed in: api_surface (direct field)
+
+ACTION: Add signature() -> &[u8; 4]; migrate all direct field access to methods
+
+================================================================================
+STRUCT: ZeroDescriptor (log.rs)
+================================================================================
+  signature         [MISSING]  accessed in: api_surface
+  zero_length       [EXISTS]   accessed in: api_surface (direct field)
+  file_offset       [EXISTS]   accessed in: api_surface (direct field)
+  sequence_number   [EXISTS]   accessed in: api_surface (direct field)
+
+ACTION: Add signature() -> &[u8; 4]; migrate all direct field access to methods
+
+================================================================================
+STRUCT: Sector (io_module.rs)
+================================================================================
+  block_sector_index  [MISSING]  accessed in: integration, api_surface
+  payload             [EXISTS]   accessed in: integration (direct field)
+
+ACTION: Add block_sector_index() -> u32; migrate sector.payload to sector.payload()
+
+================================================================================
+STRUCT: PayloadBlock (io_module.rs)
+================================================================================
+  bytes  [MISSING]  accessed in: integration, api_surface
+
+ACTION: Add bytes() -> &[u8]; Add PayloadBlock::new(bytes)
+CONSTR: PayloadBlock { bytes: ... } used in tests
+
+================================================================================
+STRUCT: ParentChainInfo (file.rs)
+================================================================================
+  child            [MISSING]  accessed in: integration, api_surface
+  parent           [MISSING]  accessed in: integration, api_surface
+  linkage_matched  [MISSING]  accessed in: integration, api_surface
+
+ACTION: Add child(), parent(), linkage_matched(); Add ParentChainInfo::new(...)
+CONSTR: ParentChainInfo { child, parent, linkage_matched } used in tests
+
+================================================================================
+STRUCT: ValidationIssue (validation.rs)
+================================================================================
+  section   [MISSING]  accessed in: integration, api_surface
+  code      [MISSING]  accessed in: integration, api_surface
+  message   [MISSING]  accessed in: integration, api_surface
+  spec_ref  [MISSING]  accessed in: integration, api_surface
+
+ACTION: Add section(), code(), message(), spec_ref(); Add ValidationIssue::new(...)
+CONSTR: ValidationIssue { section, code, message, spec_ref } used in tests
+
+================================================================================
+STRUCT: TableHeader (metadata.rs)
+================================================================================
+  reserved    [MISSING]  accessed in: validation.rs
+  reserved2   [MISSING]  accessed in: validation.rs
+  entry_count [EXISTS]   accessed in: api_surface (direct field)
+
+ACTION: Add reserved() -> [u8; 2], reserved2() -> [u8; 20]; migrate entry_count
+
+================================================================================
+STRUCTS with ONLY [EXISTS] accessors needing call-site migration:
+================================================================================
+All Header/* substructs in api_surface_smoke.rs:
+  FileTypeIdentifier:  signature, creator, raw
+  HeaderStructure:     all 11 fields
+  RegionTable:         header, entries
+  RegionTableHeader:   signature, checksum, entry_count
+  RegionTableEntry:    guid, file_offset, length, required
+  TableEntry:          item_id, offset, length, flags
+  LocatorHeader:       key_value_count (integration)
+
+================================================================================
+SUMMARY COUNTS:
+================================================================================
+Missing accessors to add:          18
+Existing accessors to migrate to:   40
+Struct constructors to add:         4  (PayloadBlock, ParentChainInfo, ValidationIssue, KeyValueEntry)
+Type-change risks:                  3  (creator &[u8]→String, required u32→bool, flags u32→EntryFlags)
+Total pub fields inventoried:      72
+Total action items:                62

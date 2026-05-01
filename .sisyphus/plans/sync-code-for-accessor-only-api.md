@@ -81,7 +81,7 @@ Wave 3: 私有化落地与全量回归（任务 9-10）
 
 ## TODOs
 
-- [ ] 1. 建立“字段→访问器→调用点”总台账（零遗漏基线）
+- [x] 1. 建立“字段→访问器→调用点”总台账（零遗漏基线）
 
   **What to do**: 汇总以下文件中的公开结构体字段定义与外部访问点，产出可核对台账：`src/sections/header.rs`, `src/sections/bat.rs`, `src/sections/metadata.rs`, `src/sections/log.rs`, `src/io_module.rs`, `src/validation.rs`, `src/file.rs`, `tests/integration_test.rs`, `tests/api_surface_smoke.rs`。
   **Must NOT do**: 不直接改代码；不基于猜测补充不存在条目。
@@ -119,7 +119,7 @@ Wave 3: 私有化落地与全量回归（任务 9-10）
 
   **Commit**: NO | Message: `docs(plan): inventory accessor migration scope` | Files: [analysis only]
 
-- [ ] 2. 补齐缺失访问器（BatEntry / TableHeader / KeyValueEntry / DataSector）
+- [x] 2. 补齐缺失访问器（BatEntry / TableHeader / KeyValueEntry / DataSector）
 
   **What to do**: 新增缺失方法并保持返回语义稳定：  
   `BatEntry::state()`, `BatEntry::file_offset_mb()`；  
@@ -161,7 +161,7 @@ Wave 3: 私有化落地与全量回归（任务 9-10）
 
   **Commit**: YES | Message: `feat(api): add missing field accessor methods` | Files: [src/sections/bat.rs, src/sections/metadata.rs, src/sections/log.rs]
 
-- [ ] 3. 设计并落地“可外部构造结构体”迁移策略
+- [x] 3. 设计并落地“可外部构造结构体”迁移策略
 
   **What to do**: 对 `ParentChainInfo`, `ValidationIssue`, `PayloadBlock`, `BatEntry`, `KeyValueEntry` 在测试/对外场景中的构造方式做统一决策：优先新增 `new(...)` 或测试夹具构造函数，避免依赖公开字段字面量。
   **Must NOT do**: 不破坏现有公开导出路径；不引入行为变化。
@@ -199,7 +199,7 @@ Wave 3: 私有化落地与全量回归（任务 9-10）
 
   **Commit**: YES | Message: `refactor(api): add constructor paths for accessor migration` | Files: [src/file.rs, src/validation.rs, src/io_module.rs, src/sections/*, tests/api_surface_smoke.rs]
 
-- [ ] 4. 将字段改造范围限制写入执行 guardrail
+- [x] 4. 将字段改造范围限制写入执行 guardrail
 
   **What to do**: 在执行说明中固定“只改访问模式，不改业务逻辑，不改枚举语义，不改磁盘格式计算流程”。
   **Must NOT do**: 不新增额外优化项。
@@ -234,7 +234,7 @@ Wave 3: 私有化落地与全量回归（任务 9-10）
 
   **Commit**: NO | Message: `chore(plan): enforce migration guardrails` | Files: [execution notes]
 
-- [ ] 5. 迁移 `src/validation.rs` 全部跨模块字段直访
+- [x] 5. 迁移 `src/validation.rs` 全部跨模块字段直访
 
   **What to do**: 将所有 `entry.state` / `entry.file_offset_mb` / `table_header.reserved*` / `sector.signature` / `entry.key_*` 与 `value_*` 访问改为对应方法调用。
   **Must NOT do**: 不改变校验逻辑与错误语义。
@@ -271,7 +271,7 @@ Wave 3: 私有化落地与全量回归（任务 9-10）
 
   **Commit**: YES | Message: `refactor(validation): replace direct field access with accessors` | Files: [src/validation.rs]
 
-- [ ] 6. 迁移 `src/file.rs` 中 BatEntry 直访
+- [x] 6. 迁移 `src/file.rs` 中 BatEntry 直访
 
   **What to do**: 将 `be.state` 改为 `be.state()` 等方法访问。
   **Must NOT do**: 不改读写流程、BAT 逻辑或错误映射。
@@ -306,7 +306,7 @@ Wave 3: 私有化落地与全量回归（任务 9-10）
 
   **Commit**: YES | Message: `refactor(file): use BatEntry accessor in file path` | Files: [src/file.rs]
 
-- [ ] 7. 迁移 `tests/integration_test.rs` 字段直访
+- [x] 7. 迁移 `tests/integration_test.rs` 字段直访
 
   **What to do**: 将 `entry.state` 等直访改为访问器调用，确保断言语义不变。
   **Must NOT do**: 不降低断言强度；不删测试。
@@ -341,7 +341,7 @@ Wave 3: 私有化落地与全量回归（任务 9-10）
 
   **Commit**: YES | Message: `test(integration): switch field assertions to accessors` | Files: [tests/integration_test.rs]
 
-- [ ] 8. 迁移 `tests/api_surface_smoke.rs` 全量字段直访与字面量构造
+- [x] 8. 迁移 `tests/api_surface_smoke.rs` 全量字段直访与字面量构造
 
   **What to do**: 批量将字段读取改为访问器；将依赖公开字段构造的用例改为新构造路径（task 3 决策）。
   **Must NOT do**: 不删除 smoke 覆盖项；不放宽导出面检查。
@@ -378,7 +378,7 @@ Wave 3: 私有化落地与全量回归（任务 9-10）
 
   **Commit**: YES | Message: `test(api): migrate smoke checks to accessor model` | Files: [tests/api_surface_smoke.rs]
 
-- [ ] 9. 私有化公开字段并修复编译断点
+- [x] 9. 私有化公开字段并修复编译断点
 
   **What to do**: 将目标结构体 `pub field` 改为私有字段，仅保留函数访问模型；必要时补充最小构造入口。
   **Must NOT do**: 不改变对外导出类型名与枚举项。
@@ -420,7 +420,7 @@ Wave 3: 私有化落地与全量回归（任务 9-10）
 
   **Commit**: YES | Message: `refactor(api): privatize struct fields after accessor migration` | Files: [src/**/*]
 
-- [ ] 10. 执行最终质量门与证据归档
+- [x] 10. 执行最终质量门与证据归档
 
   **What to do**: 依次执行 build/test/clippy/fmt 四道门，收集结果证据并给出结论。
   **Must NOT do**: 不跳过任何一道门。
@@ -461,10 +461,10 @@ Wave 3: 私有化落地与全量回归（任务 9-10）
   **Commit**: NO | Message: `chore(qa): run full workspace gates` | Files: [evidence only]
 
 ## Final Verification Wave (MANDATORY — after ALL implementation tasks)
-- [ ] F1. Plan Compliance Audit — oracle
-- [ ] F2. Code Quality Review — unspecified-high
-- [ ] F3. Real Manual QA — unspecified-high (+ playwright if UI)
-- [ ] F4. Scope Fidelity Check — deep
+- [x] F1. Plan Compliance Audit — oracle
+- [x] F2. Code Quality Review — unspecified-high
+- [x] F3. Real Manual QA — unspecified-high (+ playwright if UI)
+- [x] F4. Scope Fidelity Check — deep
 
 ## Commit Strategy
 - 原子提交，按任务 2/3/5/6/7/8/9 分批提交。  

@@ -88,12 +88,8 @@ fn smoke_root_policy_and_chain_info_import() {
     let _in_mem = LogReplayPolicy::InMemoryOnReadOnly;
     let _no_replay = LogReplayPolicy::ReadOnlyNoReplay;
 
-    let info = ParentChainInfo {
-        child: PathBuf::from("/c.vhdx"),
-        parent: PathBuf::from("/p.vhdx"),
-        linkage_matched: false,
-    };
-    assert!(!info.linkage_matched);
+    let info = ParentChainInfo::new(PathBuf::from("/c.vhdx"), PathBuf::from("/p.vhdx"), false);
+    assert!(!info.linkage_matched());
 }
 
 /// 根级 SpecValidator / ValidationIssue 可导入。
@@ -101,13 +97,8 @@ fn smoke_root_policy_and_chain_info_import() {
 fn smoke_root_validation_types_import() {
     use vhdx_rs::{SpecValidator, ValidationIssue};
 
-    let issue = ValidationIssue {
-        section: "test",
-        code: "SMOKE",
-        message: "smoke issue".to_string(),
-        spec_ref: "MS-VHDX §1",
-    };
-    assert_eq!(issue.section, "test");
+    let issue = ValidationIssue::new("test", "SMOKE", "smoke issue".to_string(), "MS-VHDX §1");
+    assert_eq!(issue.section(), "test");
 
     let _ = std::marker::PhantomData::<SpecValidator<'_>>;
 }
@@ -155,12 +146,9 @@ fn smoke_section_bat_types_import() {
     let _ = SectorBitmapState::NotPresent;
     let _ = SectorBitmapState::Present;
 
-    // BatEntry 公共字段可访问
-    let entry = BatEntry {
-        state: BatState::Payload(PayloadBlockState::Zero),
-        file_offset_mb: 42,
-    };
-    assert_eq!(entry.file_offset_mb, 42);
+    // BatEntry 公共构造器可调用
+    let entry = BatEntry::create(BatState::Payload(PayloadBlockState::Zero), 42);
+    assert_eq!(entry.file_offset_mb(), 42);
 }
 
 /// section 模块 Metadata 子类型可导入。
@@ -242,13 +230,9 @@ fn smoke_validation_mod_import() {
     use vhdx_rs::validation::{SpecValidator, ValidationIssue};
 
     let _ = std::marker::PhantomData::<SpecValidator<'_>>;
-    let issue = ValidationIssue {
-        section: "bat",
-        code: "TEST",
-        message: "ok".to_string(),
-        spec_ref: "§2.5",
-    };
-    assert_eq!(issue.code, "TEST");
+
+    let issue = ValidationIssue::new("bat", "TEST", "ok".to_string(), "§2.5");
+    assert_eq!(issue.code(), "TEST");
 }
 
 // ════════════════════════════════════════════
@@ -371,7 +355,7 @@ fn smoke_file_io_sector_callable() {
 
     // sector() 返回 Option<Sector>
     let sector = io.sector(0).expect("smoke: sector 0");
-    assert_eq!(sector.block_sector_index, 0);
+    assert_eq!(sector.block_sector_index(), 0);
 
     // Sector 方法可调用
     let _payload = sector.payload();
@@ -420,51 +404,51 @@ fn smoke_file_planned_public_methods_callable() {
 }
 
 // ════════════════════════════════════════════
-// 7. Header 子结构公共字段可访问
+// 7. Header 子结构公共方法可调用
 // ════════════════════════════════════════════
 
-/// HeaderStructure / RegionTableHeader / RegionTableEntry 公共字段可访问。
+/// HeaderStructure / RegionTableHeader / RegionTableEntry 方法可调用。
 #[test]
 fn smoke_header_substructure_fields_accessible() {
     let file = create_fixed_disk();
     let header = file.sections().header().expect("smoke: header");
 
-    // FileTypeIdentifier 公共字段
+    // FileTypeIdentifier 方法
     let fti = header.file_type();
-    let _sig: [u8; 8] = fti.signature;
-    let _creator: &[u8] = fti.creator;
+    let _sig: &[u8; 8] = fti.signature();
+    let _creator: String = fti.creator();
 
-    // HeaderStructure 公共字段
+    // HeaderStructure 方法
     let hdr = header.header(0).expect("smoke: header structure");
-    let _sig: [u8; 4] = hdr.signature;
-    let _checksum: u32 = hdr.checksum;
-    let _seq: u64 = hdr.sequence_number;
-    let _fwg = hdr.file_write_guid;
-    let _dwg = hdr.data_write_guid;
-    let _lg = hdr.log_guid;
-    let _lv: u16 = hdr.log_version;
-    let _ver: u16 = hdr.version;
-    let _ll: u32 = hdr.log_length;
-    let _lo: u64 = hdr.log_offset;
+    let _sig: &[u8; 4] = hdr.signature();
+    let _checksum: u32 = hdr.checksum();
+    let _seq: u64 = hdr.sequence_number();
+    let _fwg = hdr.file_write_guid();
+    let _dwg = hdr.data_write_guid();
+    let _lg = hdr.log_guid();
+    let _lv: u16 = hdr.log_version();
+    let _ver: u16 = hdr.version();
+    let _ll: u32 = hdr.log_length();
+    let _lo: u64 = hdr.log_offset();
 
-    // RegionTable + entries
+    // RegionTable 方法可调用
     let rt = header.region_table(0).expect("smoke: region table");
 
-    // RegionTable 公共字段可访问
-    let _hdr_field: vhdx_rs::section::RegionTableHeader<'_> = rt.header;
-    let _entries_field: &[vhdx_rs::section::RegionTableEntry<'_>] = &rt.entries;
+    // RegionTable 方法
+    let _hdr_field: vhdx_rs::section::RegionTableHeader<'_> = rt.header();
+    let _entries_field: Vec<vhdx_rs::section::RegionTableEntry<'_>> = rt.entries();
 
-    // RegionTable 方法也可调用
+    // RegionTableHeader 方法
     let rth = rt.header();
-    let _sig: [u8; 4] = rth.signature;
-    let _checksum: u32 = rth.checksum;
-    let _ec: u32 = rth.entry_count;
+    let _sig: &[u8; 4] = rth.signature();
+    let _checksum: u32 = rth.checksum();
+    let _ec: u32 = rth.entry_count();
 
     if let Some(rte) = rt.entries().first() {
-        let _guid = rte.guid;
-        let _offset = rte.file_offset;
-        let _length = rte.length;
-        let _required = rte.required;
+        let _guid = rte.guid();
+        let _offset = rte.file_offset();
+        let _length = rte.length();
+        let _required = rte.required();
     }
 }
 
@@ -482,15 +466,15 @@ fn smoke_metadata_substructure_callable() {
     // table()
     let table = metadata.table();
     let th = table.header();
-    let _sig: [u8; 8] = th.signature;
-    let _ec: u16 = th.entry_count;
+    let _sig: &[u8; 8] = th.signature();
+    let _ec: u16 = th.entry_count();
 
     let table_entries = table.entries();
     if let Some(te) = table_entries.first() {
-        let _item_id = te.item_id;
-        let _offset = te.offset;
-        let _length = te.length;
-        let _flags_val = te.flags;
+        let _item_id = te.item_id();
+        let _offset = te.offset();
+        let _length = te.length();
+        let _flags_val = te.flags();
         let flags = te.flags();
         let _ = flags.is_user();
         let _ = flags.is_virtual_disk();
@@ -527,7 +511,7 @@ fn smoke_bat_entry_state_pattern_matchable() {
     let bat = file.sections().bat().expect("smoke: bat");
 
     for entry in bat.entries() {
-        match entry.state {
+        match entry.state() {
             BatState::Payload(s) => match s {
                 PayloadBlockState::NotPresent
                 | PayloadBlockState::Undefined
@@ -540,7 +524,7 @@ fn smoke_bat_entry_state_pattern_matchable() {
                 SectorBitmapState::NotPresent | SectorBitmapState::Present => {}
             },
         }
-        let _offset = entry.file_offset_mb;
+        let _offset = entry.file_offset_mb();
     }
 }
 
@@ -567,27 +551,27 @@ fn smoke_log_entry_types_callable() {
     for desc in entry.descriptors() {
         match desc {
             Descriptor::Data(dd) => {
-                let _sig: [u8; 4] = dd.signature;
-                let _tb: u32 = dd.trailing_bytes;
-                let _lb: u64 = dd.leading_bytes;
-                let _fo: u64 = dd.file_offset;
-                let _sn: u64 = dd.sequence_number;
+                let _sig: &[u8; 4] = dd.signature();
+                let _tb: u32 = dd.trailing_bytes();
+                let _lb: u64 = dd.leading_bytes();
+                let _fo: u64 = dd.file_offset();
+                let _sn: u64 = dd.sequence_number();
             }
             Descriptor::Zero(zd) => {
-                let _sig: [u8; 4] = zd.signature;
-                let _zl: u64 = zd.zero_length;
-                let _fo: u64 = zd.file_offset;
-                let _sn: u64 = zd.sequence_number;
+                let _sig: &[u8; 4] = zd.signature();
+                let _zl: u64 = zd.zero_length();
+                let _fo: u64 = zd.file_offset();
+                let _sn: u64 = zd.sequence_number();
             }
         }
     }
 
-    // DataSector 可访问
+    // DataSector 方法可调用
     for ds in entry.data() {
-        let _sig: [u8; 4] = ds.signature;
-        let _sh: u32 = ds.sequence_high;
-        let _data: &[u8] = ds.data;
-        let _sl: u32 = ds.sequence_low;
+        let _sig: &[u8; 4] = ds.signature();
+        let _sh: u32 = ds.sequence_high();
+        let _data: &[u8] = ds.data();
+        let _sl: u32 = ds.sequence_low();
     }
 }
 
@@ -605,14 +589,14 @@ fn smoke_io_sector_payload_chain() {
 
     let sector = io.sector(0).expect("smoke: sector 0");
 
-    // Sector 公共字段
-    let _idx: u32 = sector.block_sector_index;
-
-    // payload 公共字段
-    let pb: &PayloadBlock<'_> = &sector.payload;
-    let _bytes: &[u8] = pb.bytes;
+    // Sector 方法
+    let _idx: u32 = sector.block_sector_index();
 
     // payload() 方法
+    let pb: PayloadBlock<'_> = sector.payload();
+    let _bytes: &[u8] = pb.bytes();
+
+    // payload() 方法（重复调用验证）
     let _via_method = sector.payload();
 
     // read
@@ -631,11 +615,11 @@ fn smoke_payload_block_manual_construction() {
     use vhdx_rs::PayloadBlock;
 
     let data = b"hello";
-    let pb1 = PayloadBlock { bytes: data };
-    let pb2 = PayloadBlock { bytes: data };
+    let pb1 = PayloadBlock::new(data);
+    let pb2 = PayloadBlock::new(data);
     assert_eq!(pb1, pb2);
 
-    let pb3 = PayloadBlock { bytes: b"world" };
+    let pb3 = PayloadBlock::new(b"world");
     assert_ne!(pb1, pb3);
 
     let _debug = format!("{pb1:?}");

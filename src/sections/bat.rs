@@ -201,9 +201,9 @@ impl Bat<'_> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BatEntry {
     /// 块状态（Payload 或 Sector Bitmap）
-    pub state: BatState,
+    state: BatState,
     /// 文件偏移量（以 MB 为单位）
-    pub file_offset_mb: u64,
+    file_offset_mb: u64,
 }
 
 impl BatEntry {
@@ -237,15 +237,38 @@ impl BatEntry {
         (self.file_offset_mb << 20) | state_bits
     }
 
+    /// 块状态（MS-VHDX §2.5.1）
+    #[must_use]
+    pub const fn state(&self) -> BatState {
+        self.state
+    }
+
+    /// 文件偏移量（以 MB 为单位）（MS-VHDX §2.5.1）
+    #[must_use]
+    pub const fn file_offset_mb(&self) -> u64 {
+        self.file_offset_mb
+    }
+
     /// 返回文件偏移量（以字节为单位），将 MB 值转换为字节数
     #[must_use]
     pub const fn file_offset(&self) -> u64 {
         self.file_offset_mb * MiB
     }
 
-    /// 使用指定的状态和偏移量创建新的 BAT 条目
+    /// 使用指定的状态和偏移量创建新的 BAT 条目（crate 内部）
     #[must_use]
     pub(crate) const fn new(state: BatState, file_offset_mb: u64) -> Self {
+        Self {
+            state,
+            file_offset_mb,
+        }
+    }
+
+    /// 使用指定的状态和偏移量创建新的 BAT 条目（公共构造入口）
+    ///
+    /// 适用于需要手动构造 BAT 条目的场景（如测试）。
+    #[must_use]
+    pub const fn create(state: BatState, file_offset_mb: u64) -> Self {
         Self {
             state,
             file_offset_mb,

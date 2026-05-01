@@ -699,27 +699,28 @@ impl<'a> LogEntry<'a> {
 /// 固定 64 字节，包含日志条目的元数据。
 pub struct LogEntryHeader<'a> {
     /// 日志条目签名（应为 "loge"）
-    pub signature: [u8; 4],
+    signature: [u8; 4],
     /// CRC32C 校验和
-    pub checksum: u32,
+    checksum: u32,
     /// 条目总长度
-    pub entry_length: u32,
+    entry_length: u32,
     /// 环形缓冲 tail
-    pub tail: u32,
+    tail: u32,
     /// 序列号
-    pub sequence_number: u64,
+    sequence_number: u64,
     /// 描述符数量
-    pub descriptor_count: u32,
+    descriptor_count: u32,
     /// 保留字段
-    pub reserved: u32,
+    #[allow(dead_code)]
+    reserved: u32,
     /// 日志 GUID
-    pub log_guid: Guid,
+    log_guid: Guid,
     /// 已刷写文件偏移
-    pub flushed_file_offset: u64,
+    flushed_file_offset: u64,
     /// 最后文件偏移
-    pub last_file_offset: u64,
+    last_file_offset: u64,
     /// 原始字节视图
-    pub raw: &'a [u8],
+    raw: &'a [u8],
 }
 
 impl<'a> LogEntryHeader<'a> {
@@ -863,17 +864,17 @@ impl<'a> Descriptor<'a> {
 #[derive(Debug)]
 pub struct DataDescriptor<'a> {
     /// 描述符签名（应为 "desc"）
-    pub signature: [u8; 4],
+    signature: [u8; 4],
     /// 目标范围末尾需保留的字节数
-    pub trailing_bytes: u32,
+    trailing_bytes: u32,
     /// 目标范围开头需保留的字节数
-    pub leading_bytes: u64,
+    leading_bytes: u64,
     /// 目标文件偏移
-    pub file_offset: u64,
+    file_offset: u64,
     /// 序列号
-    pub sequence_number: u64,
+    sequence_number: u64,
     /// 原始字节视图
-    pub raw: &'a [u8],
+    raw: &'a [u8],
 }
 
 impl<'a> DataDescriptor<'a> {
@@ -900,6 +901,12 @@ impl<'a> DataDescriptor<'a> {
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
         self.raw
+    }
+
+    /// 返回描述符签名（MS-VHDX §2.3.1.3），应为 "desc"
+    #[must_use]
+    pub const fn signature(&self) -> &[u8; 4] {
+        &self.signature
     }
 
     /// 目标范围末尾需保留的字节数（MS-VHDX §2.3.1.3）
@@ -938,17 +945,18 @@ impl<'a> DataDescriptor<'a> {
 #[derive(Debug)]
 pub struct ZeroDescriptor<'a> {
     /// 描述符签名（应为 "zero"）
-    pub signature: [u8; 4],
+    signature: [u8; 4],
     /// 保留字段
-    pub reserved: u32,
+    #[allow(dead_code)]
+    reserved: u32,
     /// 零填充长度
-    pub zero_length: u64,
+    zero_length: u64,
     /// 目标文件偏移
-    pub file_offset: u64,
+    file_offset: u64,
     /// 序列号
-    pub sequence_number: u64,
+    sequence_number: u64,
     /// 原始字节视图
-    pub raw: &'a [u8],
+    raw: &'a [u8],
 }
 
 impl<'a> ZeroDescriptor<'a> {
@@ -975,6 +983,12 @@ impl<'a> ZeroDescriptor<'a> {
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
         self.raw
+    }
+
+    /// 返回描述符签名（MS-VHDX §2.3.1.2），应为 "zero"
+    #[must_use]
+    pub const fn signature(&self) -> &[u8; 4] {
+        &self.signature
     }
 
     /// 零填充长度（MS-VHDX §2.3.1.2）
@@ -1009,15 +1023,15 @@ impl<'a> ZeroDescriptor<'a> {
 /// 如果 `sequence_high` ≠ `sequence_low，说明写入不完整（撕裂写入`）。
 pub struct DataSector<'a> {
     /// 数据扇区签名
-    pub signature: [u8; 4],
+    signature: [u8; 4],
     /// 序列号高 32 位
-    pub sequence_high: u32,
+    sequence_high: u32,
     /// 数据内容（字节 8..4092）
-    pub data: &'a [u8],
+    data: &'a [u8],
     /// 序列号低 32 位
-    pub sequence_low: u32,
+    sequence_low: u32,
     /// 原始字节视图
-    pub raw: &'a [u8],
+    raw: &'a [u8],
 }
 
 impl<'a> DataSector<'a> {
@@ -1045,6 +1059,12 @@ impl<'a> DataSector<'a> {
     #[must_use]
     pub const fn raw(&self) -> &[u8] {
         self.raw
+    }
+
+    /// 数据扇区签名（MS-VHDX §2.3.1.4）
+    #[must_use]
+    pub const fn signature(&self) -> &[u8; 4] {
+        &self.signature
     }
 
     /// 序列号高 32 位（MS-VHDX §2.3.1.4）

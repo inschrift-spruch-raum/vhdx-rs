@@ -5,19 +5,47 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 // Helper 函数：通过计划公开 API 获取 File 属性（替代已移除的 File accessor）
 fn get_virtual_disk_size(file: &vhdx_rs::File) -> u64 {
-    file.sections().metadata().unwrap().items().virtual_disk_size().unwrap()
+    file.sections()
+        .metadata()
+        .unwrap()
+        .items()
+        .virtual_disk_size()
+        .unwrap()
 }
 fn get_block_size(file: &vhdx_rs::File) -> u32 {
-    file.sections().metadata().unwrap().items().file_parameters().unwrap().block_size()
+    file.sections()
+        .metadata()
+        .unwrap()
+        .items()
+        .file_parameters()
+        .unwrap()
+        .block_size()
 }
 fn get_logical_sector_size(file: &vhdx_rs::File) -> u32 {
-    file.sections().metadata().unwrap().items().logical_sector_size().unwrap()
+    file.sections()
+        .metadata()
+        .unwrap()
+        .items()
+        .logical_sector_size()
+        .unwrap()
 }
 fn file_is_fixed(file: &vhdx_rs::File) -> bool {
-    file.sections().metadata().unwrap().items().file_parameters().unwrap().leave_block_allocated()
+    file.sections()
+        .metadata()
+        .unwrap()
+        .items()
+        .file_parameters()
+        .unwrap()
+        .leave_block_allocated()
 }
 fn file_has_parent(file: &vhdx_rs::File) -> bool {
-    file.sections().metadata().unwrap().items().file_parameters().unwrap().has_parent()
+    file.sections()
+        .metadata()
+        .unwrap()
+        .items()
+        .file_parameters()
+        .unwrap()
+        .has_parent()
 }
 // 布局常量（VHDX 格式定义，非公开 API，测试本地定义）
 const DATA_SECTOR_SIZE: usize = 4096;
@@ -257,7 +285,8 @@ fn inject_bat_entry_raw(path: &std::path::Path, index: u64, raw_value: u64) {
         .expect("No active region table for BAT injection");
     // BAT_REGION GUID (MS-VHDX §2.2.3.2)
     let bat_region_guid = vhdx_rs::Guid::from_bytes([
-        0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42, 0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD, 0x4A, 0x08,
+        0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42, 0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD, 0x4A,
+        0x08,
     ]);
     let bat_entry = region_table
         .find_entry(&bat_region_guid)
@@ -313,8 +342,8 @@ fn inject_metadata_table_entry(
     path: &std::path::Path, item_id: vhdx_rs::Guid, offset: u32, length: u32, flags: u32,
 ) {
     const METADATA_OFFSET: u64 = 2 * 1024 * 1024;
-#[allow(dead_code)]
-const METADATA_TABLE_SIZE: usize = 64 * 1024;
+    #[allow(dead_code)]
+    const METADATA_TABLE_SIZE: usize = 64 * 1024;
 
     let mut raw = OpenOptions::new()
         .read(true)
@@ -1002,7 +1031,7 @@ fn test_bat_entries_vec_traversable() {
     for entry in &entries {
         assert!(
             matches!(
-                entry.state,
+                entry.state(),
                 vhdx_rs::section::BatState::Payload(_)
                     | vhdx_rs::section::BatState::SectorBitmap(_)
             ),
@@ -1014,7 +1043,7 @@ fn test_bat_entries_vec_traversable() {
     assert!(
         entries
             .iter()
-            .any(|entry| matches!(entry.state, vhdx_rs::section::BatState::SectorBitmap(_))),
+            .any(|entry| matches!(entry.state(), vhdx_rs::section::BatState::SectorBitmap(_))),
         "entries() should include at least one SectorBitmap entry"
     );
 
@@ -1614,22 +1643,24 @@ fn test_sector_public_fields_accessible() {
     // 扇区 0 存在，验证公共字段
     let sector = io.sector(0).expect("Sector 0 should exist");
     assert_eq!(
-        sector.block_sector_index, 0,
+        sector.block_sector_index(),
+        0,
         "block_sector_index should be 0"
     );
 
     // payload 字段可直接访问，类型为 PayloadBlock
-    let _payload: &PayloadBlock<'_> = &sector.payload;
+    let _payload: &PayloadBlock<'_> = &sector.payload();
     assert!(
-        sector.payload.bytes.is_empty(),
+        sector.payload().bytes().is_empty(),
         "Lazy-load payload bytes should be empty slice"
     );
 
-    // payload() 方法返回值与字段一致
+    // payload() 方法返回值一致
     let via_method = sector.payload();
+    let via_method2 = sector.payload();
     assert_eq!(
-        via_method, sector.payload,
-        "payload() method should match public field"
+        via_method, via_method2,
+        "payload() method should be consistent"
     );
 }
 
@@ -1652,19 +1683,19 @@ fn test_sector_block_sector_index_values() {
 
     // 扇区 0 → block_sector_index 0
     let s0 = io.sector(0).expect("Sector 0");
-    assert_eq!(s0.block_sector_index, 0);
+    assert_eq!(s0.block_sector_index(), 0);
 
     // 扇区 1 → block_sector_index 1
     let s1 = io.sector(1).expect("Sector 1");
-    assert_eq!(s1.block_sector_index, 1);
+    assert_eq!(s1.block_sector_index(), 1);
 
     // 扇区 255 → block_sector_index 255（第一块最后一个扇区）
     let s255 = io.sector(255).expect("Sector 255");
-    assert_eq!(s255.block_sector_index, 255);
+    assert_eq!(s255.block_sector_index(), 255);
 
     // 扇区 256 → block_sector_index 0（第二块第一个扇区）
     let s256 = io.sector(256).expect("Sector 256");
-    assert_eq!(s256.block_sector_index, 0);
+    assert_eq!(s256.block_sector_index(), 0);
 }
 
 /// 测试 IO::sector 超出范围返回 None。
@@ -1809,7 +1840,7 @@ fn test_sector_derive_traits() {
 
     // Clone
     let s0_clone = s0a.clone();
-    assert_eq!(s0_clone.block_sector_index, 0);
+    assert_eq!(s0_clone.block_sector_index(), 0);
 
     // PartialEq — 同一扇区号应相等
     assert_eq!(s0a, s0b, "Same sector should be equal");
@@ -1841,7 +1872,7 @@ fn test_payload_block_traits() {
 
     // Clone
     let pb_clone = pb1.clone();
-    assert_eq!(pb_clone.bytes, pb1.bytes);
+    assert_eq!(pb_clone.bytes(), pb1.bytes());
 
     // PartialEq
     assert_eq!(pb1, pb2, "Same payload should be equal");
@@ -1855,11 +1886,11 @@ fn test_payload_block_traits() {
 
     // 手动构造 PayloadBlock 测试 PartialEq
     let data = b"hello";
-    let manual = PayloadBlock { bytes: data };
-    let manual2 = PayloadBlock { bytes: data };
+    let manual = PayloadBlock::new(data);
+    let manual2 = PayloadBlock::new(data);
     assert_eq!(manual, manual2);
 
-    let different = PayloadBlock { bytes: b"world" };
+    let different = PayloadBlock::new(b"world");
     assert_ne!(manual, different);
 }
 
@@ -1912,10 +1943,12 @@ fn test_constants_namespace_layout_constants() {
 #[test]
 fn test_constants_region_guids_accessible() {
     let bat_region = vhdx_rs::Guid::from_bytes([
-        0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42, 0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD, 0x4A, 0x08,
+        0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42, 0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD, 0x4A,
+        0x08,
     ]);
     let metadata_region = vhdx_rs::Guid::from_bytes([
-        0x06, 0xA2, 0x7C, 0x8B, 0x90, 0x47, 0x9A, 0x4B, 0xB8, 0xFE, 0x57, 0x5F, 0x05, 0x0F, 0x88, 0x6E,
+        0x06, 0xA2, 0x7C, 0x8B, 0x90, 0x47, 0x9A, 0x4B, 0xB8, 0xFE, 0x57, 0x5F, 0x05, 0x0F, 0x88,
+        0x6E,
     ]);
     assert!(!bat_region.is_nil());
     assert!(!metadata_region.is_nil());
@@ -1957,10 +1990,12 @@ fn test_constants_guids_are_unique() {
     use vhdx_rs::section::StandardItems;
 
     let bat_region = vhdx_rs::Guid::from_bytes([
-        0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42, 0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD, 0x4A, 0x08,
+        0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42, 0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD, 0x4A,
+        0x08,
     ]);
     let metadata_region = vhdx_rs::Guid::from_bytes([
-        0x06, 0xA2, 0x7C, 0x8B, 0x90, 0x47, 0x9A, 0x4B, 0xB8, 0xFE, 0x57, 0x5F, 0x05, 0x0F, 0x88, 0x6E,
+        0x06, 0xA2, 0x7C, 0x8B, 0x90, 0x47, 0x9A, 0x4B, 0xB8, 0xFE, 0x57, 0x5F, 0x05, 0x0F, 0x88,
+        0x6E,
     ]);
 
     let guids = [
@@ -2080,14 +2115,14 @@ fn test_validation_api_import_and_validate_file() {
         .validate_file()
         .expect("validate_file should pass for a valid fixed disk");
 
-    let issue = ValidationIssue {
-        section: "metadata",
-        code: "EXAMPLE",
-        message: "example issue".to_string(),
-        spec_ref: "MS-VHDX §2.6",
-    };
-    assert_eq!(issue.section, "metadata");
-    assert_eq!(issue.code, "EXAMPLE");
+    let issue = ValidationIssue::new(
+        "metadata",
+        "EXAMPLE",
+        "example issue".to_string(),
+        "MS-VHDX §2.6",
+    );
+    assert_eq!(issue.section(), "metadata");
+    assert_eq!(issue.code(), "EXAMPLE");
 }
 
 /// 测试差分盘缺少 Parent Locator 必需键时返回错误而非 panic。
@@ -2180,14 +2215,14 @@ fn test_parent_chain_info_import_and_fields() {
     use std::path::PathBuf;
     use vhdx_rs::ParentChainInfo;
 
-    let info = ParentChainInfo {
-        child: PathBuf::from("/child.vhdx"),
-        parent: PathBuf::from("/parent.vhdx"),
-        linkage_matched: true,
-    };
-    assert_eq!(info.child, PathBuf::from("/child.vhdx"));
-    assert_eq!(info.parent, PathBuf::from("/parent.vhdx"));
-    assert!(info.linkage_matched);
+    let info = ParentChainInfo::new(
+        PathBuf::from("/child.vhdx"),
+        PathBuf::from("/parent.vhdx"),
+        true,
+    );
+    assert_eq!(info.child(), PathBuf::from("/child.vhdx"));
+    assert_eq!(info.parent(), PathBuf::from("/parent.vhdx"));
+    assert!(info.linkage_matched());
 }
 
 /// 测试 validate_parent_chain 对非差分盘返回错误（failure path）。
@@ -2271,9 +2306,9 @@ fn test_validate_parent_chain_passes_with_parent_linkage2_and_real_child_path() 
         .validate_parent_chain()
         .expect("validate_parent_chain should pass when linkage2 matches");
 
-    assert!(info.linkage_matched, "linkage should be matched");
-    assert_eq!(info.child, child_path);
-    assert_eq!(info.parent, parent_path);
+    assert!(info.linkage_matched(), "linkage should be matched");
+    assert_eq!(info.child(), child_path);
+    assert_eq!(info.parent(), parent_path);
 }
 
 /// 测试差分链校验：当 parent_linkage 与 parent_linkage2 都不匹配父盘 DataWriteGuid 时失败。
@@ -2539,20 +2574,14 @@ fn test_locator_header_public_fields_accessible() {
 
     // header 返回 LocatorHeader，公共字段可访问
     let header = locator.header();
-    assert_eq!(header.key_value_count, 0);
+    assert_eq!(header.key_value_count(), 0);
 
     // raw getter 可调用
     let _raw: &[u8] = header.raw();
 
-    // KeyValueEntry 可手动构造（利用公共字段）
-    let kv = KeyValueEntry {
-        key_offset: 0,
-        value_offset: 0,
-        key_length: 0,
-        value_length: 0,
-        raw: &[0u8; 12],
-    };
-    assert_eq!(kv.key_offset, 0);
+    // KeyValueEntry 可通过构造器创建
+    let kv = KeyValueEntry::from_parts(0, 0, 0, 0);
+    assert_eq!(kv.key_offset(), 0);
 }
 
 /// 测试 KeyValueEntry 公共字段可访问：key_offset、value_offset、key_length、value_length、raw。
@@ -2568,12 +2597,12 @@ fn test_key_value_entry_public_fields_accessible() {
 
     let entry = KeyValueEntry::new(&entry_bytes).expect("KeyValueEntry::new should succeed");
 
-    assert_eq!(entry.key_offset, 10);
-    assert_eq!(entry.value_offset, 20);
-    assert_eq!(entry.key_length, 8);
-    assert_eq!(entry.value_length, 12);
-    assert_eq!(entry.raw.len(), 12);
-    assert_eq!(entry.raw(), entry.raw);
+    assert_eq!(entry.key_offset(), 10);
+    assert_eq!(entry.value_offset(), 20);
+    assert_eq!(entry.key_length(), 8);
+    assert_eq!(entry.value_length(), 12);
+    assert_eq!(entry.raw().len(), 12);
+    assert_eq!(entry.raw(), entry.raw());
 }
 
 /// 测试 KeyValueEntry key/value 方法正确解码 UTF-16LE。
@@ -2639,7 +2668,7 @@ fn test_parent_locator_api_surface() {
 
     // header() -> LocatorHeader
     let _header: LocatorHeader<'_> = locator.header();
-    assert_eq!(locator.header().key_value_count, 1);
+    assert_eq!(locator.header().key_value_count(), 1);
 
     // entry(0) -> Some(KeyValueEntry)
     let e0: Option<KeyValueEntry<'_>> = locator.entry(0);
@@ -2676,7 +2705,7 @@ fn test_parent_locator_empty_entries_and_data() {
 
     let locator = ParentLocator::new(&buf).expect("ParentLocator with 0 entries should parse");
 
-    assert_eq!(locator.header().key_value_count, 0);
+    assert_eq!(locator.header().key_value_count(), 0);
     assert!(locator.entries().is_empty());
     assert!(locator.entry(0).is_none());
     assert!(locator.key_value_data().is_empty());
@@ -2693,17 +2722,11 @@ fn test_t9_section_module_import_paths() {
     let locator = ParentLocator::new(&buf).expect("ParentLocator should parse");
 
     let header = locator.header();
-    assert_eq!(header.key_value_count, 0);
+    assert_eq!(header.key_value_count(), 0);
     let _raw: &[u8] = header.raw();
 
-    let kv = KeyValueEntry {
-        key_offset: 0,
-        value_offset: 0,
-        key_length: 0,
-        value_length: 0,
-        raw: &[0u8; 12],
-    };
-    assert_eq!(kv.key_offset, 0);
+    let kv = KeyValueEntry::from_parts(0, 0, 0, 0);
+    assert_eq!(kv.key_offset(), 0);
 }
 
 // ── T3: strict 模式 required unknown region 拒绝测试 ──
@@ -3916,7 +3939,7 @@ fn test_dynamic_read_nonzero_sector_within_allocated_block() {
 
     // 读取虚拟扇区 3（block 内偏移 3）
     let sector = file.io().sector(3).expect("Sector 3 should exist");
-    assert_eq!(sector.block_sector_index, 3);
+    assert_eq!(sector.block_sector_index(), 3);
     let mut buf = vec![0u8; 4096];
     sector
         .read(&mut buf)
@@ -4664,19 +4687,21 @@ fn fixed_bat_sector_bitmap_notpresent() {
     let entries = bat.entries();
     let mut found_bitmap = false;
     for (i, entry) in entries.iter().enumerate() {
-        if matches!(entry.state, vhdx_rs::section::BatState::SectorBitmap(_)) {
+        if matches!(entry.state(), vhdx_rs::section::BatState::SectorBitmap(_)) {
             found_bitmap = true;
             assert_eq!(
-                entry.file_offset_mb, 0,
+                entry.file_offset_mb(),
+                0,
                 "Fixed BAT sector bitmap entry at index {i} should have zero offset",
             );
         } else if matches!(
-            entry.state,
+            entry.state(),
             vhdx_rs::section::BatState::Payload(vhdx_rs::section::PayloadBlockState::FullyPresent,)
         ) {
             // Payload 条目应有非零偏移
             assert_ne!(
-                entry.file_offset_mb, 0,
+                entry.file_offset_mb(),
+                0,
                 "Fixed BAT payload entry at index {i} should have non-zero offset",
             );
         }
@@ -5729,10 +5754,10 @@ fn test_spec_decision_manifest() {
 
     for (i, entry) in entries.iter().enumerate() {
         // key_offset 和 value_offset 是相对于 key_value_data 区段的偏移
-        let ko = entry.key_offset as usize;
-        let vo = entry.value_offset as usize;
-        let kl = entry.key_length as usize;
-        let vl = entry.value_length as usize;
+        let ko = entry.key_offset() as usize;
+        let vo = entry.value_offset() as usize;
+        let kl = entry.key_length() as usize;
+        let vl = entry.value_length() as usize;
 
         // 决策 3: offset 和 length 必须 > 0
         assert!(
@@ -6198,7 +6223,10 @@ fn test_readonly_no_replay_is_explicit_compat_mode() {
         .expect("ReadOnlyNoReplay open should succeed");
 
     // 可正常读取结构：header
-    let header = file_ref.sections().header().expect("header should be readable");
+    let header = file_ref
+        .sections()
+        .header()
+        .expect("header should be readable");
     let h = header.header(0).expect("active header should exist");
     assert_ne!(
         h.log_guid(),
@@ -6817,7 +6845,7 @@ fn test_bat_nondefault_4096_sector_chunk_ratio_and_bitmap_position() {
     // 索引 0 应为 Payload
     assert!(
         matches!(
-            entries[0].state,
+            entries[0].state(),
             vhdx_rs::section::BatState::Payload(vhdx_rs::section::PayloadBlockState::FullyPresent)
         ),
         "index 0 should be Payload(FullyPresent) for fixed disk"
@@ -6826,7 +6854,7 @@ fn test_bat_nondefault_4096_sector_chunk_ratio_and_bitmap_position() {
     // 索引 1 应为 SectorBitmap
     assert!(
         matches!(
-            entries[1].state,
+            entries[1].state(),
             vhdx_rs::section::BatState::SectorBitmap(
                 vhdx_rs::section::SectorBitmapState::NotPresent
             )
@@ -6881,7 +6909,7 @@ fn test_bat_4096_sector_total_entries_negative_hardcoded_512_regression() {
     // 如果 chunk_ratio=128（512扇区），索引 128 将是 SectorBitmap
     let entry_128 = bat.entry(128).expect("entry 128 should exist");
     assert!(
-        matches!(entry_128.state, vhdx_rs::section::BatState::Payload(_)),
+        matches!(entry_128.state(), vhdx_rs::section::BatState::Payload(_)),
         "index 128 should be Payload under 4096 sector (chunk_ratio=1024), not SectorBitmap"
     );
 }
@@ -6949,7 +6977,7 @@ fn test_read_dynamic_4096_sector_consistent_with_bat_state() {
     let bitmap_entry = bat.entry(4).expect("entry 4 should exist");
     assert!(
         matches!(
-            bitmap_entry.state,
+            bitmap_entry.state(),
             vhdx_rs::section::BatState::SectorBitmap(_)
         ),
         "index 4 should be SectorBitmap (chunk_ratio=32768, 4 payload per first chunk)"

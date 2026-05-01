@@ -135,11 +135,47 @@ pub enum LogReplayPolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParentChainInfo {
     /// 当前子盘路径
-    pub child: PathBuf,
+    child: PathBuf,
     /// 解析出的父盘路径
-    pub parent: PathBuf,
+    parent: PathBuf,
     /// 是否匹配 `parent_linkage` / `parent_linkage2`
-    pub linkage_matched: bool,
+    linkage_matched: bool,
+}
+
+impl ParentChainInfo {
+    /// 创建差分链校验结果
+    ///
+    /// # 参数
+    ///
+    /// - `child` — 当前子盘路径
+    /// - `parent` — 解析出的父盘路径
+    /// - `linkage_matched` — 是否匹配 `parent_linkage` / `parent_linkage2`
+    #[must_use]
+    pub fn new(child: PathBuf, parent: PathBuf, linkage_matched: bool) -> Self {
+        Self {
+            child,
+            parent,
+            linkage_matched,
+        }
+    }
+
+    /// 返回当前子盘路径
+    #[must_use]
+    pub fn child(&self) -> &Path {
+        &self.child
+    }
+
+    /// 返回解析出的父盘路径
+    #[must_use]
+    pub fn parent(&self) -> &Path {
+        &self.parent
+    }
+
+    /// 返回父盘 GUID 一致性校验结果
+    #[must_use]
+    pub const fn linkage_matched(&self) -> bool {
+        self.linkage_matched
+    }
 }
 
 impl File {
@@ -340,7 +376,7 @@ impl File {
                 // 查询 BAT 条目并根据状态决定读取策略
                 let bat_entry = self.sections.bat()?.entry(bat_payload_index);
                 match bat_entry {
-                    Some(entry) => match &entry.state {
+                    Some(entry) => match entry.state() {
                         BatState::Payload(state) => match state {
                             PayloadBlockState::FullyPresent | PayloadBlockState::Undefined
                                 if entry.file_offset() > 0 =>
@@ -379,7 +415,7 @@ impl File {
                                 let bitmap_offset =
                                     self.sections.bat()?.entry(bitmap_bat_index).and_then(|be| {
                                         if matches!(
-                                            be.state,
+                                            be.state(),
                                             BatState::SectorBitmap(SectorBitmapState::Present)
                                         ) && be.file_offset() > 0
                                         {
@@ -614,7 +650,7 @@ impl File {
     fn get_or_allocate_block(&self, bat_payload_index: u64, block_idx: u64) -> Result<u64> {
         let bat = self.sections.bat()?;
         match bat.entry(bat_payload_index) {
-            Some(entry) => match entry.state {
+            Some(entry) => match entry.state() {
                 BatState::Payload(state) => match state {
                     PayloadBlockState::FullyPresent
                     | PayloadBlockState::Undefined

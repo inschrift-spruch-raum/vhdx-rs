@@ -1,0 +1,12 @@
+Task-2 Build Evidence
+Timestamp: 2026-05-01T22:09:00+08:00
+
+COMMAND: cargo build
+WORKDIR: C:\Users\Raum\Documents\InfoBrain\program-poj\linkfs\vhdx-rs
+
+OUTPUT:
+   Compiling vhdx-rs v0.1.0 (C:\Users\Raum\Documents\InfoBrain\program-poj\linkfs\vhdx-rs)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.57s
+
+EXIT_CODE: 0
+CONCLUSION: PASS

@@ -1,0 +1,14 @@
+Task-3 API Surface Evidence
+Timestamp: 2026-05-01T22:09:25+08:00
+
+COMMAND: cargo test --test integration_test test_t9_section_module_import_paths
+WORKDIR: C:\Users\Raum\Documents\InfoBrain\program-poj\linkfs\vhdx-rs
+
+OUTPUT:
+running 1 test
+test test_t9_section_module_import_paths ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 159 filtered out
+
+EXIT_CODE: 0
+CONCLUSION: PASS

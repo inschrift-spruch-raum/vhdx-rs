@@ -1,0 +1,37 @@
+Task-5 Error Paths Evidence
+Timestamp: 2026-05-01T22:09:40+08:00
+
+COMMAND 1 (BAT error path):
+cargo test --test integration_test test_t7_validator_bat_rejects_notpresent_with_nonzero_offset
+RESULT:
+running 1 test
+test test_t7_validator_bat_rejects_notpresent_with_nonzero_offset ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 159 filtered out
+EXIT_CODE: 0
+
+COMMAND 2 (Metadata error path):
+cargo test --test integration_test test_t8_validator_required_metadata_rejects_required_unknown_item
+RESULT:
+running 1 test
+test test_t8_validator_required_metadata_rejects_required_unknown_item ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 159 filtered out
+EXIT_CODE: 0
+
+COMMAND 3 (Metadata missing required item):
+cargo test --test integration_test test_t8_validator_required_metadata_rejects_missing_known_required_item
+RESULT:
+running 1 test
+test test_t8_validator_required_metadata_rejects_missing_known_required_item ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 159 filtered out
+EXIT_CODE: 0
+
+COMMAND 4 (Log error path filters):
+cargo test --test integration_test t12_validator_log_rejects
+RESULT:
+running 2 tests
+test t12_validator_log_rejects_guid_mismatch ... ok
+test t12_validator_log_rejects_invalid_checksum ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 158 filtered out
+EXIT_CODE: 0
+
+CONCLUSION: PASS
