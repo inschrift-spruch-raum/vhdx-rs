@@ -57,32 +57,32 @@ vhdx::
 │   │   └── region_table(&self, index: usize) -> Option<RegionTable<'_>>  # 0=current, 1=rt1, 2=rt2
 │   │
 │   │   └── FileTypeIdentifier<'a>          # 文件类型标识符视图
-│   │       ├── signature: [u8; 8]
-│   │       └── creator: &'a [u8]
+│   │       ├── signature(&self) -> [u8; 8]
+│   │       └── creator(&self) -> &'a [u8]
 │   │
 │   │   └── HeaderStructure<'a>             # VHDX Header 视图
-│   │       ├── signature: [u8; 4]
-│   │       ├── checksum: u32
-│   │       ├── sequence_number: u64
-│   │       ├── file_write_guid: Guid
-│   │       ├── data_write_guid: Guid
-│   │       ├── log_guid: Guid
-│   │       ├── log_version: u16
-│   │       ├── version: u16
-│   │       ├── log_length: u32
-│   │       └── log_offset: u64
+│   │       ├── signature(&self) -> [u8; 4]
+│   │       ├── checksum(&self) -> u32
+│   │       ├── sequence_number(&self) -> u64
+│   │       ├── file_write_guid(&self) -> Guid
+│   │       ├── data_write_guid(&self) -> Guid
+│   │       ├── log_guid(&self) -> Guid
+│   │       ├── log_version(&self) -> u16
+│   │       ├── version(&self) -> u16
+│   │       ├── log_length(&self) -> u32
+│   │       └── log_offset(&self) -> u64
 │   │
 │   │   └── RegionTable<'a>                 # Region Table 视图
 │   │       └── RegionTableHeader<'a>       # Region Table Header 视图
-│   │           ├── signature: [u8; 4]
-│   │           ├── checksum: u32
-│   │           ├── entry_count: u32
-│   │           └── reserved: u32
+│   │           ├── signature(&self) -> [u8; 4]
+│   │           ├── checksum(&self) -> u32
+│   │           ├── entry_count(&self) -> u32
+│   │           └── reserved(&self) -> u32
 │   │       └── RegionTableEntry<'a>        # Region Table Entry 视图
-│   │           ├── guid: Guid
-│   │           ├── file_offset: u64
-│   │           ├── length: u32
-│   │           └── required: u32
+│   │           ├── guid(&self) -> Guid
+│   │           ├── file_offset(&self) -> u64
+│   │           ├── length(&self) -> u32
+│   │           └── required(&self) -> u32
 │   │
 │   ├── Bat<'a>                             # BAT Section
 │   │   ├── entry(&self, index: u64) -> Option<BatEntry>
@@ -90,8 +90,8 @@ vhdx::
 │   │   └── len(&self) -> usize
 │   │
 │   │   └── BatEntry                        # BAT Entry 结构体
-│   │       ├── state: BatState
-│   │       ├── file_offset_mb: u64
+│   │       ├── state(&self) -> BatState
+│   │       ├── file_offset_mb(&self) -> u64
 │   │
 │   │       └──BatState 枚举:                  # Entry 类型枚举
 │   │          ├── Payload(PayloadBlockState)
@@ -119,17 +119,17 @@ vhdx::
 │   │       └── entries(&self) -> Vec<TableEntry<'_>>
 │   │
 │   │       └── TableHeader<'a>
-│   │           ├── signature: [u8; 8]
-│   │           ├── reserved: [u8; 2]
-│   │           ├── entry_count: u16
-│   │           └── reserved2: [u8; 20]
+│   │           ├── signature(&self) -> [u8; 8]
+│   │           ├── reserved(&self) -> [u8; 2]
+│   │           ├── entry_count(&self) -> u16
+│   │           └── reserved2(&self) -> [u8; 20]
 │   │
 │   │       └── TableEntry<'a>
-│   │           ├── item_id: Guid
-│   │           ├── offset: u32
-│   │           ├── length: u32
-│   │           ├── flags: u32
-│   │           └── reserved: u32
+│   │           ├── item_id(&self) -> Guid
+│   │           ├── offset(&self) -> u32
+│   │           ├── length(&self) -> u32
+│   │           ├── flags_bits(&self) -> u32
+│   │           └── reserved(&self) -> u32
 │   │           └── flags(&self) -> EntryFlags
 │   │
 │   │           └── EntryFlags
@@ -158,15 +158,15 @@ vhdx::
 │   │           └── resolve_parent_path(&self) -> Option<PathBuf> # 按 relative_path->volume_path->absolute_win32_path 顺序解析
 │   │
 │   │           └── LocatorHeader<'a>
-│   │               ├── locator_type: Guid
-│   │               ├── reserved: u16
-│   │               └── key_value_count: u16
+│   │               ├── locator_type(&self) -> Guid
+│   │               ├── reserved(&self) -> u16
+│   │               └── key_value_count(&self) -> u16
 │   │
 │   │           └── KeyValueEntry<'a>
-│   │               ├── key_offset: u32
-│   │               ├── value_offset: u32
-│   │               ├── key_length: u16
-│   │               ├── value_length: u16
+│   │               ├── key_offset(&self) -> u32
+│   │               ├── value_offset(&self) -> u32
+│   │               ├── key_length(&self) -> u16
+│   │               ├── value_length(&self) -> u16
 │   │               ├── key(&self, data: &[u8]) -> Option<String>
 │   │               └── value(&self, data: &[u8]) -> Option<String>
 │   │
@@ -186,36 +186,36 @@ vhdx::
 │               └── Zero(ZeroDescriptor<'a>)    # Zero Descriptor 变体
 │    
 │               └── DataDescriptor<'a>      # Data Descriptor
-│                   ├── signature: [u8; 4]
-│                   ├── trailing_bytes: u32
-│                   ├── leading_bytes: u64
-│                   ├── file_offset: u64
-│                   └── sequence_number: u64
+│                   ├── signature(&self) -> [u8; 4]
+│                   ├── trailing_bytes(&self) -> u32
+│                   ├── leading_bytes(&self) -> u64
+│                   ├── file_offset(&self) -> u64
+│                   └── sequence_number(&self) -> u64
 │    
 │               └── ZeroDescriptor<'a>      # Zero Descriptor
-│                   ├── signature: [u8; 4]
-│                   ├── reserved: u32
-│                   ├── zero_length: u64
-│                   ├── file_offset: u64
-│                   └── sequence_number: u64
+│                   ├── signature(&self) -> [u8; 4]
+│                   ├── reserved(&self) -> u32
+│                   ├── zero_length(&self) -> u64
+│                   ├── file_offset(&self) -> u64
+│                   └── sequence_number(&self) -> u64
 │    
 │           └── LogEntryHeader<'a>          # Log Entry Header
-│               ├── signature: [u8; 4]
-│               ├── checksum: u32
-│               ├── entry_length: u32
-│               ├── tail: u32
-│               ├── sequence_number: u64
-│               ├── descriptor_count: u32
-│               ├── reserved: u32
-│               ├── log_guid: Guid
-│               ├── flushed_file_offset: u64
-│               └── last_file_offset: u64
+│               ├── signature(&self) -> [u8; 4]
+│               ├── checksum(&self) -> u32
+│               ├── entry_length(&self) -> u32
+│               ├── tail(&self) -> u32
+│               ├── sequence_number(&self) -> u64
+│               ├── descriptor_count(&self) -> u32
+│               ├── reserved(&self) -> u32
+│               ├── log_guid(&self) -> Guid
+│               ├── flushed_file_offset(&self) -> u64
+│               └── last_file_offset(&self) -> u64
 │    
 │           └── DataSector<'a>              # Data Sector
-│               ├── signature: [u8; 4]
-│               ├── sequence_high: u32
-│               ├── data: &'a [u8]
-│               └── sequence_low: u32
+│               ├── signature(&self) -> [u8; 4]
+│               ├── sequence_high(&self) -> u32
+│               ├── data(&self) -> &'a [u8]
+│               └── sequence_low(&self) -> u32
 │    
 ├── IO<'a>                                  # IO模块 (扇区级操作)
 │   └── sector(&self, sector: u64) -> Option<Sector<'_>>  # 输入: 全局扇区号
@@ -234,9 +234,9 @@ vhdx::
 │   ├── InMemoryOnReadOnly                  # 只读场景以内存方式回放
 │   └── ReadOnlyNoReplay                    # 只读打开且不回放日志（允许带未回放日志读取元数据）
 ├── ParentChainInfo                         # 差分链校验结果
-│   ├── child: PathBuf                      # 当前子盘路径
-│   ├── parent: PathBuf                     # 解析出的父盘路径
-│   └── linkage_matched: bool               # 是否匹配 parent_linkage / parent_linkage2
+│   ├── child(&self) -> PathBuf             # 当前子盘路径
+│   ├── parent(&self) -> PathBuf            # 解析出的父盘路径
+│   └── linkage_matched(&self) -> bool      # 是否匹配 parent_linkage / parent_linkage2
 │
 └── Error                                   # 错误类型
     ├── Io(std::io::Error)                  # 底层 IO 错误
@@ -380,11 +380,11 @@ pub enum LogReplayPolicy {
 /// 差分链校验结果
 pub struct ParentChainInfo {
     /// 当前子盘路径
-    pub child: PathBuf,
+    pub fn child(&self) -> PathBuf,
     /// 解析出的父盘路径
-    pub parent: PathBuf,
+    pub fn parent(&self) -> PathBuf,
     /// 是否匹配 parent_linkage / parent_linkage2
-    pub linkage_matched: bool,
+    pub fn linkage_matched(&self) -> bool,
 }
 ```
 
@@ -491,10 +491,10 @@ pub mod validation {
 
     /// 可选：结构化校验问题（用于诊断/报告）
     pub struct ValidationIssue {
-        pub section: &'static str,
-        pub code: &'static str,
-        pub message: String,
-        pub spec_ref: &'static str,
+        pub fn section(&self) -> &'static str,
+        pub fn code(&self) -> &'static str,
+        pub fn message(&self) -> String,
+        pub fn spec_ref(&self) -> &'static str,
     }
 }
 ```
@@ -560,45 +560,45 @@ impl<'a> Header<'a> {
 
 /// File Type Identifier (8 bytes signature + 512 bytes creator) (64KB)
 pub struct FileTypeIdentifier<'a> {
-    pub signature: [u8; 8],
-    pub creator: &'a [u8],
+    pub fn signature(&self) -> [u8; 8],
+    pub fn creator(&self) -> &'a [u8],
 }
 
 /// VHDX Header 视图（4KB）
 pub struct HeaderStructure<'a> {
-    pub signature: [u8; 4],
-    pub checksum: u32,
-    pub sequence_number: u64,
-    pub file_write_guid: Guid,
-    pub data_write_guid: Guid,
-    pub log_guid: Guid,
-    pub log_version: u16,
-    pub version: u16,
-    pub log_length: u32,
-    pub log_offset: u64,
-    pub raw: &'a [u8],
+    pub fn signature(&self) -> [u8; 4],
+    pub fn checksum(&self) -> u32,
+    pub fn sequence_number(&self) -> u64,
+    pub fn file_write_guid(&self) -> Guid,
+    pub fn data_write_guid(&self) -> Guid,
+    pub fn log_guid(&self) -> Guid,
+    pub fn log_version(&self) -> u16,
+    pub fn version(&self) -> u16,
+    pub fn log_length(&self) -> u32,
+    pub fn log_offset(&self) -> u64,
+    pub fn raw(&self) -> &'a [u8],
 }
 
 /// Region Table 视图（64KB）
 pub struct RegionTable<'a> {
-    pub header: RegionTableHeader<'a>,
-    pub entries: Vec<RegionTableEntry<'a>>,
+    pub fn header(&self) -> RegionTableHeader<'a>,
+    pub fn entries(&self) -> Vec<RegionTableEntry<'a>>,
 }
 
 pub struct RegionTableHeader<'a> {
-    pub signature: [u8; 4],
-    pub checksum: u32,
-    pub entry_count: u32,
-    pub reserved: u32,
-    pub raw: &'a [u8],
+    pub fn signature(&self) -> [u8; 4],
+    pub fn checksum(&self) -> u32,
+    pub fn entry_count(&self) -> u32,
+    pub fn reserved(&self) -> u32,
+    pub fn raw(&self) -> &'a [u8],
 }
 
 pub struct RegionTableEntry<'a> {
-    pub guid: Guid,
-    pub file_offset: u64,
-    pub length: u32,
-    pub required: u32,
-    pub raw: &'a [u8],
+    pub fn guid(&self) -> Guid,
+    pub fn file_offset(&self) -> u64,
+    pub fn length(&self) -> u32,
+    pub fn required(&self) -> u32,
+    pub fn raw(&self) -> &'a [u8],
 }
 ```
 
@@ -629,9 +629,9 @@ impl<'a> Bat<'a> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BatEntry {
     /// Entry 类型和状态
-    pub state: BatState,
+    pub fn state(&self) -> BatState,
     /// 文件偏移（MB为单位）
-    pub file_offset_mb: u64,
+    pub fn file_offset_mb(&self) -> u64,
 }
 
 /// BAT Entry 类型枚举
@@ -694,21 +694,21 @@ impl<'a> MetadataTable<'a> {
 
 /// Table Header (32字节)
 pub struct TableHeader<'a> {
-    pub signature: [u8; 8],
-    pub reserved: [u8; 2],
-    pub entry_count: u16,
-    pub reserved2: [u8; 20],
-    pub raw: &'a [u8],
+    pub fn signature(&self) -> [u8; 8],
+    pub fn reserved(&self) -> [u8; 2],
+    pub fn entry_count(&self) -> u16,
+    pub fn reserved2(&self) -> [u8; 20],
+    pub fn raw(&self) -> &'a [u8],
 }
 
 /// Table Entry (32字节)
 pub struct TableEntry<'a> {
-    pub item_id: Guid,
-    pub offset: u32,
-    pub length: u32,
-    pub flags: u32,
-    pub reserved: u32,
-    pub raw: &'a [u8],
+    pub fn item_id(&self) -> Guid,
+    pub fn offset(&self) -> u32,
+    pub fn length(&self) -> u32,
+    pub fn flags_bits(&self) -> u32,
+    pub fn reserved(&self) -> u32,
+    pub fn raw(&self) -> &'a [u8],
 }
 
 impl<'a> TableEntry<'a> {
@@ -756,9 +756,9 @@ impl<'a> MetadataItems<'a> {
 
 /// File Parameters (8字节)
 pub struct FileParameters<'a> {
-    pub block_size: u32,
-    pub flags: u32,
-    pub raw: &'a [u8],
+    pub fn block_size(&self) -> u32,
+    pub fn flags(&self) -> u32,
+    pub fn raw(&self) -> &'a [u8],
 }
 
 impl<'a> FileParameters<'a> {
@@ -796,19 +796,19 @@ impl<'a> ParentLocator<'a> {
 
 /// Locator Header (20字节)
 pub struct LocatorHeader<'a> {
-    pub locator_type: Guid,
-    pub reserved: u16,
-    pub key_value_count: u16,
-    pub raw: &'a [u8],
+    pub fn locator_type(&self) -> Guid,
+    pub fn reserved(&self) -> u16,
+    pub fn key_value_count(&self) -> u16,
+    pub fn raw(&self) -> &'a [u8],
 }
 
 /// Key-Value Entry (12字节)
 pub struct KeyValueEntry<'a> {
-    pub key_offset: u32,
-    pub value_offset: u32,
-    pub key_length: u16,
-    pub value_length: u16,
-    pub raw: &'a [u8],
+    pub fn key_offset(&self) -> u32,
+    pub fn value_offset(&self) -> u32,
+    pub fn key_length(&self) -> u16,
+    pub fn value_length(&self) -> u16,
+    pub fn raw(&self) -> &'a [u8],
 }
 
 impl<'a> KeyValueEntry<'a> {
@@ -900,46 +900,46 @@ pub enum Descriptor<'a> {
 
 /// Data Descriptor (32字节)
 pub struct DataDescriptor<'a> {
-    pub signature: [u8; 4],
-    pub trailing_bytes: u32,
-    pub leading_bytes: u64,
-    pub file_offset: u64,
-    pub sequence_number: u64,
-    pub raw: &'a [u8],
+    pub fn signature(&self) -> [u8; 4],
+    pub fn trailing_bytes(&self) -> u32,
+    pub fn leading_bytes(&self) -> u64,
+    pub fn file_offset(&self) -> u64,
+    pub fn sequence_number(&self) -> u64,
+    pub fn raw(&self) -> &'a [u8],
 }
 
 /// Zero Descriptor (32字节)
 pub struct ZeroDescriptor<'a> {
-    pub signature: [u8; 4],
-    pub reserved: u32,
-    pub zero_length: u64,
-    pub file_offset: u64,
-    pub sequence_number: u64,
-    pub raw: &'a [u8],
+    pub fn signature(&self) -> [u8; 4],
+    pub fn reserved(&self) -> u32,
+    pub fn zero_length(&self) -> u64,
+    pub fn file_offset(&self) -> u64,
+    pub fn sequence_number(&self) -> u64,
+    pub fn raw(&self) -> &'a [u8],
 }
 
 /// Log Entry Header (64字节)
 pub struct LogEntryHeader<'a> {
-    pub signature: [u8; 4],
-    pub checksum: u32,
-    pub entry_length: u32,
-    pub tail: u32,
-    pub sequence_number: u64,
-    pub descriptor_count: u32,
-    pub reserved: u32,
-    pub log_guid: Guid,
-    pub flushed_file_offset: u64,
-    pub last_file_offset: u64,
-    pub raw: &'a [u8],
+    pub fn signature(&self) -> [u8; 4],
+    pub fn checksum(&self) -> u32,
+    pub fn entry_length(&self) -> u32,
+    pub fn tail(&self) -> u32,
+    pub fn sequence_number(&self) -> u64,
+    pub fn descriptor_count(&self) -> u32,
+    pub fn reserved(&self) -> u32,
+    pub fn log_guid(&self) -> Guid,
+    pub fn flushed_file_offset(&self) -> u64,
+    pub fn last_file_offset(&self) -> u64,
+    pub fn raw(&self) -> &'a [u8],
 }
 
 /// Data Sector (4KB)
 pub struct DataSector<'a> {
-    pub signature: [u8; 4],
-    pub sequence_high: u32,
-    pub data: &'a [u8],
-    pub sequence_low: u32,
-    pub raw: &'a [u8],
+    pub fn signature(&self) -> [u8; 4],
+    pub fn sequence_high(&self) -> u32,
+    pub fn data(&self) -> &'a [u8],
+    pub fn sequence_low(&self) -> u32,
+    pub fn raw(&self) -> &'a [u8],
 }
 ```
 
@@ -970,8 +970,8 @@ impl<'a> IO<'a> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sector<'a> {
     // 简单类型字段: 块内扇区索引
-    pub block_sector_index: u32,
-    pub payload: PayloadBlock<'a>,
+    pub fn block_sector_index(&self) -> u32,
+    pub fn payload_ref(&self) -> PayloadBlock<'a>,
 }
 
 impl<'a> Sector<'a> {
@@ -992,7 +992,7 @@ impl<'a> Sector<'a> {
 /// 用户通过Sector访问，不直接操作
 #[derive(Clone, Debug, PartialEq)]
 pub struct PayloadBlock<'a> {
-    pub bytes: &'a [u8],
+    pub fn bytes(&self) -> &'a [u8],
 }
 ```
 
@@ -1062,8 +1062,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // 访问Header Section
     let header = sections.header()?;
-    println!("File Type: {:?}", header.file_type().signature);
-    println!("Current Header Seq: {}", header.header(0).unwrap().sequence_number);
+    println!("File Type: {:?}", header.file_type().signature());
+    println!("Current Header Seq: {}", header.header(0).unwrap().sequence_number());
     
     // 访问Metadata Section（结构化访问）
     let metadata = sections.metadata()?;
@@ -1080,7 +1080,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     
     // 结构化访问：具体结构
-    println!("Metadata Entry count: {}", metadata.table().header().entry_count);
+    println!("Metadata Entry count: {}", metadata.table().header().entry_count());
     
     Ok(())
 }
@@ -1099,14 +1099,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 遍历前10个BAT Entries
     for i in 0..10.min(bat.len() as u64) {
         if let Some(entry) = bat.entry(i) {
-            match entry.state {
+            match entry.state() {
                 BatState::Payload(state) => {
                     println!("Block {}: Payload State={:?}, Offset={}MB",
-                        i, state, entry.file_offset_mb);
+                        i, state, entry.file_offset_mb());
                 }
                 BatState::SectorBitmap(state) => {
                     println!("Block {}: SectorBitmap State={:?}, Offset={}MB",
-                        i, state, entry.file_offset_mb);
+                        i, state, entry.file_offset_mb());
                 }
             }
         }
@@ -1214,9 +1214,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let summary = format!(
         "seq={}\nlog_length={}\nmetadata_entries={}\n",
-        current_header.sequence_number,
-        current_header.log_length,
-        metadata.table().header().entry_count,
+        current_header.sequence_number(),
+        current_header.log_length(),
+        metadata.table().header().entry_count(),
     );
 
     let mut summary_file = StdFile::create("section_summary.txt")?;
@@ -1247,7 +1247,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             if let Some(locator) = metadata.items().parent_locator() {
                 file.validator().validate_parent_locator()?;
-                println!("Parent Locator Entries: {}", locator.header().key_value_count);
+                println!("Parent Locator Entries: {}", locator.header().key_value_count());
                 for (i, entry) in locator.entries().iter().enumerate() {
                     let key = entry.key(locator.key_value_data()).unwrap_or_default();
                     let value = entry.value(locator.key_value_data()).unwrap_or_default();
