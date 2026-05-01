@@ -1,5 +1,0 @@
-# Task 14 验证日志（错误/限制记录）
-
-- grep 工具当前环境不可用（缺少 rg 可执行文件），本任务改用 Read + 定位行号完成实现/文档对照。
-- lsp_diagnostics 受环境限制（rust-analyzer 缺失，见 notepad 历史 issue），无法给出 LSP 诊断输出。
-- 已按任务要求执行 `cargo test --workspace` 作为回归验证。

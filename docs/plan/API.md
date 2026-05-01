@@ -7,13 +7,13 @@
 ## API 树
 
 ```
-vhdx_rs::
+vhdx::
 ├── File                                    # 核心 API
 │   ├── open(path) -> File::OpenOptions     # 链式打开
 │   ├── create(path) -> File::CreateOptions # 链式创建
 │   ├── sections(&self) -> &Sections<'_>    # 获取所有sections
 │   ├── io(&self) -> IO<'_>                 # 获取IO模块
-│   ├── validator(&self) -> SpecValidator<'_>           # 获取规范校验器（根模块直出，等价 validation::SpecValidator<'_>）
+│   ├── validator(&self) -> validation::SpecValidator  # 获取规范校验器
 │   └── inner(&self) -> &std::fs::File
 │
 │   └── OpenOptions                         # 关联类型：打开选项
@@ -32,7 +32,7 @@ vhdx_rs::
 │       └── finish(self) -> Result<File>       # 完成创建
 │
 ├── validation::                             # 规范一致性校验模块（只读）
-│   ├── SpecValidator<'a>                    # 规范校验器（生命周期绑定到 File 借用）
+│   ├── SpecValidator                        # 规范校验器
 │   │   ├── validate_file(&self) -> Result<()> # 总入口（Header/Region/BAT/Metadata/Log）
 │   │   ├── validate_header(&self) -> Result<()>
 │   │   ├── validate_region_table(&self) -> Result<()>
@@ -70,9 +70,7 @@ vhdx_rs::
 │   │       ├── log_version: u16
 │   │       ├── version: u16
 │   │       ├── log_length: u32
-│   │       ├── log_offset: u64
-│   │       ├── new(data: &'a [u8]) -> Result<HeaderStructure<'a>>
-│   │       └── create(...) -> Vec<u8>      # 产物是可写盘的 4KB 序列化字节缓冲，不是结构视图
+│   │       └── log_offset: u64
 │   │
 │   │   └── RegionTable<'a>                 # Region Table 视图
 │   │       └── RegionTableHeader<'a>       # Region Table Header 视图
@@ -240,55 +238,20 @@ vhdx_rs::
 │   ├── parent: PathBuf                     # 解析出的父盘路径
 │   └── linkage_matched: bool               # 是否匹配 parent_linkage / parent_linkage2
 │
-└── Error                                   # 错误类型（契约核心 + 实现扩展，向后兼容）
-    ├── Io(std::io::Error)                                  # contract core
-    ├── InvalidFile(String)                                 # contract core
-    ├── CorruptedHeader(String)                             # contract core
-    ├── InvalidChecksum { expected: u32, actual: u32 }      # contract core
-    ├── UnsupportedVersion(u16)                             # contract core
-    ├── InvalidBlockState(u8)                               # contract core
-    ├── ParentNotFound { path: PathBuf }                    # contract core
-    ├── ParentMismatch { expected: Guid, actual: Guid }     # contract core
-    ├── LogReplayRequired                                   # contract core
-    ├── InvalidParameter(String)                            # contract core
-    ├── MetadataNotFound { guid: Guid }                     # contract core
-    ├── ReadOnly                                            # contract core
-    ├── FileLocked                                          # implementation extension
-    ├── InvalidSignature { expected: String, found: String }# implementation extension
-    ├── BatEntryNotFound { index: u64 }                     # implementation extension
-    ├── InvalidRegionTable(String)                          # implementation extension
-    ├── InvalidMetadata(String)                             # implementation extension
-    ├── LogEntryCorrupted(String)                           # implementation extension
-    ├── SectorOutOfBounds { sector: u64, max: u64 }         # implementation extension
-    └── BlockNotPresent { block_idx: u64, state: String }    # implementation extension
+└── Error                                   # 错误类型
+    ├── Io(std::io::Error)
+    ├── InvalidFile(String)
+    ├── CorruptedHeader(String)
+    ├── InvalidChecksum { expected: u32, actual: u32 }
+    ├── UnsupportedVersion(u16)
+    ├── InvalidBlockState(u8)
+    ├── ParentNotFound { path: PathBuf }
+    ├── ParentMismatch { expected: Guid, actual: Guid }
+    ├── LogReplayRequired
+    ├── InvalidParameter(String)
+    ├── MetadataNotFound { guid: Guid }
+    └── ReadOnly
 ```
-
-### Error 语义映射说明
-
-为保持 API 计划与实现对齐，本项目将 `Error` 解释为两层。
-
-1. **contract core**，计划中最小语义集合，覆盖调用方必须稳定处理的主路径。
-2. **implementation extension**，实现按模块细化的扩展语义，用于提供更准确诊断。
-
-实现是计划的超集，但兼容性不受破坏。原因如下。
-
-- 未删除任何 core 变体。
-- 未重命名任何既有变体。
-- 仅新增更细粒度变体，语义上都可归并回 core 分组。
-
-调用方建议按语义分组处理，而不是只按名称做一一绑定。
-
-| 语义分组 | contract core（计划） | implementation extension（实现扩展） |
-|---|---|---|
-| IO / 访问 | `Io` | `FileLocked` |
-| 文件/结构完整性 | `InvalidFile`, `CorruptedHeader`, `InvalidChecksum`, `UnsupportedVersion` | `InvalidSignature`, `InvalidRegionTable`, `InvalidMetadata`, `LogEntryCorrupted` |
-| BAT / 块状态 | `InvalidBlockState` | `BatEntryNotFound`, `BlockNotPresent`, `SectorOutOfBounds` |
-| 差分链 | `ParentNotFound`, `ParentMismatch` | 无 |
-| 日志回放流程 | `LogReplayRequired` | 无 |
-| 参数与调用状态 | `InvalidParameter`, `ReadOnly` | 无 |
-| 元数据查询 | `MetadataNotFound` | 无 |
-
-结论：`Error` 当前实现是计划语义的 **compatible superset**，对外兼容性保持不变。
 
 ### CLI 工具树
 
@@ -348,7 +311,7 @@ impl File {
     /// 获取规范校验器（只读）
     ///
     /// 说明：校验逻辑被独立到 validation 模块，避免与 File 的打开/创建职责耦合。
-    pub fn validator(&self) -> validation::SpecValidator<'_>;
+    pub fn validator(&self) -> validation::SpecValidator;
     
     /// 获取底层文件句柄（std::fs::File）
     /// 可用于诊断或结构导出；不得用于虚拟磁盘 payload 数据面读写。
@@ -473,9 +436,9 @@ pub mod validation {
     ///
     /// 职责：将 `validate_spec_compliance` 的规则独立在单一模块中，
     /// 便于按 MS-VHDX 章节维护与测试。
-    pub struct SpecValidator<'a>;
+    pub struct SpecValidator;
 
-    impl<'a> SpecValidator<'a> {
+    impl SpecValidator {
         /// 总入口：执行全部结构校验
         ///
         /// 对应 MS-VHDX 规范章节：
@@ -607,24 +570,6 @@ pub struct HeaderStructure<'a> {
     pub log_length: u32,
     pub log_offset: u64,
     pub raw: &'a [u8],
-}
-
-impl<'a> HeaderStructure<'a> {
-    /// 从 4KB 原始字节解析 Header 结构
-    pub fn new(data: &'a [u8]) -> Result<Self>;
-
-    /// 构造用于落盘的 Header 原始字节，并写入 CRC32C
-    ///
-    /// 返回值是可直接写盘的 4KB `Vec<u8>` 二进制缓冲区，
-    /// 不是 `HeaderStructure<'a>` 视图对象，也不携带借用语义。
-    pub fn create(
-        sequence_number: u64,
-        file_write_guid: Guid,
-        data_write_guid: Guid,
-        log_guid: Guid,
-        log_length: u32,
-        log_offset: u64,
-    ) -> Vec<u8>;
 }
 
 /// Region Table 视图（64KB）
@@ -926,8 +871,6 @@ impl<'a> Log<'a> {
 /// Log Entry（组合结构，包含header、descriptors和sectors）
 pub struct Entry<'a>;
 
-/// 说明：公开导出中 `section::Entry` 是 `section::LogEntry` 的兼容别名。
-
 impl<'a> Entry<'a> {
     /// 获取Log Entry Header
     pub fn header(&self) -> LogEntryHeader<'_>;
@@ -1096,7 +1039,7 @@ mod log;
 ### 1. 只读打开
 
 ```rust
-use vhdx_rs::{File, LogReplayPolicy};
+use vhdx::{File, LogReplayPolicy};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 只读打开（默认）
@@ -1139,8 +1082,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 2. 遍历 BAT
 
 ```rust
-use vhdx_rs::File;
-use vhdx_rs::section::BatState;
+use vhdx::File;
+use vhdx::section::BatState;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file = File::open("disk.vhdx").finish()?;
@@ -1169,7 +1112,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 2a. 使用独立校验器（分项校验）
 
 ```rust
-use vhdx_rs::File;
+use vhdx::File;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file = File::open("disk.vhdx").finish()?;
@@ -1190,7 +1133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 3. 创建动态磁盘
 
 ```rust
-use vhdx_rs::File;
+use vhdx::File;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 创建 10GB 动态磁盘（默认：非固定、无父磁盘）
@@ -1223,7 +1166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 3a. 创建固定磁盘
 
 ```rust
-use vhdx_rs::File;
+use vhdx::File;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 创建 10GB 固定磁盘
@@ -1249,7 +1192,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 4. 导出结构化 Section 信息
 
 ```rust
-use vhdx_rs::File;
+use vhdx::File;
 use std::fs::File as StdFile;
 use std::io::Write;
 
@@ -1281,7 +1224,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 5. 检查磁盘类型
 
 ```rust
-use vhdx_rs::File;
+use vhdx::File;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file = File::open("diff.vhdx")

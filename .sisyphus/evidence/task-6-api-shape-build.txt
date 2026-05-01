@@ -1,2 +1,0 @@
-   Compiling vhdx-tool v0.1.0 (C:\Users\Raum\Documents\InfoBrain\program-poj\linkfs\vhdx-rs\vhdx-cli)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.61s

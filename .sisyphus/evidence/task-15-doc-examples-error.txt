@@ -1,5 +1,0 @@
-Task 15 diagnostics limitations / errors
-
-- lsp_diagnostics for Markdown files is unavailable in current environment, cannot run diagnostics on docs/plan/API.md.
-- grep/glob helper tools configured with rg are unavailable in this runtime; used PowerShell Select-String and direct file reads as fallback.
-- No functional test failures observed.
