@@ -13,7 +13,7 @@ vhdx::
 │   ├── create(path) -> File::CreateOptions # 链式创建
 │   ├── sections(&self) -> &Sections<'_>    # 获取所有sections
 │   ├── io(&self) -> IO<'_>                 # 获取IO模块
-│   ├── validator(&self) -> validation::SpecValidator  # 获取规范校验器
+│   ├── validator(&self) -> validation::SpecValidator<'_>  # 获取规范校验器
 │   └── inner(&self) -> &std::fs::File
 │
 │   └── OpenOptions                         # 关联类型：打开选项
@@ -32,7 +32,7 @@ vhdx::
 │       └── finish(self) -> Result<File>       # 完成创建
 │
 ├── validation::                             # 规范一致性校验模块（只读）
-│   ├── SpecValidator                        # 规范校验器
+│   ├── SpecValidator<'a>                    # 规范校验器
 │   │   ├── validate_file(&self) -> Result<()> # 总入口（Header/Region/BAT/Metadata/Log）
 │   │   ├── validate_header(&self) -> Result<()>
 │   │   ├── validate_region_table(&self) -> Result<()>
@@ -318,7 +318,7 @@ impl File {
     /// 获取规范校验器（只读）
     ///
     /// 说明：校验逻辑被独立到 validation 模块，避免与 File 的打开/创建职责耦合。
-    pub fn validator(&self) -> validation::SpecValidator;
+    pub fn validator(&self) -> validation::SpecValidator<'_>;
     
     /// 获取底层文件句柄（std::fs::File）
     /// 可用于诊断或结构导出；不得用于虚拟磁盘 payload 数据面读写。
@@ -443,9 +443,9 @@ pub mod validation {
     ///
     /// 职责：将 `validate_spec_compliance` 的规则独立在单一模块中，
     /// 便于按 MS-VHDX 章节维护与测试。
-    pub struct SpecValidator;
+    pub struct SpecValidator<'a>;
 
-    impl SpecValidator {
+    impl<'a> SpecValidator<'a> {
         /// 总入口：执行全部结构校验
         ///
         /// 对应 MS-VHDX 规范章节：

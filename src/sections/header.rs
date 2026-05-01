@@ -128,7 +128,7 @@ impl Header<'_> {
         }
     }
 
-    /// 获取指定索引的区域表（MS-VHDX §2.2.3），index=0 或 1 返回表 1，index=2 返回表 2
+    /// 获取指定索引的区域表（MS-VHDX §2.2.3）
     #[must_use]
     pub fn region_table(&self, index: usize) -> Option<RegionTable<'_>> {
         let offset = match index {
