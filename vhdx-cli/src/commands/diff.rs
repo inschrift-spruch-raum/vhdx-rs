@@ -17,9 +17,10 @@ use crate::cli::DiffCommand;
 /// - `file`: VHDX 文件路径
 /// - `command`: 差分操作类型（查看父磁盘或磁盘链）
 pub fn cmd_diff(file: &Path, command: &DiffCommand) {
-    use vhdx_rs::File;
+    use vhdx_rs::{File, LogReplayPolicy};
 
-    match File::open(file).finish() {
+    // 显式使用 Auto 策略：只读打开时内存回放日志，保证元数据一致性
+    match File::open(file).log_replay(LogReplayPolicy::Auto).finish() {
         Ok(vhdx_file) => {
             // 检查是否存在未完成的日志条目
             if vhdx_file
@@ -76,7 +77,7 @@ pub fn cmd_diff(file: &Path, command: &DiffCommand) {
 /// 链路顺序：child -> parent -> ... -> base。
 /// 检测缺失父盘与循环引用，遇到问题时输出错误并 exit(1)。
 fn walk_chain(start: &Path) {
-    use vhdx_rs::File;
+    use vhdx_rs::{File, LogReplayPolicy};
 
     println!("Disk Chain:");
     println!("  -> {}", start.display());
@@ -94,7 +95,10 @@ fn walk_chain(start: &Path) {
     let mut current = start.to_path_buf();
 
     loop {
-        let Ok(vhdx) = File::open(&current).finish() else {
+        let Ok(vhdx) = File::open(&current)
+            .log_replay(LogReplayPolicy::Auto)
+            .finish()
+        else {
             // 无法打开文件（理论上不应发生在首次迭代之后）
             break;
         };

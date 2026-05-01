@@ -15,15 +15,17 @@ use std::path::Path;
 /// - `file`: 要修复的 VHDX 文件路径
 /// - `dry_run`: 为 true 时仅检查，不实际修复
 pub fn cmd_repair(file: &Path, dry_run: bool) {
-    use vhdx_rs::Error;
-    use vhdx_rs::File;
+    use vhdx_rs::{Error, File, LogReplayPolicy};
 
     println!("Repairing VHDX file: {}", file.display());
 
-    // dry-run 模式：只检查不修改
+    // dry-run 模式：只检查不修改，使用只读内存回放确保不落盘
     if dry_run {
         println!("Dry run mode - no changes will be made");
-        match File::open(file).finish() {
+        match File::open(file)
+            .log_replay(LogReplayPolicy::InMemoryOnReadOnly)
+            .finish()
+        {
             Ok(vhdx_file) => {
                 if vhdx_file
                     .sections()
@@ -43,8 +45,12 @@ pub fn cmd_repair(file: &Path, dry_run: bool) {
         }
     }
 
-    // 正常修复模式：以读写方式打开并重放日志
-    match File::open(file).write().finish() {
+    // 正常修复模式：以读写方式打开，显式使用 Require 策略
+    match File::open(file)
+        .write()
+        .log_replay(LogReplayPolicy::Require)
+        .finish()
+    {
         Ok(_) => {
             println!("\u{2713} File repaired successfully");
             println!("\u{2713} Log entries replayed");

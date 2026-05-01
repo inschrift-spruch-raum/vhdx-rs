@@ -18,7 +18,7 @@ vhdx::
 │
 │   └── OpenOptions                         # 关联类型：打开选项
 │       ├── write(self) -> Self             # 启用写权限（RW）
-│       ├── strict(self, bool) -> Self      # 是否严格校验 required unknown（默认 true）
+│       ├── strict(self, bool) -> Self      # 是否启用严格模式（默认 true，required unknown 始终失败）
 │       ├── log_replay(self, LogReplayPolicy) -> Self # 日志回放策略
 │       └── finish(self) -> Result<File>    # 完成打开
 │
@@ -332,7 +332,9 @@ impl File::OpenOptions {
 
     /// 设置严格模式
     ///
-    /// strict=true 时，遇到 required 但无法识别的 region / metadata item 必须失败。
+    /// strict=true 时启用严格校验。
+    /// strict=false 仅放宽 optional unknown，
+    /// required unknown（region / metadata）仍必须失败。
     pub fn strict(self, strict: bool) -> Self;
 
     /// 设置日志回放策略（默认 `LogReplayPolicy::Require`）
@@ -341,7 +343,7 @@ impl File::OpenOptions {
     /// 完成打开操作
     ///
     /// 规范约束：
-    /// - 若日志非空且策略为 `Require`，必须先完成 replay，否则返回 `Error::LogReplayRequired`。
+    /// - 若日志非空且策略为 `Require`，必须拒绝打开并返回 `Error::LogReplayRequired`。
     /// - 若策略为 `ReadOnlyNoReplay`，允许只读打开但不回放日志；
     ///   此时仅保证结构读取（Header/Region/Metadata 等），不保证 payload 数据面一致性。
     pub fn finish(self) -> Result<File>;
@@ -445,6 +447,7 @@ pub mod validation {
         /// - Log: §2.3
         /// - BAT: §2.5
         /// - Metadata: §2.6
+        /// - Differencing: 在 has_parent=true 时覆盖 Parent Locator + Parent Chain
         pub fn validate_file(&self) -> Result<()>;
 
         /// Header Section 校验（签名/CRC/current header/version/log 对齐）

@@ -69,6 +69,7 @@ impl<'a> SpecValidator<'a> {
         self.validate_required_metadata_items()?;
         if self.file.has_parent() {
             self.validate_parent_locator()?;
+            self.validate_parent_chain()?;
         }
         self.validate_log()?;
         Ok(())
@@ -326,14 +327,17 @@ impl<'a> SpecValidator<'a> {
     /// - 表头签名必须为 `"metadata"`
     /// - 保留字段必须为零
     /// - 表项数量不得超过 2047
-    /// - 已解析表项数量与表头声明的 entry_count 一致
+    /// - 已解析表项数量与表头声明的 `entry_count` 一致
     ///
     /// 表项级别（MS-VHDX §2.6.1.2）：
     /// - 表项数据长度不得为零
     /// - 表项偏移 + 长度不得超过元数据区域大小
-    /// - 表项 item_id 不得重复
+    /// - 表项 `item_id` 不得重复
     /// - 任意两个表项的数据区域不得重叠
     pub fn validate_metadata(&self) -> Result<()> {
+        // 表项数量上限（MS-VHDX §2.6.1.1: EntryCount MUST be <= 2047）
+        const MAX_METADATA_ENTRY_COUNT: u16 = 2047;
+
         let metadata = self.file.sections().metadata()?;
         let table = metadata.table();
         let table_header = table.header();
@@ -362,8 +366,6 @@ impl<'a> SpecValidator<'a> {
             )));
         }
 
-        // 表项数量上限校验（MS-VHDX §2.6.1.1: EntryCount MUST be <= 2047）
-        const MAX_METADATA_ENTRY_COUNT: u16 = 2047;
         if table_header.entry_count() > MAX_METADATA_ENTRY_COUNT {
             return Err(Error::InvalidMetadata(format!(
                 "Metadata table entry count exceeds maximum: count={}, max={MAX_METADATA_ENTRY_COUNT}",
@@ -486,8 +488,7 @@ impl<'a> SpecValidator<'a> {
 
             if let Some(logical_sector_size) = items.logical_sector_size() {
                 let logical_sector_size_u64 = u64::from(logical_sector_size);
-                if logical_sector_size_u64 != 0
-                    && virtual_disk_size % logical_sector_size_u64 != 0
+                if logical_sector_size_u64 != 0 && virtual_disk_size % logical_sector_size_u64 != 0
                 {
                     return Err(Error::InvalidMetadata(format!(
                         "Virtual disk size {virtual_disk_size} is not aligned to logical sector size {logical_sector_size}"
@@ -1003,4 +1004,3 @@ impl<'a> SpecValidator<'a> {
         })
     }
 }
-

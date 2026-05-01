@@ -246,9 +246,10 @@ fn inject_bat_entry_raw(path: &std::path::Path, index: u64, raw_value: u64) {
 
 /// 篡改日志头 descriptor_count 字段（测试专用）。
 fn inject_log_descriptor_count(path: &std::path::Path, descriptor_count: u32) {
-    use vhdx_rs::File;
+    use vhdx_rs::{File, LogReplayPolicy};
 
     let file = File::open(path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
         .finish()
         .expect("Failed to open file for log descriptor_count injection metadata");
     let header_ref = file
@@ -1255,11 +1256,12 @@ fn test_open_strict_unknown_required_metadata_behavior() {
         "strict=true should reject unknown required metadata item"
     );
 
-    // strict=false 应允许打开同一文件
+    // strict=false 也应拒绝 unknown required metadata（T2 语义修正后，
+    // strict=false 不再放过 required unknown metadata，仅允许 optional unknown）
     let relaxed_result = File::open(&path).strict(false).finish();
     assert!(
-        relaxed_result.is_ok(),
-        "strict=false should allow unknown required metadata item"
+        relaxed_result.is_err(),
+        "strict=false should reject unknown required metadata item (T2 semantic fix)"
     );
 }
 
@@ -2455,6 +2457,46 @@ fn test_inmemory_on_readonly_does_not_write_back_to_disk() {
     );
 }
 
+/// 测试 InMemoryOnReadOnly 在可写打开且存在 pending log 时应拒绝。
+#[test]
+fn test_inmemory_on_readonly_rejects_writable_with_pending_logs() {
+    use vhdx_rs::{Error, File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    let virtual_size = 2 * 1024 * 1024;
+    let target_disk_offset = 512_u64;
+    let target_file_offset =
+        u64::try_from(HEADER_SECTION_SIZE).expect("header size overflow") + target_disk_offset;
+    let payload = b"INMEM_POLICY_WRITABLE_REJECT";
+
+    File::create(&path)
+        .size(virtual_size)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    inject_pending_log_entry(&path, target_file_offset, payload);
+
+    let err = match File::open(&path)
+        .write()
+        .log_replay(LogReplayPolicy::InMemoryOnReadOnly)
+        .finish()
+    {
+        Ok(_) => panic!("InMemoryOnReadOnly should reject writable open when pending logs exist"),
+        Err(err) => err,
+    };
+
+    match err {
+        Error::InvalidParameter(message) => {
+            assert!(
+                message.contains("InMemoryOnReadOnly policy requires read-only open"),
+                "unexpected error message: {message}"
+            );
+        }
+        other => panic!("expected InvalidParameter, got: {other:?}"),
+    }
+}
+
 // ── T9: ParentLocator / LocatorHeader / KeyValueEntry 签名收口测试 ──
 
 /// 测试 LocatorHeader 公共字段可访问：locator_type、reserved、key_value_count、raw。
@@ -2698,6 +2740,50 @@ fn inject_required_unknown_region_entry(path: &std::path::Path) {
     raw.flush().expect("Failed to flush region table injection");
 }
 
+/// 在 Region Table 中注入一个 unknown 区域条目，并可控制 required 标志（测试专用）。
+fn inject_unknown_region_entry_with_required_flag(path: &std::path::Path, required: bool) {
+    const RT1_OFFSET: u64 = 192 * 1024;
+    const RT_SIZE: usize = 64 * 1024;
+
+    let mut raw = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("Failed to open file for optional region table injection");
+
+    raw.seek(SeekFrom::Start(RT1_OFFSET))
+        .expect("Failed to seek RT1");
+    let mut rt_data = vec![0u8; RT_SIZE];
+    raw.read_exact(&mut rt_data).expect("Failed to read RT1");
+
+    let entry_count = u32::from_le_bytes([rt_data[8], rt_data[9], rt_data[10], rt_data[11]]);
+    let new_count = entry_count + 1;
+    rt_data[8..12].copy_from_slice(&new_count.to_le_bytes());
+
+    let entry_offset = 16 + entry_count as usize * 32;
+    let unknown_guid: [u8; 16] = [
+        0xAC, 0xCE, 0x55, 0x11, 0xB0, 0x0B, 0xB0, 0x0B, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE,
+        0xF0,
+    ];
+    rt_data[entry_offset..entry_offset + 16].copy_from_slice(&unknown_guid);
+    rt_data[entry_offset + 16..entry_offset + 24].copy_from_slice(&0x00600000_u64.to_le_bytes());
+    rt_data[entry_offset + 24..entry_offset + 28].copy_from_slice(&0x00100000_u32.to_le_bytes());
+    rt_data[entry_offset + 28..entry_offset + 32]
+        .copy_from_slice(&(u32::from(required)).to_le_bytes());
+
+    let mut crc_input = rt_data.clone();
+    crc_input[4..8].fill(0);
+    let checksum = crc32c::crc32c(&crc_input);
+    rt_data[4..8].copy_from_slice(&checksum.to_le_bytes());
+
+    raw.seek(SeekFrom::Start(RT1_OFFSET))
+        .expect("Failed to seek RT1 for write");
+    raw.write_all(&rt_data)
+        .expect("Failed to write modified RT1");
+    raw.flush()
+        .expect("Failed to flush optional region table injection");
+}
+
 /// 破坏当前活动 Region Table（RT1）的 checksum 字段（测试专用）。
 ///
 /// File::create() 完成后 h1.seq=1 > h2.seq=0，region_table(0) 选取 RT1（192KB 偏移），
@@ -2758,7 +2844,11 @@ fn test_t6_validator_header_and_region_table_happy_path() {
         .expect("validate_region_table should pass for valid sample");
 }
 
-/// T6 failure：Region Table 含 required unknown region 时，validator 应返回 InvalidRegionTable。
+/// T6 回归：Region Table 含 required unknown region 时，open 阶段即被拒绝。
+///
+/// T2 语义修正后，strict=false 不再放过 required unknown region，
+/// 因此 open 阶段直接拦截，无需走到 validator 层。
+/// 此测试验证 open-time rejection 路径返回正确的 InvalidRegionTable 错误。
 #[test]
 fn test_t6_validator_region_table_rejects_required_unknown_region() {
     use vhdx_rs::{Error, File};
@@ -2772,16 +2862,11 @@ fn test_t6_validator_region_table_rejects_required_unknown_region() {
 
     inject_required_unknown_region_entry(&path);
 
-    // 先以 strict=false 打开，确保异常由 validator 暴露而非 open 阶段拦截。
-    let file = File::open(&path)
-        .strict(false)
-        .finish()
-        .expect("Failed to open injected sample with strict=false");
-
-    let err = file
-        .validator()
-        .validate_region_table()
-        .expect_err("Expected required unknown region validation error");
+    // T2 修正后，strict=false 打开也会拒绝 required unknown region
+    let err = match File::open(&path).strict(false).finish() {
+        Ok(_) => panic!("strict=false should reject unknown required region at open time"),
+        Err(err) => err,
+    };
 
     match err {
         Error::InvalidRegionTable(msg) => {
@@ -2896,6 +2981,97 @@ fn test_validate_file_non_differencing_disk_skips_parent_locator_path() {
     validator
         .validate_parent_locator()
         .expect("non-differencing disk should skip parent locator validation");
+}
+
+/// T4 回归：差分盘执行 validate_file 时应包含 parent chain 校验，
+/// parent linkage 不匹配时返回可区分的 ParentMismatch 错误。
+#[test]
+fn test_validate_file_includes_parent_chain_mismatch() {
+    use vhdx_rs::{Error, File, Guid};
+
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    let child = File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create child differencing disk");
+    drop(child);
+
+    // 注入不匹配的 parent_linkage，使 parent chain 校验失败
+    let mismatch_guid = Guid::from_bytes([
+        0xAA, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88,
+    ]);
+    let mismatch_guid2 = Guid::from_bytes([
+        0xBB, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88,
+    ]);
+
+    let locator = build_parent_locator(&[
+        ("parent_linkage", &format!("{mismatch_guid}")),
+        ("parent_linkage2", &format!("{mismatch_guid2}")),
+        ("relative_path", &parent_path.to_string_lossy()),
+    ]);
+    inject_parent_locator(&child_path, &locator);
+
+    let file = File::open(&child_path)
+        .finish()
+        .expect("Failed to reopen child disk");
+
+    let err = file
+        .validator()
+        .validate_file()
+        .expect_err("Expected validate_file to fail on parent chain mismatch");
+
+    match err {
+        Error::ParentMismatch { expected, actual } => {
+            assert_eq!(expected, mismatch_guid);
+            assert_ne!(actual, mismatch_guid);
+            assert_ne!(actual, mismatch_guid2);
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+/// T4 回归：非差分盘执行 validate_file 时行为不受影响（fixed/dynamic 场景）。
+#[test]
+fn test_validate_file_non_differencing_unchanged() {
+    use vhdx_rs::File;
+
+    // Fixed 场景
+    let fixed_path = temp_vhdx_path();
+    let fixed_file = File::create(&fixed_path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    assert!(!fixed_file.has_parent());
+    fixed_file
+        .validator()
+        .validate_file()
+        .expect("fixed disk validate_file should succeed unchanged");
+
+    // Dynamic 场景
+    let dynamic_path = temp_vhdx_path();
+    let dynamic_file = File::create(&dynamic_path)
+        .size(1024 * 1024)
+        .fixed(false)
+        .finish()
+        .expect("Failed to create dynamic disk");
+
+    assert!(!dynamic_file.has_parent());
+    dynamic_file
+        .validator()
+        .validate_file()
+        .expect("dynamic disk validate_file should succeed unchanged");
 }
 
 /// T7 happy：合法样本应同时通过 BAT 与 Log 语义校验。
@@ -3014,7 +3190,11 @@ fn test_t8_validator_required_metadata_happy_path() {
         .expect("valid sample should pass required metadata validation");
 }
 
-/// T8 failure：required 且未知的 metadata item 应被拦截。
+/// T8 回归：required 且未知的 metadata item 在 open 阶段即被拒绝。
+///
+/// T2 语义修正后，strict=false 不再放过 required unknown metadata item，
+/// 因此 open 阶段直接拦截，无需走到 validator 层。
+/// 此测试验证 open-time rejection 路径返回正确的 InvalidMetadata 错误。
 #[test]
 fn test_t8_validator_required_metadata_rejects_required_unknown_item() {
     use vhdx_rs::{Error, File, Guid};
@@ -3032,15 +3212,11 @@ fn test_t8_validator_required_metadata_rejects_required_unknown_item() {
     ]);
     inject_metadata_table_entry(&path, unknown_required, 0, 0, 0x2000_0000);
 
-    let file = File::open(&path)
-        .strict(false)
-        .finish()
-        .expect("Failed to open injected sample with strict=false");
-
-    let err = file
-        .validator()
-        .validate_required_metadata_items()
-        .expect_err("Expected required unknown metadata validation error");
+    // T2 修正后，strict=false 打开也会拒绝 required unknown metadata item
+    let err = match File::open(&path).strict(false).finish() {
+        Ok(_) => panic!("strict=false should reject unknown required metadata item at open time"),
+        Err(err) => err,
+    };
 
     match err {
         Error::InvalidMetadata(msg) => {
@@ -3089,9 +3265,9 @@ fn test_t8_validator_required_metadata_rejects_missing_known_required_item() {
     }
 }
 
-/// 测试 strict=false 时，Region Table 中存在 required 且未知 GUID 的区域条目应允许打开。
+/// 测试 strict=false 时，Region Table 中存在 required 且未知 GUID 的区域条目应拒绝打开。
 #[test]
-fn test_open_non_strict_allows_required_unknown_region() {
+fn test_open_strict_false_rejects_required_unknown_region() {
     use vhdx_rs::File;
 
     let path = temp_vhdx_path();
@@ -3106,8 +3282,55 @@ fn test_open_non_strict_allows_required_unknown_region() {
 
     let result = File::open(&path).strict(false).finish();
     assert!(
+        result.is_err(),
+        "strict=false should reject unknown required region entry"
+    );
+}
+
+/// 测试 strict=false 时，Region Table 中 optional 且未知 GUID 的区域条目应允许打开。
+#[test]
+fn test_open_strict_false_allows_optional_unknown_region() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    inject_unknown_region_entry_with_required_flag(&path, false);
+
+    let result = File::open(&path).strict(false).finish();
+    assert!(
         result.is_ok(),
-        "strict=false should allow unknown required region entry"
+        "strict=false should allow unknown optional region entry"
+    );
+}
+
+/// 测试 strict=false 时，Metadata 中 required 且未知 GUID 的条目应拒绝打开。
+#[test]
+fn test_open_strict_false_rejects_required_unknown_metadata() {
+    use vhdx_rs::{File, Guid};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    let unknown_required = Guid::from_bytes([
+        0xFA, 0x11, 0xED, 0x22, 0x11, 0x22, 0x33, 0x44, 0x99, 0xAA, 0xBB, 0xCC, 0x55, 0x66, 0x77,
+        0x88,
+    ]);
+    inject_metadata_table_entry(&path, unknown_required, 0, 0, 0x2000_0000);
+
+    let result = File::open(&path).strict(false).finish();
+    assert!(
+        result.is_err(),
+        "strict=false should reject unknown required metadata item"
     );
 }
 
@@ -5661,8 +5884,12 @@ fn test_log_replay_policy_readonly_no_replay_keeps_pending() {
     // 释放文件句柄
     drop(file_noreplay);
 
-    // 再次以只读打开验证磁盘未被修改
-    let file_verify = File::open(&path).finish().expect("verify open");
+    // 再次以 ReadOnlyNoReplay 打开验证磁盘未被修改
+    // （默认策略为 Require，而 pending log 仍存在，需使用兼容策略）
+    let file_verify = File::open(&path)
+        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+        .finish()
+        .expect("verify open with ReadOnlyNoReplay");
     let (verify_seq, verify_fwg, verify_log_guid) = {
         let header_ref = file_verify.sections().header().expect("header");
         let h = header_ref.header(0).expect("active header");
@@ -5764,14 +5991,14 @@ fn test_readonly_no_replay_is_explicit_compat_mode() {
     );
 }
 
-/// Task 8：严格策略 Require 在存在 pending log 时必须维持严格行为。
+/// 默认打开策略在存在 pending log 时必须拒绝并返回 LogReplayRequired。
 ///
 /// 验证点：
-/// - `finish()` 返回 `Error::LogReplayRequired`
+/// - `File::open(path).finish()` 返回 `Error::LogReplayRequired`
 /// - 返回前不触发 replay 写入（目标数据位置保持不变）
 #[test]
-fn test_log_replay_require_policy_replays_non_empty_log() {
-    use vhdx_rs::{Error, File, LogReplayPolicy};
+fn test_default_open_rejects_pending_logs() {
+    use vhdx_rs::{Error, File};
 
     let path = temp_vhdx_path();
     let target_disk_offset = 3072_u64;
@@ -5788,22 +6015,19 @@ fn test_log_replay_require_policy_replays_non_empty_log() {
     inject_pending_log_entry(&path, target_file_offset, payload);
     let bytes_before = read_raw_bytes(&path, target_file_offset, payload.len());
 
-    let err = match File::open(&path)
-        .log_replay(LogReplayPolicy::Require)
-        .finish()
-    {
-        Ok(_) => panic!("Require must reject non-empty pending log"),
+    let err = match File::open(&path).finish() {
+        Ok(_) => panic!("Default open must reject non-empty pending log"),
         Err(err) => err,
     };
     assert!(
         matches!(err, Error::LogReplayRequired),
-        "Require should return LogReplayRequired, got: {err:?}"
+        "Default open should return LogReplayRequired, got: {err:?}"
     );
 
     let bytes_after = read_raw_bytes(&path, target_file_offset, payload.len());
     assert_eq!(
         bytes_after, bytes_before,
-        "Require rejection path must not perform replay writes"
+        "Default rejection path must not perform replay writes"
     );
 }
 
@@ -6667,8 +6891,8 @@ fn test_validate_metadata_known_items_happy() {
 /// 已知 metadata item 非法语义值应被 reject。
 #[test]
 fn test_validate_metadata_rejects_invalid_known_item_values() {
-    use vhdx_rs::{Error, File};
     use vhdx_rs::constants::metadata_guids;
+    use vhdx_rs::{Error, File};
 
     // 1) block size 非 2 的幂（但在范围内）
     {
@@ -6691,7 +6915,9 @@ fn test_validate_metadata_rejects_invalid_known_item_values() {
             .expect_err("Expected invalid block size to be rejected");
 
         match err {
-            Error::InvalidMetadata(msg) => assert!(msg.contains("block size"), "unexpected message: {msg}"),
+            Error::InvalidMetadata(msg) => {
+                assert!(msg.contains("block size"), "unexpected message: {msg}")
+            }
             other => panic!("unexpected error variant: {other:?}"),
         }
     }
@@ -6717,7 +6943,10 @@ fn test_validate_metadata_rejects_invalid_known_item_values() {
             .expect_err("Expected invalid logical sector size to be rejected");
 
         match err {
-            Error::InvalidMetadata(msg) => assert!(msg.contains("logical sector size"), "unexpected message: {msg}"),
+            Error::InvalidMetadata(msg) => assert!(
+                msg.contains("logical sector size"),
+                "unexpected message: {msg}"
+            ),
             other => panic!("unexpected error variant: {other:?}"),
         }
     }
@@ -6743,7 +6972,10 @@ fn test_validate_metadata_rejects_invalid_known_item_values() {
             .expect_err("Expected invalid physical sector size to be rejected");
 
         match err {
-            Error::InvalidMetadata(msg) => assert!(msg.contains("physical sector size"), "unexpected message: {msg}"),
+            Error::InvalidMetadata(msg) => assert!(
+                msg.contains("physical sector size"),
+                "unexpected message: {msg}"
+            ),
             other => panic!("unexpected error variant: {other:?}"),
         }
     }
@@ -6769,7 +7001,10 @@ fn test_validate_metadata_rejects_invalid_known_item_values() {
             .expect_err("Expected zero virtual disk size to be rejected");
 
         match err {
-            Error::InvalidMetadata(msg) => assert!(msg.contains("virtual disk size"), "unexpected message: {msg}"),
+            Error::InvalidMetadata(msg) => assert!(
+                msg.contains("virtual disk size"),
+                "unexpected message: {msg}"
+            ),
             other => panic!("unexpected error variant: {other:?}"),
         }
     }
@@ -6783,7 +7018,11 @@ fn test_validate_metadata_rejects_invalid_known_item_values() {
             .finish()
             .expect("Failed to create fixed disk for alignment test");
 
-        mutate_known_metadata_u64(&path, metadata_guids::VIRTUAL_DISK_SIZE, 4 * 1024 * 1024 + 1);
+        mutate_known_metadata_u64(
+            &path,
+            metadata_guids::VIRTUAL_DISK_SIZE,
+            4 * 1024 * 1024 + 1,
+        );
 
         let file = File::open(&path)
             .strict(false)
@@ -6795,7 +7034,9 @@ fn test_validate_metadata_rejects_invalid_known_item_values() {
             .expect_err("Expected unaligned virtual disk size to be rejected");
 
         match err {
-            Error::InvalidMetadata(msg) => assert!(msg.contains("aligned"), "unexpected message: {msg}"),
+            Error::InvalidMetadata(msg) => {
+                assert!(msg.contains("aligned"), "unexpected message: {msg}")
+            }
             other => panic!("unexpected error variant: {other:?}"),
         }
     }
@@ -6822,7 +7063,10 @@ fn test_validate_metadata_rejects_invalid_known_item_values() {
             .expect_err("Expected physical<logical sector sizes to be rejected");
 
         match err {
-            Error::InvalidMetadata(msg) => assert!(msg.contains("smaller than logical"), "unexpected message: {msg}"),
+            Error::InvalidMetadata(msg) => assert!(
+                msg.contains("smaller than logical"),
+                "unexpected message: {msg}"
+            ),
             other => panic!("unexpected error variant: {other:?}"),
         }
     }
@@ -6884,7 +7128,10 @@ fn test_validate_metadata_rejects_duplicate_item_id() {
     // 读取 entry_count
     let count_bytes = read_raw_bytes(&path, METADATA_OFFSET + 10, 2);
     let entry_count = u16::from_le_bytes([count_bytes[0], count_bytes[1]]);
-    assert!(entry_count >= 2, "Need at least 2 entries to test duplication");
+    assert!(
+        entry_count >= 2,
+        "Need at least 2 entries to test duplication"
+    );
 
     // 将最后一个 entry 的 item_id 覆写为第一个 entry 的 item_id（制造重复）
     let last_entry_offset = METADATA_OFFSET + 32 + u64::from(entry_count - 1) * 32;
@@ -7094,7 +7341,10 @@ fn test_validate_metadata_rejects_invalid_table_signature() {
 
     match err {
         Error::InvalidMetadata(msg) => {
-            assert!(msg.contains("table signature"), "unexpected error message: {msg}");
+            assert!(
+                msg.contains("table signature"),
+                "unexpected error message: {msg}"
+            );
         }
         other => panic!("unexpected error variant: {other:?}"),
     }
@@ -7143,4 +7393,192 @@ fn test_validate_metadata_scope_boundary_required_item_completeness_is_separate(
     }
 }
 
+// ── T6 回归加固：P0/P1 边界场景补齐 ──
 
+/// 回归：默认策略（Require）在无 pending log 时应成功打开。
+///
+/// 验证 `File::open(path).finish()` 在无日志活动的干净文件上返回 Ok，
+/// 确保默认策略不拒绝合法文件。
+#[test]
+fn test_default_open_succeeds_on_clean_file() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    let file = File::open(&path)
+        .finish()
+        .expect("Default open should succeed on clean file without pending logs");
+
+    assert_eq!(file.virtual_disk_size(), 1024 * 1024);
+    assert!(!file.has_pending_logs());
+}
+
+/// 回归：InMemoryOnReadOnly 在只读且无 pending log 时应成功打开。
+///
+/// 验证策略门禁仅在 write=true 时触发，只读 + 无 pending log 不应被拒绝。
+#[test]
+fn test_inmemory_on_readonly_succeeds_without_pending_logs() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    let file = File::open(&path)
+        .log_replay(LogReplayPolicy::InMemoryOnReadOnly)
+        .finish()
+        .expect("InMemoryOnReadOnly read-only should succeed without pending logs");
+
+    assert!(!file.has_pending_logs());
+    assert_eq!(file.virtual_disk_size(), 1024 * 1024);
+}
+
+/// 回归：InMemoryOnReadOnly 在 writable 且无 pending log 时不触发策略门禁。
+///
+/// T3 门禁仅在 handle_log_replay 中触发（需要 pending log 才进入策略分支）。
+/// 无 pending log 时 InMemoryOnReadOnly + write=true 可正常打开，
+/// 因为策略分支不会被执行。验证这一边界行为以确保理解门禁触发条件。
+#[test]
+fn test_inmemory_on_readonly_writable_succeeds_without_pending_logs() {
+    use vhdx_rs::{File, LogReplayPolicy};
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    // 无 pending log：InMemoryOnReadOnly + write 可正常打开，
+    // 因为策略分支仅在有 pending log 时触发
+    let file = File::open(&path)
+        .write()
+        .log_replay(LogReplayPolicy::InMemoryOnReadOnly)
+        .finish()
+        .expect("InMemoryOnReadOnly + writable should succeed without pending logs");
+
+    assert!(!file.has_pending_logs());
+    assert_eq!(file.virtual_disk_size(), 1024 * 1024);
+}
+
+/// 回归：strict=true 和 strict=false 均拒绝 required unknown region。
+///
+/// 验证 T2 语义修正后的对称行为：无论 strict 值如何，
+/// required unknown region 都会在 open 阶段被拦截。
+#[test]
+fn test_strict_true_and_false_both_reject_required_unknown_region() {
+    use vhdx_rs::File;
+
+    let path = temp_vhdx_path();
+    File::create(&path)
+        .size(1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create fixed disk");
+
+    inject_required_unknown_region_entry(&path);
+
+    // strict=true 拒绝
+    let strict_result = File::open(&path).strict(true).finish();
+    assert!(
+        strict_result.is_err(),
+        "strict=true must reject required unknown region"
+    );
+
+    // strict=false 同样拒绝（T2 语义修正）
+    let relaxed_result = File::open(&path).strict(false).finish();
+    assert!(
+        relaxed_result.is_err(),
+        "strict=false must also reject required unknown region"
+    );
+}
+
+/// 回归：差分盘 validate_file 包含完整的 parent locator + parent chain 编排。
+///
+/// 验证 validate_file 在差分盘上同时执行：
+///   1. validate_parent_locator（检查必需键和格式）
+///   2. validate_parent_chain（检查 parent_linkage 匹配）
+/// 两者任一失败都会导致 validate_file 返回错误。
+#[test]
+fn test_validate_file_covers_both_parent_locator_and_chain_on_diff_disk() {
+    use vhdx_rs::{Error, File, Guid};
+
+    let parent_path = temp_vhdx_path();
+    File::create(&parent_path)
+        .size(2 * 1024 * 1024)
+        .fixed(true)
+        .finish()
+        .expect("Failed to create parent disk");
+
+    let child_path = temp_vhdx_path();
+    let child = File::create(&child_path)
+        .size(2 * 1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("Failed to create child differencing disk");
+    drop(child);
+
+    // 场景 A：parent_linkage 不匹配 → validate_file 应返回 ParentMismatch
+    let mismatch1 = Guid::from_bytes([
+        0xCC, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88,
+    ]);
+    let mismatch2 = Guid::from_bytes([
+        0xDD, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88,
+    ]);
+    let locator = build_parent_locator(&[
+        ("parent_linkage", &format!("{mismatch1}")),
+        ("parent_linkage2", &format!("{mismatch2}")),
+        ("relative_path", &parent_path.to_string_lossy()),
+    ]);
+    inject_parent_locator(&child_path, &locator);
+
+    let file = File::open(&child_path)
+        .finish()
+        .expect("Failed to reopen child");
+    let err = file
+        .validator()
+        .validate_file()
+        .expect_err("validate_file should fail on parent chain mismatch");
+    match err {
+        Error::ParentMismatch { .. } => {}
+        other => panic!("expected ParentMismatch from validate_file, got: {other:?}"),
+    }
+
+    // 场景 B：合法 locator → validate_file 应成功
+    drop(file);
+    let parent = File::open(&parent_path)
+        .finish()
+        .expect("Failed to reopen parent");
+    let parent_dwg = parent
+        .sections()
+        .header()
+        .expect("header")
+        .header(0)
+        .expect("active header")
+        .data_write_guid();
+    drop(parent);
+
+    let valid_locator = build_parent_locator(&[
+        ("parent_linkage", &format!("{parent_dwg}")),
+        ("relative_path", &parent_path.to_string_lossy()),
+    ]);
+    inject_parent_locator(&child_path, &valid_locator);
+
+    let child2 = File::open(&child_path)
+        .finish()
+        .expect("Failed to reopen child with valid locator");
+    child2
+        .validator()
+        .validate_file()
+        .expect("validate_file should succeed with valid locator and matching parent chain");
+}

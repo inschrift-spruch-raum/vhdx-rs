@@ -20,9 +20,10 @@ use crate::cli::SectionCommand;
 /// - `file`: VHDX 文件路径
 /// - `section`: 要查看的区域类型
 pub fn cmd_sections(file: &Path, section: &SectionCommand) {
-    use vhdx_rs::File;
+    use vhdx_rs::{File, LogReplayPolicy};
 
-    match File::open(file).finish() {
+    // 显式使用 Auto 策略：只读打开时内存回放日志，保证区域数据一致性
+    match File::open(file).log_replay(LogReplayPolicy::Auto).finish() {
         Ok(vhdx_file) => {
             // 检查是否存在未完成的日志条目
             if vhdx_file

@@ -18,9 +18,10 @@ use crate::cli::OutputFormat;
 /// - `file`: VHDX 文件路径
 /// - `format`: 输出格式（文本或 JSON）
 pub fn cmd_info(file: &Path, format: &OutputFormat) {
-    use vhdx_rs::File;
+    use vhdx_rs::{File, LogReplayPolicy};
 
-    match File::open(file).finish() {
+    // 显式使用 Auto 策略：只读打开时内存回放日志，保证元数据一致性
+    match File::open(file).log_replay(LogReplayPolicy::Auto).finish() {
         Ok(vhdx_file) => {
             // 检查是否存在未完成写入留下的日志条目
             if vhdx_file

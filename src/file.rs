@@ -148,7 +148,7 @@ impl File {
             path: path.as_ref().to_path_buf(),
             write: false,
             strict: true,
-            log_replay: LogReplayPolicy::Auto,
+            log_replay: LogReplayPolicy::Require,
         }
     }
 
@@ -747,10 +747,9 @@ impl File {
             .region_table(0)
             .ok_or_else(|| Error::InvalidRegionTable("No valid region table found".to_string()))?;
 
-        // strict 模式：校验 required 区域条目是否均为已知项
-        if strict {
-            Self::validate_required_region_entries_are_known(&region_table)?;
-        }
+        // required unknown 区域条目始终拒绝（strict=false 仅放宽 optional unknown）
+        let _ = strict;
+        Self::validate_required_region_entries_are_known(&region_table)?;
 
         // 从区域表中提取 BAT 和元数据区域的位置和大小
         let (bat_offset, bat_size, metadata_offset, metadata_size) =
@@ -868,9 +867,9 @@ impl File {
         let mut metadata_data = vec![0u8; usize::try_from(metadata_size).unwrap_or(0)];
         file_clone.read_exact(&mut metadata_data)?;
         let temp_metadata = crate::sections::Metadata::new(metadata_data)?;
-        if strict {
-            Self::validate_required_metadata_items_are_known(&temp_metadata)?;
-        }
+        // required unknown metadata 项始终拒绝（strict=false 仅放宽 optional unknown）
+        let _ = strict;
+        Self::validate_required_metadata_items_are_known(&temp_metadata)?;
         let temp_items = temp_metadata.items();
 
         // 提取虚拟磁盘大小
@@ -1011,7 +1010,7 @@ impl File {
             if (*log).is_replay_required() {
                 match policy {
                     LogReplayPolicy::Require => return Err(Error::LogReplayRequired),
-                    LogReplayPolicy::Auto | LogReplayPolicy::InMemoryOnReadOnly => {
+                    LogReplayPolicy::Auto => {
                         if writable {
                             Self::replay_log_and_clear_guid(
                                 file,
@@ -1025,6 +1024,15 @@ impl File {
                             let overlay = Self::build_replay_overlay(file, &log, current_log_guid)?;
                             return Ok((false, Some(overlay)));
                         }
+                    }
+                    LogReplayPolicy::InMemoryOnReadOnly => {
+                        if writable {
+                            return Err(Error::InvalidParameter(
+                                "InMemoryOnReadOnly policy requires read-only open".to_string(),
+                            ));
+                        }
+                        let overlay = Self::build_replay_overlay(file, &log, current_log_guid)?;
+                        return Ok((false, Some(overlay)));
                     }
                     LogReplayPolicy::ReadOnlyNoReplay => {
                         if writable {
@@ -1546,7 +1554,10 @@ impl OpenOptions {
 
     /// 设置严格模式
     ///
-    /// strict=true 时遇到 required 未知项应视为错误。
+    /// strict=true 时启用严格校验。
+    ///
+    /// 说明：strict=false 仅放宽 optional unknown，
+    /// required unknown（Region/Metadata）仍会报错。
     #[must_use]
     pub const fn strict(mut self, strict: bool) -> Self {
         self.strict = strict;
