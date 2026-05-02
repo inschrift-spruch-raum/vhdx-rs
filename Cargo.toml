@@ -1,0 +1,30 @@
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = ["vhdx-cli"]
+resolver = "2"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+# Main library crate
+[package]
+name = "vhdx-rs"
+version.workspace = true
+edition.workspace = true
+description = "VHDX (Virtual Hard Disk v2) library"
+
+[dependencies]
+uuid = { version = "1.22", features = ["v4"] }
+thiserror = "2.0.18"
+byteorder = "1.5"
+crc32c = "0.6"
+
+[dev-dependencies]
+tempfile = "3.27"
+
+[lints]
+workspace = true
