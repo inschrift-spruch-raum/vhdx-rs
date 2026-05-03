@@ -73,6 +73,9 @@ vhdx::
 │   │       └── log_offset(&self) -> u64
 │   │
 │   │   └── RegionTable<'a>                 # Region Table 视图
+│   │       ├── header(&self) -> RegionTableHeader<'_>
+│   │       ├── entries(&self) -> impl Iterator<Item = RegionTableEntry<'_>> + '_  # 强制：零拷贝视图迭代
+│   │       │
 │   │       └── RegionTableHeader<'a>       # Region Table Header 视图
 │   │           ├── signature(&self) -> &'a [u8; 4]
 │   │           ├── checksum(&self) -> u32
@@ -89,7 +92,7 @@ vhdx::
 │   │   ├── entries(&self) -> impl Iterator<Item = BatEntry<'_>> + '_  # 强制：零拷贝视图迭代
 │   │   └── len(&self) -> usize
 │   │
-│   │   └── BatEntry                        # BAT Entry 结构体
+│   │   └── BatEntry<'a>                    # BAT Entry 结构体
 │   │       ├── state(&self) -> BatState
 │   │       ├── file_offset_mb(&self) -> u64
 │   │
@@ -137,6 +140,15 @@ vhdx::
 │   │               ├── is_virtual_disk(&self) -> bool
 │   │               └── is_required(&self) -> bool
 │   │
+│   │       └── StandardItems                # 标准 Metadata Item GUID 常量
+│   │           ├── FILE_PARAMETERS          # CAA16737-FA36-4D43-B3B6-33F0AA44E76B
+│   │           ├── VIRTUAL_DISK_SIZE        # 2FA54224-CD1B-4876-B211-5DBED83BF4B8
+│   │           ├── VIRTUAL_DISK_ID          # BECA12AB-B2E6-4523-93EF-C309E000C746
+│   │           ├── LOGICAL_SECTOR_SIZE      # 8141BF1D-A96F-4709-BA47-F233A8FAAB5F
+│   │           ├── PHYSICAL_SECTOR_SIZE     # CDA348C7-445D-4471-9CC9-E9885251C556
+│   │           ├── PARENT_LOCATOR           # A8D35F2D-B30B-454D-ABF7-D3D84834AB0C
+│   │           └── LOCATOR_TYPE_VHDX        # B04AEFB7-D19E-4A81-B789-25B8E9445913
+│   │
 │   │   └── MetadataItems<'a>
 │   │       ├── file_parameters(&self) -> Option<FileParameters<'_>>
 │   │       ├── virtual_disk_size(&self) -> Option<u64>
@@ -155,7 +167,7 @@ vhdx::
 │   │           ├── entry(&self, index: usize) -> Result<KeyValueEntry<'_>>
 │   │           ├── entries(&self) -> impl Iterator<Item = KeyValueEntry<'_>> + '_ # 强制：零拷贝视图迭代
 │   │           ├── key_value_data(&self) -> &[u8]
-│   │           ├── resolve_parent_path(&self) -> Result<ParentPath> # 按 relative_path->volume_path->absolute_win32_path 顺序解析（UTF-16LE 解码，返回 owned PathBuf）
+│   │           ├── resolve_parent_path(&self) -> Result<PathBuf> # 按 relative_path->volume_path->absolute_win32_path 顺序解析（UTF-16LE 解码）
 │   │           │
 │   │           └── LocatorHeader<'a>
 │   │               ├── locator_type(&self) -> Guid
@@ -213,18 +225,15 @@ vhdx::
 │    
 │           └── DataSector<'a>              # Data Sector
 │               ├── signature(&self) -> &'a [u8; 4]
-│               ├── data(&self) -> &'a [u8]
-│               └── sequence_number(&self) -> u64
+│               ├── sequence_number(&self) -> u64
+│               └── data(&self) -> Cow<'a, [u8]>    # Cow：拼接 LeadingBytes+中间段+TrailingBytes 无法零拷贝
 │    
 ├── IO<'a>                                  # IO模块 (扇区级操作)
 │   └── sector(&self, sector: u64) -> Result<Sector<'_>>   # 输入: 全局扇区号
 │
 │   └── Sector<'a>                          # 扇区级定位与操作
-│       ├── payload(&self) -> PayloadBlock<'_>
 │       ├── read(&self, buf: &mut [u8], semantics: ReadSemanticsPolicy) -> Result<usize>
 │       └── write(&self, data: &[u8]) -> Result<()>
-│
-│   └── PayloadBlock<'a>                    # Payload Block 视图
 │
 ├── Guid                                    # GUID 类型
 ├── LogReplayPolicy                         # 日志回放策略
@@ -243,12 +252,13 @@ vhdx::
 └── Error                                   # 错误类型
     ├── Io(std::io::Error)                  # 底层 IO 错误
     ├── InvalidFile(String)                 # 无效的 VHDX 文件
-    ├── InvalidSignature { expected, found }# 签名不匹配
+    ├── InvalidSignature { expected: [u8; 4], found: [u8; 4] }
     ├── CorruptedHeader(String)             # 头部损坏
     ├── InvalidChecksum { expected: u32, actual: u32 }  # CRC32C 校验和不匹配
     ├── InvalidBlockState(u8)               # 无效的 BAT 块状态值
     ├── InvalidRegionTable(String)          # 区域表格式错误
     ├── InvalidMetadata(String)             # 元数据格式错误
+    ├── InvalidParentLocator(String)        # 父定位器格式错误（ParentLocator 键值对解析失败）
     ├── MetadataNotFound { guid: Guid }     # 元数据项未找到
     ├── LogReplayRequired                   # 需要日志回放
     ├── LogEntryCorrupted(String)           # 日志条目损坏
@@ -857,17 +867,7 @@ impl<'a> ParentLocator<'a> {
     ///
     /// 失败条件：
     /// - 所有路径均无法访问或丢失 -> Error::ParentNotFound
-    pub fn resolve_parent_path(&self) -> Result<ParentPath>;
-}
-
-/// Parent 路径（owned，UTF-16LE 解码需要分配）
-///
-/// 注意：VHDX parent locator 中的路径以 UTF-16LE 编码存储，
-/// 解码为 Rust 的 `PathBuf` 需要堆分配，因此无法返回借用视图。
-pub enum ParentPath {
-    Relative(PathBuf),
-    Volume(PathBuf),
-    AbsoluteWin32(PathBuf),
+    pub fn resolve_parent_path(&self) -> Result<PathBuf>;
 }
 
 /// Locator Header (20字节)
@@ -889,13 +889,18 @@ impl<'a> KeyValueEntry<'a> {
     /// 从key_value_data中获取Key字符串（UTF-16LE解码）
     ///
     /// 失败条件：
-    /// - 编码非法或数据切片越界 -> Error::LogEntryCorrupted
+    /// - 编码非法或数据切片越界 -> Error::InvalidParentLocator
+    ///
+    /// FIXME: 原使用 Error::LogEntryCorrupted，语义错误——KeyValueEntry 属 Metadata/ParentLocator 而非 Log。
+    /// 已更正为 Error::InvalidParentLocator（见 API 树 Error 节）。
     pub fn key(&self, data: &[u8]) -> Result<String>;
     
     /// 从key_value_data中获取Value字符串（UTF-16LE解码）
     ///
     /// 失败条件：
-    /// - 编码非法或数据切片越界 -> Error::LogEntryCorrupted
+    /// - 编码非法或数据切片越界 -> Error::InvalidParentLocator
+    ///
+    /// FIXME: 同 key()，原 LogEntryCorrupted 语义不匹配，已更正。
     pub fn value(&self, data: &[u8]) -> Result<String>;
 }
 
@@ -1049,6 +1054,10 @@ pub struct LogEntryHeader<'a> {
 ///
 /// 本结构体仅包含日志文件中的中间段字段；data() 返回的是**拼装后的完整 4KB 原始扇区**
 /// （而非仅日志中存储的 4084 字节中间段）。
+///
+/// FIXME: "拼装"需要将 LeadingBytes(DataDescriptor) + 中间段(DataSector) + TrailingBytes(DataDescriptor)
+/// 三部分拼接，这意味着 data() 无法单纯借用现有缓冲区返回 &[u8]。若走内部缓存则违反零拷贝约束。
+/// 当前用 Cow 折中：可借用时返回 Borrowed，必须拼装时返回 Owned。实现时需注意分配开销。
 pub struct DataSector<'a> {
     /// Signature. MUST be `"data"` (0x61746164).
     pub fn signature(&self) -> &'a [u8; 4],
@@ -1058,7 +1067,11 @@ pub struct DataSector<'a> {
     ///
     /// 该返回值由 `LeadingBytes(8B) + 日志data区(4084B) + TrailingBytes(4B)`
     /// 拼接而成，与最后一次写入该扇区的原始数据一致。
-    pub fn data(&self) -> &'a [u8],
+    ///
+    /// NOTE: 返回 `Cow<'a, [u8]>` 而非 `&'a [u8]`，因为拼装无法零拷贝完成。
+    /// 零拷贝约束 §"禁止构造中间 Vec/Box/String 作为返回流水线"在此处需要豁免，
+    /// 或考虑在 DataSector 内部增加缓存字段以支持后续的借用返回。
+    pub fn data(&self) -> std::borrow::Cow<'a, [u8]>,
 }
 ```
 
@@ -1089,18 +1102,11 @@ impl<'a> IO<'a> {
 
 /// Sector - 扇区级定位与操作
 /// 
-/// 封装了PayloadBlock引用和块内扇区索引
+/// 封装了块内扇区索引和内部块引用
 #[derive(Clone, Debug, PartialEq)]
-pub struct Sector<'a> {
-    // 简单类型字段: 块内扇区索引
-    pub fn block_sector_index(&self) -> u32,
-    pub fn payload_ref(&self) -> PayloadBlock<'a>,
-}
+pub struct Sector<'a>;
 
 impl<'a> Sector<'a> {
-    /// 获取对应的PayloadBlock
-    pub fn payload(&self) -> PayloadBlock<'_>;
-    
     /// 读取扇区数据
     /// buf长度必须为扇区大小的整数倍
     ///
@@ -1120,15 +1126,102 @@ impl<'a> Sector<'a> {
     pub fn write(&self, data: &[u8]) -> Result<()>;
 }
 
-/// Payload Block - 内部结构
-/// 
-/// 用户通过Sector访问，不直接操作
-#[derive(Clone, Debug, PartialEq)]
-pub struct PayloadBlock<'a> {
-    pub fn bytes(&self) -> &'a [u8],
+```
+
+
+### 10. Error - 错误类型
+
+```rust
+/// VHDX 操作错误类型
+///
+/// 涵盖 IO 错误、规范违反、数据损坏、逻辑错误等场景。
+/// 所有 public API 通过 `crate::Result<T>`（即 `Result<T, Error>`）返回错误。
+pub enum Error {
+    /// 底层 IO 错误
+    Io(std::io::Error),
+
+    /// 无效的 VHDX 文件
+    InvalidFile(String),
+
+    /// 签名不匹配
+    InvalidSignature {
+        expected: [u8; 4],
+        found: [u8; 4],
+    },
+
+    /// 头部损坏
+    CorruptedHeader(String),
+
+    /// CRC32C 校验和不匹配
+    InvalidChecksum {
+        expected: u32,
+        actual: u32,
+    },
+
+    /// 无效的 BAT 块状态值
+    InvalidBlockState(u8),
+
+    /// 区域表格式错误
+    InvalidRegionTable(String),
+
+    /// 元数据格式错误
+    InvalidMetadata(String),
+
+    /// 父定位器格式错误（ParentLocator 键值对解析失败）
+    ///
+    /// 用于 Metadata::ParentLocator::KeyValueEntry 中 key/value 的 UTF-16LE 解码或数据切片越界场景。
+    /// 与 InvalidMetadata 的区别：InvalidParentLocator 专指 ParentLocator 内部结构的解析错误，
+    /// InvalidMetadata 涵盖 Metadata Table / Entry 的格式错误。
+    InvalidParentLocator(String),
+
+    /// 元数据项未找到
+    MetadataNotFound {
+        guid: Guid,
+    },
+
+    /// 需要日志回放
+    LogReplayRequired,
+
+    /// 日志条目损坏
+    LogEntryCorrupted(String),
+
+    /// BAT 条目未找到
+    BatEntryNotFound {
+        index: u64,
+    },
+
+    /// 数据块未分配
+    BlockNotPresent {
+        block_idx: u64,
+        state: String,
+    },
+
+    /// 扇区索引越界
+    SectorOutOfBounds {
+        sector: u64,
+        max: u64,
+    },
+
+    /// 父磁盘未找到
+    ParentNotFound {
+        path: std::path::PathBuf,
+    },
+
+    /// 父磁盘 GUID 不匹配
+    ParentMismatch {
+        expected: Guid,
+        actual: Guid,
+    },
+
+    /// 参数无效
+    InvalidParameter(String),
+
+    /// 只读模式
+    ReadOnly,
 }
 ```
 
+---
 
 ## 模块结构
 
@@ -1152,7 +1245,7 @@ pub mod validation;
 
 pub use error::{Error, Result};
 pub use file::{File, LogReplayPolicy, ParentChainInfo, ReadSemanticsPolicy};
-pub use io::{IO, PayloadBlock, Sector};
+pub use io::{IO, Sector};
 pub use types::Guid;
 
 // Section 模块
@@ -1160,12 +1253,12 @@ pub mod section {
     pub use sections::Sections;
     pub use header::{Header, FileTypeIdentifier, HeaderStructure, RegionTable, RegionTableHeader, RegionTableEntry};
     pub use bat::{Bat, BatEntry, BatState, PayloadBlockState, SectorBitmapState};
-    pub use metadata::{Metadata, MetadataTable, TableHeader, TableEntry, EntryFlags, MetadataItems, FileParameters, ParentLocator, LocatorHeader, KeyValueEntry};
-    pub use log::{Log, Entry, LogEntryHeader, DataDescriptor, ZeroDescriptor, DataSector};
+    pub use metadata::{Metadata, MetadataTable, TableHeader, TableEntry, EntryFlags, MetadataItems, FileParameters, ParentLocator, LocatorHeader, KeyValueEntry, StandardItems};
+    pub use log::{Log, Entry, LogEntryHeader, Descriptor, DataDescriptor, ZeroDescriptor, DataSector};
 }
 
 // IO模块（根级）
-pub use io::{IO, Sector, PayloadBlock};
+pub use io::{IO, Sector};
 
 // 主 API
 pub use file::File;
