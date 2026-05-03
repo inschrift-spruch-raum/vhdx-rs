@@ -12,7 +12,7 @@ vhdx::
 │   ├── open(path) -> File::OpenOptions     # 链式打开
 │   ├── create(path) -> File::CreateOptions # 链式创建
 │   ├── sections(&self) -> &Sections<'_>    # 获取所有sections
-│   ├── io(&self) -> IO<'_>                 # 获取IO模块
+│   ├── io(&self) -> Result<IO<'_>>         # 获取IO模块
 │   ├── validator(&self) -> validation::SpecValidator<'_>  # 获取规范校验器
 │   └── inner(&self) -> &std::fs::File
 │
@@ -46,10 +46,10 @@ vhdx::
 │
 ├── section::                               # Section模块 - 物理文件结构映射
 │   ├── Sections<'a>                        # 容器，管理所有sections (懒加载)
-│   │   ├── header(&self) -> Result<std::cell::Ref<'_, Header<'a>>>
-│   │   ├── bat(&self) -> Result<std::cell::Ref<'_, Bat<'a>>>
-│   │   ├── metadata(&self) -> Result<std::cell::Ref<'_, Metadata<'a>>>
-│   │   └── log(&self) -> Result<std::cell::Ref<'_, Log<'a>>>
+│   │   ├── header(&self) -> Result<Header<'_>>
+│   │   ├── bat(&self) -> Result<Bat<'_>>
+│   │   ├── metadata(&self) -> Result<Metadata<'_>>
+│   │   └── log(&self) -> Result<Log<'_>>
 │   │
 │   ├── Header<'a>                          # Header Section (1 MB)
 │   │   ├── file_type(&self) -> FileTypeIdentifier<'_>
@@ -93,7 +93,7 @@ vhdx::
 │   │       ├── state(&self) -> BatState
 │   │       ├── file_offset_mb(&self) -> u64
 │   │
-│   │       └──BatState 枚举:                  # Entry 类型枚举
+│   │       └── BatState 枚举:                  # Entry 类型枚举
 │   │          ├── Payload(PayloadBlockState)
 │   │          └── SectorBitmap(SectorBitmapState)
 │   │
@@ -129,7 +129,7 @@ vhdx::
 │   │           ├── offset(&self) -> u32
 │   │           ├── length(&self) -> u32
 │   │           ├── flags_bits(&self) -> u32
-│   │           └── reserved(&self) -> u32
+│   │           ├── reserved(&self) -> u32
 │   │           └── flags(&self) -> EntryFlags
 │   │
 │   │           └── EntryFlags
@@ -154,9 +154,9 @@ vhdx::
 │   │           ├── header(&self) -> LocatorHeader<'_>
 │   │           ├── entry(&self, index: usize) -> Result<KeyValueEntry<'_>>
 │   │           ├── entries(&self) -> impl Iterator<Item = KeyValueEntry<'_>> + '_ # 强制：零拷贝视图迭代
-│   │           └── key_value_data(&self) -> &[u8]
-│   │           └── resolve_parent_path(&self) -> Result<ParentPath<'_>> # 按 relative_path->volume_path->absolute_win32_path 顺序解析（零拷贝）
-│   │
+│   │           ├── key_value_data(&self) -> &[u8]
+│   │           ├── resolve_parent_path(&self) -> Result<ParentPath> # 按 relative_path->volume_path->absolute_win32_path 顺序解析（UTF-16LE 解码，返回 owned PathBuf）
+│   │           │
 │   │           └── LocatorHeader<'a>
 │   │               ├── locator_type(&self) -> Guid
 │   │               ├── reserved(&self) -> u16
@@ -219,7 +219,7 @@ vhdx::
 │    
 ├── IO<'a>                                  # IO模块 (扇区级操作)
 │   └── sector(&self, sector: u64) -> Result<Sector<'_>>   # 输入: 全局扇区号
-│   │
+│
 │   └── Sector<'a>                          # 扇区级定位与操作
 │       ├── payload(&self) -> PayloadBlock<'_>
 │       ├── read(&self, buf: &mut [u8], semantics: ReadSemanticsPolicy) -> Result<usize>
@@ -237,8 +237,8 @@ vhdx::
 │   ├── EffectiveDataPreferred              # 实际数据优先
 │   └── RawDataPreferred                    # 原始数据优先
 ├── ParentChainInfo                         # 差分链校验结果
-│   ├── child(&self) -> PathBuf             # 当前子盘路径
-│   ├── parent(&self) -> PathBuf            # 解析出的父盘路径
+│   ├── child(&self) -> &Path              # 当前子盘路径（借用，避免不必要的分配）
+│   ├── parent(&self) -> &Path             # 解析出的父盘路径（借用，避免不必要的分配）
 │   └── linkage_matched(&self) -> bool      # 是否匹配 parent_linkage
 │
 └── Error                                   # 错误类型
@@ -326,7 +326,8 @@ impl File {
     /// 获取IO模块（用于扇区级读写）
     /// 懒加载：内部Sector缓存按需从文件读取
     /// 前置条件：文件无待回放日志，或已按策略完成日志回放
-    pub fn io(&self) -> IO<'_>;
+    /// IO 创建可能失败（如元数据不完整），因此返回 `Result<IO<'_>>`。
+    pub fn io(&self) -> Result<IO<'_>>;
 
     /// 获取规范校验器（只读）
     ///
@@ -416,11 +417,14 @@ pub enum ReadSemanticsPolicy {
 // 等价于使用 LogReplayPolicy::Require。
 
 /// 差分链校验结果
+///
+/// `child()` 和 `parent()` 返回 `&Path` 借用引用，
+/// 避免不必要的 `PathBuf` 分配。
 pub struct ParentChainInfo {
-    /// 当前子盘路径
-    pub fn child(&self) -> PathBuf,
-    /// 解析出的父盘路径
-    pub fn parent(&self) -> PathBuf,
+    /// 当前子盘路径（借用引用）
+    pub fn child(&self) -> &Path,
+    /// 解析出的父盘路径（借用引用）
+    pub fn parent(&self) -> &Path,
     /// 是否匹配 parent_linkage
     pub fn linkage_matched(&self) -> bool,
 }
@@ -547,7 +551,9 @@ pub mod validation {
 ```rust
 /// VHDX文件中的所有Section的容器
 /// 
-/// 采用懒加载策略：访问具体Section时才从文件读取
+/// 采用懒加载策略：访问具体Section时才从文件读取。
+/// 内部使用 `OnceLock` 缓存已加载的 section 缓冲区，
+/// 多次调用同一方法仅产生一次 I/O。
 pub struct Sections<'a> {
     // 内部字段：缓存已加载的sections
 }
@@ -555,19 +561,19 @@ pub struct Sections<'a> {
 impl<'a> Sections<'a> {
     /// 访问Header Section
     /// 懒加载：首次调用时从文件读取1MB Header Section
-    pub fn header(&self) -> Result<std::cell::Ref<'_, Header<'a>>>;
+    pub fn header(&self) -> Result<Header<'_>>;
     
     /// 访问BAT Section
     /// 懒加载：首次调用时从文件读取BAT区域
-    pub fn bat(&self) -> Result<std::cell::Ref<'_, Bat<'a>>>;
+    pub fn bat(&self) -> Result<Bat<'_>>;
     
     /// 访问Metadata Section
     /// 懒加载：首次调用时从文件读取Metadata区域
-    pub fn metadata(&self) -> Result<std::cell::Ref<'_, Metadata<'a>>>;
+    pub fn metadata(&self) -> Result<Metadata<'_>>;
     
     /// 访问Log Section
     /// 懒加载：首次调用时从文件读取Log区域
-    pub fn log(&self) -> Result<std::cell::Ref<'_, Log<'a>>>;
+    pub fn log(&self) -> Result<Log<'_>>;
 }
 ```
 
@@ -851,21 +857,24 @@ impl<'a> ParentLocator<'a> {
     /// 获取Key-Value数据区域
     pub fn key_value_data(&self) -> &[u8];
 
-    /// 解析父路径（零拷贝视图）
+    /// 解析父路径
     ///
     /// 按规范顺序尝试：relative_path -> volume_path -> absolute_win32_path。
-    /// 返回借用视图，不在该 API 内分配 `PathBuf`。
+    /// 返回 owned `PathBuf`：UTF-16LE 解码需要分配内存，无法返回借用视图。
     ///
     /// 失败条件：
     /// - 所有路径均无法访问或丢失 -> Error::ParentNotFound
-    pub fn resolve_parent_path(&self) -> Result<ParentPath<'_>>;
+    pub fn resolve_parent_path(&self) -> Result<ParentPath>;
 }
 
-/// Parent 路径零拷贝视图
-pub enum ParentPath<'a> {
-    Relative(&'a std::path::Path),
-    Volume(&'a std::path::Path),
-    AbsoluteWin32(&'a std::path::Path),
+/// Parent 路径（owned，UTF-16LE 解码需要分配）
+///
+/// 注意：VHDX parent locator 中的路径以 UTF-16LE 编码存储，
+/// 解码为 Rust 的 `PathBuf` 需要堆分配，因此无法返回借用视图。
+pub enum ParentPath {
+    Relative(PathBuf),
+    Volume(PathBuf),
+    AbsoluteWin32(PathBuf),
 }
 
 /// Locator Header (20字节)
@@ -1281,7 +1290,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .finish()?;
     
     // 写入数据（通过 IO/Sector 执行扇区写）
-    let io = file.io();
+    let io = file.io()?;
     let sector0 = io.sector(0)?;
     let data = vec![0u8; 4096];
     sector0.write(&data)?;
