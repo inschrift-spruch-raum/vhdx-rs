@@ -99,31 +99,40 @@ MS-VHDX/{chapter}.{section}[.{subsection}[.{sub}]]
 
 | code | spec_ref | 说明 |
 |---|---|---|
-| `REGION_SIGNATURE_INVALID` | `MS-VHDX/2.2.3` | Region Table 签名非 `regi` |
 | `REGION_CHECKSUM_MISMATCH` | `MS-VHDX/2.2.3` | CRC-32C 校验和不匹配 |
-| `REGION_ENTRY_OVERLAP` | `MS-VHDX/2.1` | Region 区间重叠/越界 |
 | `REGION_ENTRY_ALIGNMENT` | `MS-VHDX/2.1` | Region 未按 1MB 对齐 |
+| `REGION_ENTRY_OFFSET_MINIMUM` | `MS-VHDX/2.1` | Region file_offset 必须 >= 1MB |
+| `REGION_ENTRY_OVERLAP` | `MS-VHDX/2.1` | Region 区间重叠/越界 |
+| `REGION_OPTIONAL_UNKNOWN` | `MS-VHDX-宽松扩展标准` | optional unknown region GUID 在非严格模式下被容忍 |
 | `REGION_REQUIRED_UNKNOWN` | `MS-VHDX-宽松扩展标准` | required unknown region 存在且 strict=true |
+| `REGION_SIGNATURE_INVALID` | `MS-VHDX/2.2.3` | Region Table 签名非 `regi` |
 
 ### 4.3 BAT 校验
 
 | code | spec_ref | 说明 |
 |---|---|---|
-| `BAT_SIGNATURE_INVALID` | `MS-VHDX/2.5` | BAT 签名非法 |
+| `BAT_ENTRY_COUNT_INSUFFICIENT` | `MS-VHDX/2.5` | BAT entry 数量不足以覆盖虚拟磁盘范围 |
+| `BAT_ENTRY_FILE_OFFSET_UNALIGNED` | `MS-VHDX/2.5` | Payload 块偏移未按块大小对齐 |
 | `BAT_ENTRY_INVALID_STATE` | `MS-VHDX/2.5.1.1` | BAT entry 状态值未定义 |
 | `BAT_ENTRY_STATE_MISMATCH` | `MS-VHDX/2.5` | 状态与磁盘类型不匹配（如固定盘出现 `Unmapped`） |
-| `BAT_ENTRY_FILE_OFFSET_UNALIGNED` | `MS-VHDX/2.5` | Payload 块偏移未按块大小对齐 |
+| `BAT_FILE_OFFSET_DUPLICATE` | `MS-VHDX/2.5` | BAT 中多个 entry 指向同一 file_offset_mb |
 | `BAT_SECTOR_BITMAP_INVALID_STATE` | `MS-VHDX/2.5.1.2` | Sector Bitmap entry 状态值未定义 |
+| `BAT_SIGNATURE_INVALID` | `MS-VHDX/2.5` | BAT 签名非法 |
 
 ### 4.4 Metadata 校验
 
 | code | spec_ref | 说明 |
 |---|---|---|
-| `METADATA_TABLE_SIGNATURE_INVALID` | `MS-VHDX/2.6.1` | Metadata Table 签名非 `metadata` |
 | `METADATA_ENTRY_INVALID` | `MS-VHDX/2.6.1.2` | Table Entry 格式异常（offset/length 越界） |
-| `METADATA_ITEM_CORRUPTED` | `MS-VHDX/2.6.2` | Metadata Item 数据损坏 |
-| `METADATA_REQUIRED_MISSING` | `MS-VHDX-宽松扩展标准` | required metadata item 缺失 |
+| `METADATA_ENTRY_OFFSET_MINIMUM` | `MS-VHDX/2.6.1.2` | metadata entry offset 必须 >= 64KB |
 | `METADATA_GUID_UNKNOWN` | `MS-VHDX/2.6.2` | 未知 Metadata Item GUID |
+| `METADATA_ITEMS_OVERLAP` | `MS-VHDX/2.6.2` | metadata items 区间相互重叠 |
+| `METADATA_ITEM_CORRUPTED` | `MS-VHDX/2.6.2` | Metadata Item 数据损坏 |
+| `METADATA_OPTIONAL_UNKNOWN` | `MS-VHDX-宽松扩展标准` | optional unknown metadata item 在严格模式下被拒绝 |
+| `METADATA_REQUIRED_MISSING` | `MS-VHDX-宽松扩展标准` | required metadata item 缺失 |
+| `METADATA_REQUIRED_UNKNOWN` | `MS-VHDX-宽松扩展标准` | required unknown metadata item 存在 |
+| `METADATA_RESERVED_FLAGS_SET` | `MS-VHDX/2.6.1.2` | metadata entry 的保留标志位被设置 |
+| `METADATA_TABLE_SIGNATURE_INVALID` | `MS-VHDX/2.6.1` | Metadata Table 签名非 `metadata` |
 
 ### 4.5 Log 校验
 

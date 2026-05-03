@@ -213,9 +213,8 @@ vhdx::
 │    
 │           └── DataSector<'a>              # Data Sector
 │               ├── signature(&self) -> &'a [u8; 4]
-│               ├── sequence_high(&self) -> u32
 │               ├── data(&self) -> &'a [u8]
-│               └── sequence_low(&self) -> u32
+│               └── sequence_number(&self) -> u64
 │    
 ├── IO<'a>                                  # IO模块 (扇区级操作)
 │   └── sector(&self, sector: u64) -> Result<Sector<'_>>   # 输入: 全局扇区号
@@ -243,7 +242,6 @@ vhdx::
 │
 └── Error                                   # 错误类型
     ├── Io(std::io::Error)                  # 底层 IO 错误
-    ├── FileLocked                          # 文件被其他进程锁定（Windows）
     ├── InvalidFile(String)                 # 无效的 VHDX 文件
     ├── InvalidSignature { expected, found }# 签名不匹配
     ├── CorruptedHeader(String)             # 头部损坏
@@ -669,8 +667,6 @@ impl<'a> Bat<'a> {
     
     /// BAT Entry数量
     pub fn len(&self) -> usize;
-    
-    pub fn is_empty(&self) -> bool;
 }
 
 /// BAT Entry 结构体（零拷贝视图）
@@ -820,10 +816,7 @@ impl<'a> MetadataItems<'a> {
 }
 
 /// File Parameters (8字节)
-pub struct FileParameters<'a> {
-    pub fn block_size(&self) -> u32,
-    pub fn flags(&self) -> u32,
-}
+pub struct FileParameters<'a>;
 
 impl<'a> FileParameters<'a> {
     /// 块大小（1MB-256MB，2的幂）
@@ -907,6 +900,8 @@ impl<'a> KeyValueEntry<'a> {
 }
 
 /// 标准Metadata Item GUID常量
+///
+/// 路径：`vhdx::section::StandardItems`
 pub mod StandardItems {
     pub const FILE_PARAMETERS: Guid = Guid::from_bytes([
         0x37, 0x67, 0xA1, 0xCA, 0x36, 0xFA, 0x43, 0x4D,
@@ -1055,14 +1050,15 @@ pub struct LogEntryHeader<'a> {
 /// 本结构体仅包含日志文件中的中间段字段；data() 返回的是**拼装后的完整 4KB 原始扇区**
 /// （而非仅日志中存储的 4084 字节中间段）。
 pub struct DataSector<'a> {
+    /// Signature. MUST be `"data"` (0x61746164).
     pub fn signature(&self) -> &'a [u8; 4],
-    pub fn sequence_high(&self) -> u32,
+    /// The reconstructed full 64-bit sequence number.
+    pub fn sequence_number(&self) -> u64,
     /// 返回拼装后的完整原始扇区（4096 字节）
     ///
     /// 该返回值由 `LeadingBytes(8B) + 日志data区(4084B) + TrailingBytes(4B)`
     /// 拼接而成，与最后一次写入该扇区的原始数据一致。
     pub fn data(&self) -> &'a [u8],
-    pub fn sequence_low(&self) -> u32,
 }
 ```
 
@@ -1139,14 +1135,25 @@ pub struct PayloadBlock<'a> {
 ```rust
 // lib.rs - 公共 API 导出
 
-// 核心类型
-pub use error::{Error, Result};
-pub use types::Guid;
-pub use file::{LogReplayPolicy, ReadSemanticsPolicy, ParentChainInfo};
-pub use validation::{SpecValidator, ValidationIssue};
+pub mod section;
 
-// 规范校验模块
+mod bat;
+pub(crate) mod common;
+mod error;
+mod file;
+mod header;
+mod io;
+mod log;
+pub(crate) mod log_replay;
+mod metadata;
+mod sections;
+mod types;
 pub mod validation;
+
+pub use error::{Error, Result};
+pub use file::{File, LogReplayPolicy, ParentChainInfo, ReadSemanticsPolicy};
+pub use io::{IO, PayloadBlock, Sector};
+pub use types::Guid;
 
 // Section 模块
 pub mod section {
@@ -1162,18 +1169,6 @@ pub use io::{IO, Sector, PayloadBlock};
 
 // 主 API
 pub use file::File;
-
-// 内部实现 (私有)
-mod error;
-mod types;
-mod common;
-mod file;
-mod io;
-mod sections;
-mod header;
-mod bat;
-mod metadata;
-mod log;
 ```
 
 ---
