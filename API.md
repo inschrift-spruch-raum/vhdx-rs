@@ -256,6 +256,8 @@ vhdx::
     ├── CorruptedHeader(String)             # 头部损坏
     ├── InvalidChecksum { expected: u32, actual: u32 }  # CRC32C 校验和不匹配
     ├── InvalidBlockState(u8)               # 无效的 BAT 块状态值
+    ├── StateMismatch { state: u8, description: String }  # BAT 状态值与磁盘类型不匹配
+    ├── BatFileOffsetUnaligned { offset_mb: u64, block_size: u32 }  # BAT 条目文件偏移未按块大小对齐
     ├── InvalidRegionTable(String)          # 区域表格式错误
     ├── InvalidMetadata(String)             # 元数据格式错误
     ├── InvalidParentLocator(String)        # 父定位器格式错误（ParentLocator 键值对解析失败）
@@ -288,7 +290,6 @@ vhdx-tool::
 │   └── --force                             # 覆盖已存在文件
 │
 ├── check [file]                            # 检查文件完整性
-│   ├── --repair                            # 尝试修复
 │   ├── --log-replay                        # 重放日志
 │   └── --strict                            # 启用严格模式 (默认: true)
 │
@@ -393,6 +394,7 @@ impl File::OpenOptions {
 /// 日志回放策略
 ///
 /// 标准：docs/Standard/MS-VHDX.md §2.3 + docs/Standard/MS-VHDX-只读扩展标准.md §4
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogReplayPolicy {
     /// 若存在日志则返回 LogReplayRequired
     /// 标准：MS-VHDX-只读扩展标准 §4.1
@@ -685,7 +687,7 @@ impl<'a> Bat<'a> {
 /// BAT Entry 结构体（零拷贝视图）
 /// 
 /// 存储 Payload Block 或 Sector Bitmap Block 的元数据
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BatEntry<'a> {
     /// Entry 类型和状态
     pub fn state(&self) -> Result<BatState>,
@@ -694,7 +696,7 @@ pub struct BatEntry<'a> {
 }
 
 /// BAT Entry 类型枚举
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BatState {
     /// Payload Block 状态
     Payload(PayloadBlockState),
@@ -703,7 +705,7 @@ pub enum BatState {
 }
 
 /// Payload Block State
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PayloadBlockState {
     NotPresent = 0,
     Undefined = 1,
@@ -726,7 +728,7 @@ pub enum PayloadBlockState {
 /// - RawDataPreferred -> 原始数据语义
 
 /// Sector Bitmap Block State (用于差异磁盘)
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SectorBitmapState {
     NotPresent = 0,  // 块未分配
     Present = 6,     // 块存在
@@ -1106,7 +1108,10 @@ impl<'a> IO<'a> {
 /// Sector - 扇区级定位与操作
 /// 
 /// 封装了块内扇区索引和内部块引用
-#[derive(Clone, Debug, PartialEq)]
+///
+/// PartialEq 是手动实现的（比较 file 指针、block_idx、sector_in_block
+/// 等字段），因为 IO/File 不实现 PartialEq。
+#[derive(Clone, Debug)]
 pub struct Sector<'a>;
 
 impl<'a> Sector<'a> {
@@ -1163,6 +1168,22 @@ pub enum Error {
 
     /// 无效的 BAT 块状态值
     InvalidBlockState(u8),
+
+    /// BAT 状态值与磁盘类型不匹配
+    ///
+    /// 用于 BAT 条目状态值合法但与磁盘类型不兼容的场景，如：
+    /// - 非差分盘上出现 Unmapped 或 PartiallyPresent
+    /// - 非差分盘上 SectorBitmap 状态非 NotPresent
+    StateMismatch {
+        state: u8,
+        description: String,
+    },
+
+    /// BAT 条目文件偏移未按块大小对齐
+    BatFileOffsetUnaligned {
+        offset_mb: u64,
+        block_size: u32,
+    },
 
     /// 区域表格式错误
     InvalidRegionTable(String),
