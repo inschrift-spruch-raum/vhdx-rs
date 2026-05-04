@@ -30,12 +30,13 @@
 ### 3.1 `strict = true`（严格模式，默认）
 
 1. 对 `required unknown`，实现 **MUST** 失败并拒绝打开。  
-2. 错误输出 **SHOULD** 可定位到具体 section / item。  
-3. 实现 **MUST NOT** 以“猜测语义”方式继续处理未知 required 项。
+2. 对 `optional unknown`，实现 **MUST** 失败并拒绝打开。  
+3. 错误输出 **SHOULD** 可定位到具体 section / item。  
+4. 实现 **MUST NOT** 以“猜测语义”方式继续处理未知 required 项。
 
 ### 3.2 `strict = false`（宽松模式）
 
-1. 对 `optional unknown`，实现 **MAY** 忽略。  
+1. 对 `optional unknown`，实现 **MUST** 忽略（不得因 optional unknown 拒绝打开）。  
 2. 忽略时，实现 **MUST NOT** 破坏其原始解释路径（不得重写语义、不得污染其他已知项解析）。  
 3. 对 `required unknown`，实现 **MUST** 仍然失败并拒绝打开。  
 4. `strict=false` **MUST NOT** 被解释为“跳过 required 检查”。
@@ -61,6 +62,7 @@
 
 - [ ] 默认 `strict=true`。  
 - [ ] `strict=true` 时 required unknown 一律失败。  
-- [ ] `strict=false` 时 optional unknown 可忽略。  
+- [ ] `strict=true` 时 optional unknown 一律失败。  
+- [ ] `strict=false` 时 optional unknown 必须忽略。  
 - [ ] `strict=false` 时 required unknown 仍一律失败。  
 - [ ] unknown 处理不影响已知项解析正确性。

@@ -59,6 +59,7 @@ VHDX 相比早期格式，核心是：
 - 必须能识别并定位两个 required region：
   - BAT region
   - Metadata region。
+- **Header 与 Region Table 的配对**：规范中存在两份 Header（偏移 64KB / 128KB）和两份 Region Table（偏移 192KB / 256KB），但 **未定义它们之间的配对关系**。实现可以自行决定配对策略（例如按物理位置：Header 1 ↔ Region Table 1，Header 2 ↔ Region Table 2）。两份 Region Table 的内容在正常情况下应一致，但实现需要考虑其中一份损坏时的降级策略。
 
 ### Step C：决定是否执行 Log Replay
 
@@ -157,7 +158,7 @@ BAT entry = 64 位，核心字段：
 - `parent_linkage2` 主要用于 merge 过渡期的安全切换，不是常规读路径下的主匹配字段。
 - merge 过渡期之外，`parent_linkage2` 不存在。
 - merge 相关更新要按顺序执行：先把新 GUID 写入子盘的 parent identifier，再更新父盘 `DataWriteGuid`。这样可避免出现“父盘 GUID 已变更，但子盘尚未指向新值”的短暂断链窗口。
-- 按上面语义理解后，`parent_linkage2` 的描述与常规 `parent_linkage` 检查并不冲突，前者用于过渡安全，后者用于常态匹配。
+- 因为 merge 只是过渡,所以不支持校验 merge 过渡期的 VHDX 文件
 
 ---
 

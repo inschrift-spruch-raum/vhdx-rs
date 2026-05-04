@@ -18,7 +18,7 @@ vhdx::
 │
 │   └── OpenOptions                         # 关联类型：打开选项
 │       ├── write(self) -> Self             # 启用写权限（RW）
-│       ├── strict(self, bool) -> Self      # 是否启用严格模式（默认 true，required unknown 始终失败）
+│       ├── strict(self, bool) -> Self      # 是否启用严格模式（默认 true，所有 unknown 始终失败）
 │       ├── log_replay(self, LogReplayPolicy) -> Self # 日志回放策略
 │       └── finish(self) -> Result<File>    # 完成打开
 │
@@ -33,16 +33,15 @@ vhdx::
 │
 ├── validation::                             # 规范一致性校验模块（只读）
 │   ├── SpecValidator<'a>                    # 规范校验器
-│   │   ├── validate_file(&self) -> Result<()> # 总入口（Header/Region/BAT/Metadata/Log）
-│   │   ├── validate_header(&self) -> Result<()>
-│   │   ├── validate_region_table(&self) -> Result<()>
-│   │   ├── validate_bat(&self) -> Result<()>
-│   │   ├── validate_metadata(&self) -> Result<()>
-│   │   ├── validate_required_metadata_items(&self) -> Result<()>
-│   │   ├── validate_log(&self) -> Result<()>
-│   │   ├── validate_parent_locator(&self) -> Result<()>
-│   │   └── validate_parent_chain(&self) -> Result<ParentChainInfo> # 差分链校验
-│   └── ValidationIssue                      # 可选：结构化校验问题（用于报告）
+│   │   ├── validate_file(&self) -> Result<Vec<ValidationIssue>> # 总入口
+│   │   ├── validate_header(&self) -> Result<Vec<ValidationIssue>>
+│   │   ├── validate_region_table(&self) -> Result<Vec<ValidationIssue>>
+│   │   ├── validate_bat(&self) -> Result<Vec<ValidationIssue>>
+│   │   ├── validate_metadata(&self) -> Result<Vec<ValidationIssue>>
+│   │   ├── validate_required_metadata_items(&self) -> Result<Vec<ValidationIssue>>
+│   │   ├── validate_log(&self) -> Result<Vec<ValidationIssue>>
+│   │   └── validate_parent_locator(&self) -> Result<Vec<ValidationIssue>> # 含 parent_linkage2 检查 + 差分链 GUID 校验
+│   └── ValidationIssue                      # 结构化校验问题
 │
 ├── section::                               # Section模块 - 物理文件结构映射
 │   ├── Sections<'a>                        # 容器，管理所有sections (懒加载)
@@ -58,7 +57,7 @@ vhdx::
 │   │
 │   │   └── FileTypeIdentifier<'a>          # 文件类型标识符视图
 │   │       ├── signature(&self) -> &'a [u8; 8]
-│   │       └── creator(&self) -> &'a [u8]
+│   │       └── creator(&self) -> &'a [u8; 512]
 │   │
 │   │   └── HeaderStructure<'a>             # VHDX Header 视图
 │   │       ├── signature(&self) -> &'a [u8; 4]
@@ -150,12 +149,12 @@ vhdx::
 │   │           └── LOCATOR_TYPE_VHDX        # B04AEFB7-D19E-4A81-B789-25B8E9445913
 │   │
 │   │   └── MetadataItems<'a>
-│   │       ├── file_parameters(&self) -> Option<FileParameters<'_>>
-│   │       ├── virtual_disk_size(&self) -> Option<u64>
-│   │       ├── virtual_disk_id(&self) -> Option<Guid>
-│   │       ├── logical_sector_size(&self) -> Option<u32>
-│   │       ├── physical_sector_size(&self) -> Option<u32>
-│   │       └── parent_locator(&self) -> Option<ParentLocator<'_>>
+│   │       ├── file_parameters(&self) -> Result<FileParameters<'_>>
+│   │       ├── virtual_disk_size(&self) -> Result<u64>
+│   │       ├── virtual_disk_id(&self) -> Result<Guid>
+│   │       ├── logical_sector_size(&self) -> Result<u32>
+│   │       ├── physical_sector_size(&self) -> Result<u32>
+│   │       └── parent_locator(&self) -> Result<ParentLocator<'_>>
 │   │
 │   │       └── FileParameters<'a>
 │   │           ├── block_size(&self) -> u32
@@ -232,6 +231,7 @@ vhdx::
 │   └── sector(&self, start: u64, count: u64) -> Result<Sector<'_>>   # 输入: 起始扇区号 + 连续扇区数
 │
 │   └── Sector<'a>                          # 扇区级定位与操作（游标式）
+│       ├── semantics(self, ReadSemanticsPolicy) -> Self  # 设置读语义策略（链式，默认 EffectiveDataPreferred）
 │       ├── impl Read   → fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>
 │       ├── impl Write  → fn write(&mut self, buf: &[u8]) -> io::Result<usize>
 │       │               + fn flush(&mut self) -> io::Result<()>
@@ -243,34 +243,78 @@ vhdx::
 │   ├── Auto                                # 打开阶段自动回放日志
 │   ├── InMemoryOnReadOnly                  # 只读场景以内存方式回放
 │   └── ReadOnlyNoReplay                    # 只读打开且不回放日志（允许带未回放日志读取元数据）
-├── ReadSemanticsPolicy                     # BAT读语义策略
-│   ├── EffectiveDataPreferred              # 实际数据优先
+├── ReadSemanticsPolicy                     # BAT读语义策略（通过 Sector::semantics 链式设置）
+│   ├── EffectiveDataPreferred              # 实际数据优先（默认）
 │   └── RawDataPreferred                    # 原始数据优先
-├── ParentChainInfo                         # 差分链校验结果
-│   ├── child(&self) -> &Path              # 当前子盘路径（借用，避免不必要的分配）
-│   ├── parent(&self) -> &Path             # 解析出的父盘路径（借用，避免不必要的分配）
-│   └── linkage_matched(&self) -> bool      # 是否匹配 parent_linkage
+│
+├── SignaturePosition                       # 签名错误位置枚举
+│   ├── FileTypeIdentifier                  # 文件类型标识符（vhdxfile）
+│   ├── Header                              # Header（head）
+│   ├── RegionTable                         # Region Table（regi）
+│   ├── MetadataTable                       # Metadata Table（metadata）
+│   ├── LogEntry                            # Log Entry Header（loge）
+│   ├── Descriptor                          # Descriptor（desc/zero）
+│   └── DataSector                          # Data Sector（data）
 │
 └── Error                                   # 错误类型
     ├── Io(std::io::Error)                  # 底层 IO 错误
     ├── InvalidFile(String)                 # 无效的 VHDX 文件
-    ├── InvalidSignature { expected: [u8; 4], found: [u8; 4] }
+    ├── InvalidSignature                    # 签名不匹配
+    │   { position: SignaturePosition, expected: [u8; 8], found: [u8; 8] }
+    │   # 说明：部分签名仅 4 字节（如 Header "head"、Region Table "regi"），
+    │   # 存储到 8 字节字段时高位补零。expected/found 均按 8 字节表示以统一接口类型。
     ├── CorruptedHeader(String)             # 头部损坏
-    ├── InvalidChecksum { expected: u32, actual: u32 }  # CRC32C 校验和不匹配
-    ├── InvalidBlockState(u8)               # 无效的 BAT 块状态值
-    ├── StateMismatch { state: u8, description: String }  # BAT 状态值与磁盘类型不匹配
-    ├── BatFileOffsetUnaligned { offset_mb: u64, block_size: u32 }  # BAT 条目文件偏移未按块大小对齐
+    ├── HeaderLogGuidMismatch               # 双 Header LogGuid 不一致
+    │   { header1_log_guid: Guid, header2_log_guid: Guid }
+    ├── HeaderSequenceNumberInvalid         # 双 Header 序列号异常
+    │   { sequence_number_1: u64, sequence_number_2: u64 }
+    ├── UnsupportedVersion { version: u16 } # 不支持的 VHDX 版本（Version != 1）
+    ├── UnsupportedLogVersion { version: u16 } # 不支持的 Log 版本（LogVersion != 0）
+    ├── InvalidChecksum                     # CRC32C 校验和不匹配
+    │   { expected: u32, actual: u32 }
+    ├── InvalidBlockState(u8)               # 无效的 Payload Block 状态值
+    ├── InvalidSectorBitmapState(u8)        # 无效的 Sector Bitmap 块状态值
+    ├── StateMismatch                       # BAT 状态值与磁盘类型不匹配
+    │   { state: u8, description: String }
+    ├── BatFileOffsetUnaligned              # BAT 条目文件偏移未按块大小对齐
+    │   { offset_mb: u64, block_size: u32 }
+    ├── BatEntryCountInsufficient           # BAT entry 数量不足以覆盖虚拟磁盘
+    │   { actual: u64, expected: u64 }
+    ├── BatFileOffsetDuplicate              # BAT 多 entry 指向同偏移
+    │   { offset_mb: u64 }
     ├── InvalidRegionTable(String)          # 区域表格式错误
+    ├── RegionRequiredUnknown               # 未知的 required region
+    │   { guid: Guid }
     ├── InvalidMetadata(String)             # 元数据格式错误
-    ├── InvalidParentLocator(String)        # 父定位器格式错误（ParentLocator 键值对解析失败）
+    ├── MetadataGuidUnknown                 # 未知 Metadata Item GUID
+    │   { guid: Guid }
+    ├── MetadataRequiredMissing             # required metadata item 缺失
+    │   { guid: Guid }
+    ├── MetadataRequiredUnknown             # 未知的 required metadata item
+    │   { guid: Guid }
+    ├── MetadataOptionalUnknown             # 未知的 optional metadata item（strict=true 时阻断，strict=false 时忽略）
+    │   { guid: Guid }
+    ├── MetadataReservedFlagsSet            # Metadata 保留标志位被设置
+    │   { flags: u32 }
+    ├── InvalidParentLocator(String)        # 父定位器格式错误
     ├── MetadataNotFound { guid: Guid }     # 元数据项未找到
     ├── LogReplayRequired                   # 需要日志回放
     ├── LogEntryCorrupted(String)           # 日志条目损坏
+    ├── LogSequenceGap                      # 日志 sequence 不连续
+    │   { expected: u64, found: u64 }
+    ├── LogSequenceGuidMismatch             # 日志 sequence GUID 不匹配
+    │   { entry_log_guid: Guid, header_log_guid: Guid }
+    ├── LogActiveSequenceEmpty              # 活跃 sequence 为空
     ├── BatEntryNotFound { index: u64 }     # BAT 条目未找到
-    ├── BlockNotPresent { block_idx: u64, state: String }  # 数据块未分配
-    ├── SectorOutOfBounds { sector: u64, max: u64 }  # 扇区索引越界
+    ├── BlockNotPresent                     # 数据块未分配
+    │   { block_idx: u64, state: String }
+    ├── SectorOutOfBounds                   # 扇区索引越界
+    │   { sector: u64, max: u64 }
     ├── ParentNotFound { path: PathBuf }    # 父磁盘未找到
-    ├── ParentMismatch { expected: Guid, actual: Guid }  # 父磁盘 GUID 不匹配
+    ├── ParentMismatch                      # 父磁盘 GUID 不匹配
+    │   { expected: Guid, actual: Guid }
+    ├── ParentLocatorMissingLinkage         # parent_linkage key 不存在
+    ├── ParentLocatorLinkage2Conflict       # parent_linkage2 存在（merge 冲突）
     ├── InvalidParameter(String)            # 参数无效
     └── ReadOnly                            # 只读模式
 ```
@@ -315,7 +359,10 @@ vhdx-tool::
 - 所有 `entries()/descriptors()/data()` 必须实现为**零拷贝视图迭代器**。
 - 所有定长字节数组返回（如 signature/reserved）必须返回**借用视图**（`&[u8; N]`），禁止按值返回（`[u8; N]`）。
 - 迭代返回项必须借用底层 section 缓冲区（带生命周期），不得在迭代路径中复制 entry/descriptor/sector 原始字节。
-- 禁止在上述 API 内部构造中间 `Vec` / `String` / `Box` 作为返回流水线。
+- 除以下极少数特殊情况外，禁止在上述 API 内部构造中间 `Vec` / `String` / `Box` 作为返回流水线：
+  1. `DataSector::data()`：拼接 `LeadingBytes(DataDescriptor) + 中间段(DataSector) + TrailingBytes(DataDescriptor)` 为完整 4KB 扇区，无法零拷贝完成（见 DataSector FIXME）。
+  2. `ParentLocator::resolve_parent_path()`：UTF-16LE 解码为 `PathBuf`，需要分配内存，无法返回借用视图。
+  3. `KeyValueEntry::key()` / `value()`：UTF-16LE 解码为 `String`，需要分配内存，无法返回借用视图。
 - 文档中“按需解析”为惰性解析语义，不得退化为“先整体拷贝再迭代”。
 
 ### 1. File - 核心 API
@@ -339,7 +386,7 @@ impl File {
     
     /// 获取IO模块（用于扇区级读写）
     /// 懒加载：内部Sector缓存按需从文件读取
-    /// 前置条件：文件无待回放日志，或已按策略完成日志回放
+    /// 前置条件：文件已成功打开（只读即满足）
     /// IO 创建可能失败（如元数据不完整），因此返回 `Result<IO<'_>>`。
     pub fn io(&self) -> Result<IO<'_>>;
 
@@ -357,22 +404,21 @@ impl File {
 ### 2. File::OpenOptions - 打开选项（关联类型）
 
 ```rust
-impl File {
-    pub struct OpenOptions;
-}
+pub struct OpenOptions;
 
-impl File::OpenOptions {
+impl OpenOptions {
     /// 启用写权限（默认为只读）
     ///
     /// 标准：docs/Standard/MS-VHDX-只读扩展标准.md
     pub fn write(self) -> Self;
 
-    /// 设置严格模式
+    /// 设置严格模式（默认 true）
     ///
     /// 标准：docs/Standard/MS-VHDX-宽松扩展标准.md §3
-    /// strict=true 时启用严格校验（§3.1）。
-    /// strict=false 仅放宽 optional unknown（§3.2），
-    /// required unknown（region / metadata）仍必须失败（§3.2）。
+    /// 宽松扩展标准要求 strict 默认值为 true（§6.最小合规清单）。
+    /// strict=true 时启用严格校验（§3.1）：所有 unknown（含 optional）一律失败。
+    /// strict=false 仅放宽 optional unknown（§3.2）：optional unknown MUST 忽略，
+    /// required unknown（region / metadata）仍必须失败。
     pub fn strict(self, strict: bool) -> Self;
 
     /// 设置日志回放策略（默认 `LogReplayPolicy::Require`）
@@ -399,28 +445,46 @@ impl File::OpenOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogReplayPolicy {
     /// 若存在日志则返回 LogReplayRequired
-    /// 标准：MS-VHDX-只读扩展标准 §4.1
+    /// 标准：docs/Standard/MS-VHDX-只读扩展标准.md §4.1
     Require,
     /// 打开阶段自动回放日志
-    /// 标准：MS-VHDX-只读扩展标准 §4.2
-    Auto,
-    /// 只读场景允许以内存方式回放
-    /// 标准：MS-VHDX-只读扩展标准 §4.3
-    InMemoryOnReadOnly,
-    /// 只读打开且不回放日志
     ///
-    /// 标准：MS-VHDX-只读扩展标准 §4.4
-    /// 约束：仅允许结构读取（Header/Region/Metadata 等），
+    /// 标准：docs/Standard/MS-VHDX-只读扩展标准.md §4.2
+    /// 若为只读打开，回放 **MUST** 采用内存语义（在内存中构建回放后视图），**MUST NOT** 写回底层文件。
+    /// 若为可写打开，回放按标准流程写入文件。
+    Auto,
+    /// 以内存方式回放日志（仅限只读打开）
+    ///
+    /// 标准：docs/Standard/MS-VHDX-只读扩展标准.md §4.3
+    /// 实现 MUST 在内存中构建回放后视图，**MUST NOT** 写回底层文件。
+    /// 仅允许用于只读打开模式（即未调用 `OpenOptions::write()`）。
+    /// 若以可写打开模式调用 `finish()` 并传递此策略，
+    /// 实现 **MUST** 返回策略冲突错误并拒绝打开。
+    InMemoryOnReadOnly,
+    /// 不回放日志的只读打开
+    ///
+    /// 标准：docs/Standard/MS-VHDX-只读扩展标准.md §4.4
+    /// 仅允许用于只读打开模式（即未调用 `OpenOptions::write()`）。
+    /// 若以可写打开模式调用 `finish()` 并传递此策略，
+    /// 实现 **MUST** 返回策略冲突错误并拒绝打开。
+    /// 实现 **MUST** 跳过日志回放并允许 `finish()` 成功。
+    /// 约束：仅保证结构面读取（Header/Region/Metadata 等），
     /// 不保证 payload 数据面的一致性读取。
     ReadOnlyNoReplay,
 }
 
 /// BAT 读语义策略
 ///
-/// - `EffectiveDataPreferred`：实际数据优先
-/// - `RawDataPreferred`：原始数据优先
+/// 标准：docs/Standard/MS-VHDX.md §2.5.1.1（BAT entry state 语义）
+/// 对应 PayloadBlockState 的 Undefined / Unmapped 在不同策略下的行为差异。
+///
+/// - `EffectiveDataPreferred`：实际数据优先（Unmapped 返回 0）
+/// - `RawDataPreferred`：原始数据优先（Unmapped 返回当前存储的原始数据）
 ///
 /// 差分磁盘规则：无论策略为何，均以子磁盘数据优先。
+///
+/// 通过 `Sector::semantics()` 链式设置在 Sector 上。
+/// 未显式设置时，默认使用 `EffectiveDataPreferred`。
 pub enum ReadSemanticsPolicy {
     EffectiveDataPreferred,
     RawDataPreferred,
@@ -431,28 +495,12 @@ pub enum ReadSemanticsPolicy {
 // File::open(path).finish() 在未显式调用 .log_replay(...) 时，
 // 等价于使用 LogReplayPolicy::Require。
 
-/// 差分链校验结果
-///
-/// `child()` 和 `parent()` 返回 `&Path` 借用引用，
-/// 避免不必要的 `PathBuf` 分配。
-pub struct ParentChainInfo {
-    /// 当前子盘路径（借用引用）
-    pub fn child(&self) -> &Path,
-    /// 解析出的父盘路径（借用引用）
-    pub fn parent(&self) -> &Path,
-    /// 是否匹配 parent_linkage
-    pub fn linkage_matched(&self) -> bool,
-}
-```
-
 ### 3. File::CreateOptions - 创建选项
 
 ```rust
-impl File {
-    pub struct CreateOptions;
-}
+pub struct CreateOptions;
 
-impl File::CreateOptions {
+impl CreateOptions {
     /// 设置虚拟磁盘大小（必需）
     ///
     /// 约束：必须是 logical_sector_size 的整数倍，且 <= 64TB。
@@ -473,7 +521,7 @@ impl File::CreateOptions {
 
     /// 设置物理扇区大小（可选，默认 4096）
     ///
-    /// 约束：只能为 512 或 4096，且必须 >= logical_sector_size。
+    /// 约束：只能为 512 或 4096。
     pub fn physical_sector_size(self, size: u32) -> Self;
 
     /// 设置父磁盘路径（设置后即创建差分盘）
@@ -500,6 +548,12 @@ pub mod validation {
     ///
     /// 职责：将 `validate_spec_compliance` 的规则独立在单一模块中，
     /// 便于按 MS-VHDX 章节维护与测试。
+    ///
+    /// ⚠️ **已知限制**：本校验器将 `parent_linkage2` 视为冲突。
+    /// MS-VHDX 规范 §2.6.2.6.3 定义 `parent_linkage2` 为"can't be present"，
+    /// 但 Microsoft 产品实现在磁盘 merge 过渡期间会暂时写入该字段（merge 完成后解决）。
+    /// `validate_parent_locator()` 检测到 parent_linkage2 时将返回错误，
+    /// 因此**无法校验处于 merge 进行中的 VHDX 文件**。
     pub struct SpecValidator<'a>;
 
     impl<'a> SpecValidator<'a> {
@@ -511,48 +565,67 @@ pub mod validation {
         /// - Log: §2.3
         /// - BAT: §2.5
         /// - Metadata: §2.6
-        /// - Differencing: 在 has_parent=true 时覆盖 Parent Locator + Parent Chain
-        pub fn validate_file(&self) -> Result<()>;
+        /// - Differencing: 在 has_parent=true 时覆盖 Parent Locator 校验（含 parent_linkage 约束 + 差分链 GUID 一致性）
+        ///
+        /// 返回 `Vec<ValidationIssue>` 列出所有发现的校验问题，
+        /// 空 vec 表示完全合规。第一个导致校验终止的错误通过 `Err` 返回。
+        pub fn validate_file(&self) -> Result<Vec<ValidationIssue>>;
 
         /// Header Section 校验（签名/CRC/current header/version/log 对齐）
-        pub fn validate_header(&self) -> Result<()>;
+        ///
+        /// 返回 `Vec<ValidationIssue>` 列出所有发现的 Header 校验问题。
+        pub fn validate_header(&self) -> Result<Vec<ValidationIssue>>;
 
         /// Region Table 校验（regi/CRC/entry 约束/required unknown 拒绝加载）
-        pub fn validate_region_table(&self) -> Result<()>;
+        ///
+        /// 返回 `Vec<ValidationIssue>` 列出所有发现的 Region Table 校验问题。
+        pub fn validate_region_table(&self) -> Result<Vec<ValidationIssue>>;
 
         /// BAT 校验（entry 状态合法性与磁盘类型匹配）
-        pub fn validate_bat(&self) -> Result<()>;
+        ///
+        /// 返回 `Vec<ValidationIssue>` 列出所有发现的 BAT 校验问题。
+        pub fn validate_bat(&self) -> Result<Vec<ValidationIssue>>;
 
         /// Metadata 校验（table/entry/已知项约束，不含 required 完整性）
-        pub fn validate_metadata(&self) -> Result<()>;
+        ///
+        /// 返回 `Vec<ValidationIssue>` 列出所有发现的 Metadata 校验问题。
+        pub fn validate_metadata(&self) -> Result<Vec<ValidationIssue>>;
 
         /// 仅校验 Metadata required item 约束
         ///
         /// 对于 IsRequired=true 但未知/缺失的项，返回错误。
-        pub fn validate_required_metadata_items(&self) -> Result<()>;
+        ///
+        /// 返回 `Vec<ValidationIssue>` 列出所有缺失/未知的 required item。
+        pub fn validate_required_metadata_items(&self) -> Result<Vec<ValidationIssue>>;
 
         /// Log 校验（entry/descriptor/data sector/active sequence/replay 前置）
-        pub fn validate_log(&self) -> Result<()>;
-
-        /// 校验 Parent Locator 键约束
         ///
-        /// - parent_linkage 必须存在；若存在 parent_linkage2 则返回错误
+        /// 返回 `Vec<ValidationIssue>` 列出所有发现的 Log 校验问题。
+        pub fn validate_log(&self) -> Result<Vec<ValidationIssue>>;
+
+        /// 校验 Parent Locator 约束（含 parent_linkage 约束 + 差分链 GUID 一致性）
+        ///
+        /// - parent_linkage 必须存在
+        /// - 若存在 parent_linkage2 则返回错误（见 struct 文档的已知限制说明）
         /// - relative_path / volume_path / absolute_win32_path 至少存在一个
-        pub fn validate_parent_locator(&self) -> Result<()>;
-
-        /// 差分链校验
+        /// - 若父磁盘可访问，校验子盘 DataWriteGuid 与父盘预期的一致性
         ///
-        /// 校验 parent_linkage 与父盘 DataWriteGuid 的一致性。
-        ///
-        /// 若 Parent Locator 中存在 parent_linkage2，必须返回错误并拒绝通过校验。
-        pub fn validate_parent_chain(&self) -> Result<ParentChainInfo>;
+        /// 返回 `Vec<ValidationIssue>` 列出所有发现的 Parent Locator / 差分链校验问题。
+        pub fn validate_parent_locator(&self) -> Result<Vec<ValidationIssue>>;
     }
 
-    /// 可选：结构化校验问题（用于诊断/报告）
+    /// 结构化校验问题
+    ///
+    /// 由 `validate_*()` 方法通过 `Result::Ok(Vec<ValidationIssue>)` 返回。
+    /// 空 vec 表示该阶段未发现校验问题。
     pub struct ValidationIssue {
+        /// 校验阶段名称，如 `"bat"`、`"log"`、`"header"`（对应 §3.3 section 值）
         pub fn section(&self) -> &'static str,
+        /// 错误码，如 `"BAT_ENTRY_INVALID_STATE"`（对应 §4 字典）
         pub fn code(&self) -> &'static str,
+        /// 人类可读的描述，包含关键上下文值
         pub fn message(&self) -> String,
+        /// 标准章节引用，如 `"MS-VHDX/2.5.1.1"`
         pub fn spec_ref(&self) -> &'static str,
     }
 }
@@ -612,7 +685,7 @@ impl<'a> Header<'a> {
     pub fn header(&self, index: usize) -> Result<HeaderStructure<'_>>;
     
     /// 获取Region Table
-    /// - index = 0: 返回 current header 对应的 region table
+    /// - index = 0: 返回 current header 对应的 region table（配对策略见 docs/Standard/MS-VHDX.md重点解读.md，按物理位置推断，Header 1 ↔ Region Table 1）
     /// - index = 1: 返回 region table 1（偏移 192KB）
     /// - index = 2: 返回 region table 2（偏移 256KB）
     /// - index > 2: 返回 Error::InvalidParameter
@@ -622,7 +695,7 @@ impl<'a> Header<'a> {
 /// File Type Identifier (8 bytes signature + 512 bytes creator) (64KB)
 pub struct FileTypeIdentifier<'a> {
     pub fn signature(&self) -> &'a [u8; 8],
-    pub fn creator(&self) -> &'a [u8],
+    pub fn creator(&self) -> &'a [u8; 512],
 }
 
 /// VHDX Header 视图（4KB）
@@ -691,6 +764,11 @@ impl<'a> Bat<'a> {
 /// 存储 Payload Block 或 Sector Bitmap Block 的元数据
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BatEntry<'a> {
+    /// 原始 8 字节，借用自 BAT 缓冲区（零拷贝）
+    bytes: &'a [u8; 8],
+    /// 是否为 Sector Bitmap Block 条目（由 chunk ratio 交织位置决定）
+    is_sector_bitmap: bool,
+
     /// Entry 类型和状态
     pub fn state(&self) -> Result<BatState>,
     /// 文件偏移（MB为单位）
@@ -809,27 +887,46 @@ impl EntryFlags {
 }
 
 /// Metadata Items (64KB之后，变长)
+///
+/// 注意：required metadata item（如 FileParameters / VirtualDiskSize / VirtualDiskID）
+/// 在合法 VHDX 文件中必须存在。返回 `Result` 而非 `Option` 以明确此语义——
+/// 缺失属于格式错误，而非"可选字段不存在"。
+///
+/// 失败条件（required items 缺失）：对应 required GUID 的 item 未找到 -> Error::MetadataRequiredMissing { guid }
+///
+/// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.4 METADATA_REQUIRED_MISSING
 pub struct MetadataItems<'a>;
 
 impl<'a> MetadataItems<'a> {
-    /// 获取File Parameters
-    pub fn file_parameters(&self) -> Option<FileParameters<'_>>;
+    /// 获取 File Parameters
+    ///
+    /// 失败条件：FileParameters item 不存在 -> Error::MetadataRequiredMissing { guid: StandardItems::FILE_PARAMETERS }
+    pub fn file_parameters(&self) -> Result<FileParameters<'_>>;
     
     /// 获取虚拟磁盘大小
-    pub fn virtual_disk_size(&self) -> Option<u64>;
+    ///
+    /// 失败条件：VirtualDiskSize item 不存在 -> Error::MetadataRequiredMissing { guid: StandardItems::VIRTUAL_DISK_SIZE }
+    pub fn virtual_disk_size(&self) -> Result<u64>;
     
     /// 获取虚拟磁盘ID
-    pub fn virtual_disk_id(&self) -> Option<Guid>;
+    ///
+    /// 失败条件：VirtualDiskID item 不存在 -> Error::MetadataRequiredMissing { guid: StandardItems::VIRTUAL_DISK_ID }
+    pub fn virtual_disk_id(&self) -> Result<Guid>;
     
     /// 获取逻辑扇区大小
-    pub fn logical_sector_size(&self) -> Option<u32>;
+    ///
+    /// 失败条件：LogicalSectorSize item 不存在 -> Error::MetadataRequiredMissing { guid: StandardItems::LOGICAL_SECTOR_SIZE }
+    pub fn logical_sector_size(&self) -> Result<u32>;
     
     /// 获取物理扇区大小
-    pub fn physical_sector_size(&self) -> Option<u32>;
+    ///
+    /// 失败条件：PhysicalSectorSize item 不存在 -> Error::MetadataRequiredMissing { guid: StandardItems::PHYSICAL_SECTOR_SIZE }
+    pub fn physical_sector_size(&self) -> Result<u32>;
     
     /// 获取父定位器（差分磁盘）
-    pub fn parent_locator(&self) -> Option<ParentLocator<'_>>;
-
+    ///
+    /// 失败条件：ParentLocator item 不存在 -> Error::MetadataRequiredMissing { guid: StandardItems::PARENT_LOCATOR }
+    pub fn parent_locator(&self) -> Result<ParentLocator<'_>>;
 }
 
 /// File Parameters (8字节)
@@ -873,7 +970,8 @@ impl<'a> ParentLocator<'a> {
     /// 返回 owned `PathBuf`：UTF-16LE 解码需要分配内存，无法返回借用视图。
     ///
     /// 失败条件：
-    /// - 所有路径均无法访问或丢失 -> Error::ParentNotFound
+    /// - 所有路径均无法访问或丢失 -> Error::ParentNotFound { relative, volume, absolute }
+    ///   （三个字段分别携带尝试过的路径，均为 None 表示该类型路径不存在）
     pub fn resolve_parent_path(&self) -> Result<PathBuf>;
 }
 
@@ -946,6 +1044,10 @@ pub mod StandardItems {
     ]); // A8D35F2D-B30B-454D-ABF7-D3D84834AB0C
     
     /// VHDX Parent Locator Type GUID
+    ///
+    /// 标准：docs/Standard/MS-VHDX.md §2.6.2.6.3（VHDX Parent Locator）
+    /// VHDX 父定位器类型 GUID，用于 Parent Locator Header 的 LocatorType 字段。
+    /// 值：B04AEFB7-D19E-4A81-B789-25B8E9445913
     pub const LOCATOR_TYPE_VHDX: Guid = Guid::from_bytes([
         0xB7, 0xEF, 0x4A, 0xB0, 0x9E, 0xD1, 0x81, 0x4A,
         0xB7, 0x89, 0x25, 0xB8, 0xE9, 0x44, 0x59, 0x13
@@ -965,7 +1067,7 @@ impl<'a> Log<'a> {
     /// 根据索引获取Entry
     ///
     /// 失败条件：
-    /// - 索引越界 -> Error::LogEntryCorrupted
+    /// - 索引越界 -> Error::InvalidParameter
     pub fn entry(&self, index: usize) -> Result<Entry<'_>>;
     
     /// 获取所有Entries（按需解析为视图列表）
@@ -1120,6 +1222,17 @@ impl<'a> IO<'a> {
 ///
 /// 通过 `IO::sector()` 创建，行为对标 `std::fs::File`。
 ///
+/// # 读取语义策略
+///
+/// Sector 默认使用 `ReadSemanticsPolicy::EffectiveDataPreferred` 读取语义。
+/// 可通过 `semantics()` 链式方法覆盖策略，不破坏 `std::io::Read` trait 兼容性：
+///
+/// ```rust,ignore
+/// let sector = io.sector(0, 256)?
+///     .semantics(ReadSemanticsPolicy::RawDataPreferred);
+/// sector.read(&mut buf)?;  // 使用 RawDataPreferred 语义
+/// ```
+///
 /// # 游标
 ///
 /// Sector 内部维护一个字节游标（`pos`），所有读写操作都从游标位置开始，
@@ -1139,7 +1252,7 @@ impl<'a> IO<'a> {
 /// - **部分读写**：当 `buf.len()` 超过剩余可用范围时，只读取/写入可用部分。
 /// - **范围末尾 (EOF)**：游标在末尾时，`read`/`write` 返回 `Ok(0)`，不是错误。
 /// - **块边界**：跨块范围自动按 VHDX block 边界拆分，对调用方透明。
-/// - **读取语义**：固定使用 `EffectiveDataPreferred`（`Unmapped` 块返回零）。
+/// - **读取语义**：默认使用 `EffectiveDataPreferred`（`Unmapped` 块返回零），可通过 `semantics()` 覆盖。
 /// - **写入前提**：目标块必须为 `FullyPresent` 或 `PartiallyPresent` 状态。
 ///
 /// # 错误映射
@@ -1180,6 +1293,21 @@ impl<'a> IO<'a> {
 ### 10. Error - 错误类型
 
 ```rust
+/// 签名错误位置
+///
+/// 标识 `InvalidSignature` 错误发生的具体模块/位置。
+/// 用于替代此前为每个位置创建独立错误变体的设计。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignaturePosition {
+    FileTypeIdentifier,
+    Header,
+    RegionTable,
+    MetadataTable,
+    LogEntry,
+    Descriptor,
+    DataSector,
+}
+
 /// VHDX 操作错误类型
 ///
 /// 涵盖 IO 错误、规范违反、数据损坏、逻辑错误等场景。
@@ -1192,64 +1320,290 @@ pub enum Error {
     InvalidFile(String),
 
     /// 签名不匹配
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.1/§4.2/§4.4/§4.5
+    /// `expected` 和 `found` 统一使用 `[u8; 8]` 表示。
+    /// 对于 4 字节签名（如 `"head"`、`"regi"` 等），放入低 4 字节，高 4 字节置零。
+    /// 对于 8 字节签名（如 `"vhdxfile"`、`"metadata"`），直接填入全部 8 字节。
+    /// 对应 CODE（由 position 区分）：
+    /// - FileTypeIdentifier → HEADER_FILE_TYPE_ID_INVALID（MS-VHDX/2.2.1）
+    /// - Header → HEADER_SIGNATURE_INVALID（MS-VHDX/2.2.2）
+    /// - RegionTable → REGION_SIGNATURE_INVALID（MS-VHDX/2.2.3.1）
+    /// - MetadataTable → METADATA_TABLE_SIGNATURE_INVALID（MS-VHDX/2.6.1.1）
+    /// - LogEntry → LOG_SIGNATURE_INVALID（MS-VHDX/2.3.1.1）
+    /// - Descriptor → LOG_DESCRIPTOR_SIGNATURE_INVALID（MS-VHDX/2.3.1）
+    /// - DataSector → LOG_DATA_SECTOR_INVALID（MS-VHDX/2.3.1.4）
     InvalidSignature {
-        expected: [u8; 4],
-        found: [u8; 4],
+        position: SignaturePosition,
+        expected: [u8; 8],
+        found: [u8; 8],
     },
 
     /// 头部损坏
     CorruptedHeader(String),
 
+    /// 双 Header LogGuid 不一致
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.1
+    /// 对应 CODE：HEADER_LOG_GUID_MISMATCH（MS-VHDX/2.2.2）
+    /// 两个 VHDX Header 中的 LogGuid 字段值不一致。
+    /// 规范要求 active header 的 LogGuid 用于日志有效性判定。
+    HeaderLogGuidMismatch {
+        header1_log_guid: Guid,
+        header2_log_guid: Guid,
+    },
+
+    /// 双 Header 序列号异常，无法选择 active header
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.1
+    /// 对应 CODE：HEADER_SEQUENCE_NUMBER_INVALID（MS-VHDX/2.2.2）
+    /// 当两个 Header 均有效但 SequenceNumber 相等时，无法确定 current header。
+    HeaderSequenceNumberInvalid {
+        sequence_number_1: u64,
+        sequence_number_2: u64,
+    },
+
+    /// 不支持的 VHDX 版本
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.1
+    /// 对应 CODE：HEADER_VERSION_UNSUPPORTED（MS-VHDX/2.2.2）
+    /// VHDX Version 字段 MUST be 1，不符合时实现 MUST NOT 继续处理。
+    UnsupportedVersion {
+        version: u16,
+    },
+
+    /// 不支持的 Log 版本
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.1
+    /// 对应 CODE：HEADER_LOG_VERSION_UNSUPPORTED（MS-VHDX/2.2.2）
+    /// Header LogVersion 字段 MUST be 0。若 LogVersion != 0 且 LogGuid != 0，
+    /// 实现 MUST NOT 继续处理（MS-VHDX §2.2.2）。
+    UnsupportedLogVersion {
+        version: u16,
+    },
+
     /// CRC32C 校验和不匹配
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.1/§4.2/§4.5
+    /// 对应 CODE（由上下文区分）：
+    /// - Header → HEADER_CHECKSUM_MISMATCH（MS-VHDX/2.2.2）
+    /// - Region Table → REGION_CHECKSUM_MISMATCH（MS-VHDX/2.2.3.1）
+    /// - Log Entry → LOG_ENTRY_CHECKSUM_MISMATCH（MS-VHDX/2.3.1.1）
     InvalidChecksum {
         expected: u32,
         actual: u32,
     },
 
-    /// 无效的 BAT 块状态值
+    /// 无效的 Payload Block 状态值
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.3
+    /// 对应 CODE：BAT_ENTRY_INVALID_STATE（MS-VHDX/2.5.1.1）
+    /// u8 参数为不合法原始状态值。
     InvalidBlockState(u8),
+
+    /// 无效的 Sector Bitmap 块状态值
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.3
+    /// 对应 CODE：BAT_SECTOR_BITMAP_INVALID_STATE（MS-VHDX/2.5.1.2）
+    /// 合法的 Sector Bitmap 状态仅为 NotPresent(0) 和 Present(6)。
+    InvalidSectorBitmapState(u8),
 
     /// BAT 状态值与磁盘类型不匹配
     ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.3
     /// 用于 BAT 条目状态值合法但与磁盘类型不兼容的场景，如：
-    /// - 非差分盘上出现 Unmapped 或 PartiallyPresent
-    /// - 非差分盘上 SectorBitmap 状态非 NotPresent
+    /// - 非差分盘上出现 PartiallyPresent（§2.5.1.1 规定仅在差分盘有效）
+    /// - 非差分盘上 SectorBitmap 状态为 Present（非 NotPresent）
+    /// 对应 CODE：BAT_ENTRY_STATE_MISMATCH（MS-VHDX/2.5.1.1）
     StateMismatch {
         state: u8,
         description: String,
     },
 
     /// BAT 条目文件偏移未按块大小对齐
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.3
+    /// 对应 CODE：BAT_ENTRY_FILE_OFFSET_UNALIGNED（MS-VHDX/2.5）
     BatFileOffsetUnaligned {
         offset_mb: u64,
         block_size: u32,
     },
 
+    /// BAT entry 数量不足以覆盖虚拟磁盘范围
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.3
+    /// 对应 CODE：BAT_ENTRY_COUNT_INSUFFICIENT（MS-VHDX/2.5）
+    /// actual 为实际 entry 数量，expected 为覆盖虚拟磁盘所需最小 entry 数量。
+    BatEntryCountInsufficient {
+        actual: u64,
+        expected: u64,
+    },
+
+    /// BAT 中多个条目指向同一文件偏移
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.3
+    /// 对应 CODE：BAT_FILE_OFFSET_DUPLICATE（MS-VHDX/2.5）
+    /// 多个 BAT entry 映射到相同的 file_offset_mb，违反非重叠约束。
+    BatFileOffsetDuplicate {
+        offset_mb: u64,
+    },
+
     /// 区域表格式错误
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.2
+    /// 涵盖：entry 对齐/偏移最小值/区间重叠/格式异常
+    /// 对应 CODE（由 message 区分）：
+    /// - 对齐错误 → REGION_ENTRY_ALIGNMENT（MS-VHDX/2.2.3.2）
+    /// - 偏移 < 1MB → REGION_ENTRY_OFFSET_MINIMUM（MS-VHDX/2.2.3.2）
+    /// - 区间重叠 → REGION_ENTRY_OVERLAP（MS-VHDX/2.1）
     InvalidRegionTable(String),
 
+    /// 未知的 required region
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.2 / MS-VHDX-宽松扩展标准.md §3
+    /// 对应 CODE：REGION_REQUIRED_UNKNOWN（RELAX）
+    /// Region Table 中存在实现无法识别且标记为 required 的条目。
+    RegionRequiredUnknown {
+        guid: Guid,
+    },
+
+    /// 未知的 optional region（严格模式下拒绝）
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.2 / MS-VHDX-宽松扩展标准.md §3
+    /// 对应 CODE：REGION_OPTIONAL_UNKNOWN（RELAX）
+    /// strict=true 时，Region Table 中存在实现无法识别且未标记 required 的条目。
+    /// strict=false 时，此类条目 MUST 被忽略，不会触发本错误。
+    RegionOptionalUnknown {
+        guid: Guid,
+    },
+
     /// 元数据格式错误
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.4
+    /// 涵盖：Table Entry 格式异常/offset 越界/items 重叠/item 损坏
+    /// 对应 CODE（由 message 区分）：
+    /// - entry 异常 → METADATA_ENTRY_INVALID（MS-VHDX/2.6.1.2）
+    /// - offset < 64KB → METADATA_ENTRY_OFFSET_MINIMUM（MS-VHDX/2.6.1.2）
+    /// - items 重叠 → METADATA_ITEMS_OVERLAP（MS-VHDX/2.6.2）
+    /// - item 损坏 → METADATA_ITEM_CORRUPTED（MS-VHDX/2.6.2）
     InvalidMetadata(String),
+
+    /// 未知的 Metadata Item GUID
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.4
+    /// 对应 CODE：METADATA_GUID_UNKNOWN（MS-VHDX/2.6.2）
+    /// Metadata Table 中存在实现无法识别的 Item GUID。
+    MetadataGuidUnknown {
+        guid: Guid,
+    },
+
+    /// required metadata item 缺失
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.4 / MS-VHDX-宽松扩展标准.md §3
+    /// 对应 CODE：METADATA_REQUIRED_MISSING（RELAX）
+    /// 必须存在的 Metadata Item（如 FileParameters、VirtualDiskSize、VirtualDiskID）未找到。
+    MetadataRequiredMissing {
+        guid: Guid,
+    },
+
+    /// 未知的 required metadata item
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.4 / MS-VHDX-宽松扩展标准.md §3
+    /// 对应 CODE：METADATA_REQUIRED_UNKNOWN（RELAX）
+    /// Metadata Table 中存在实现无法识别且标记为 required 的 Item GUID。
+    MetadataRequiredUnknown {
+        guid: Guid,
+    },
+
+    /// 未知的 optional metadata item（严格模式下拒绝）
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.4 / MS-VHDX-宽松扩展标准.md §3
+    /// 对应 CODE：METADATA_OPTIONAL_UNKNOWN（RELAX）
+    /// strict=true 时，Metadata Table 中存在实现无法识别且未标记 required 的 Item GUID。
+    /// strict=false 时，此类条目 MUST 被忽略，不会触发本错误。
+    MetadataOptionalUnknown {
+        guid: Guid,
+    },
+
+    /// Metadata Entry 保留标志位被设置
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.4
+    /// 对应 CODE：METADATA_RESERVED_FLAGS_SET（MS-VHDX/2.6.1.2）
+    /// Metadata Table Entry 中的保留位（非 Bit 29-31）被置 1。
+    MetadataReservedFlagsSet {
+        flags: u32,
+    },
 
     /// 父定位器格式错误（ParentLocator 键值对解析失败）
     ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.6
     /// 用于 Metadata::ParentLocator::KeyValueEntry 中 key/value 的 UTF-16LE 解码或数据切片越界场景。
     /// 与 InvalidMetadata 的区别：InvalidParentLocator 专指 ParentLocator 内部结构的解析错误，
     /// InvalidMetadata 涵盖 Metadata Table / Entry 的格式错误。
+    /// 对应 CODE：PARENT_LOCATOR_FORMAT_ERROR（VALEXT，专用于 KeyValueEntry 解析失败）
     InvalidParentLocator(String),
 
     /// 元数据项未找到
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.4
+    /// 专用于 MetadataTable::entry() 按 GUID 查找失败的场景，
+    /// 与 MetadataRequiredMissing（required 项缺失）不同。
     MetadataNotFound {
         guid: Guid,
     },
 
     /// 需要日志回放
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.5
+    /// 在打开路径（File::open → finish()）中，当策略为 Require 且存在可回放日志时，
+    /// 此错误阻断打开流程，要求调用方显式设置日志回放策略。
+    ///
+    /// 注意：在校验路径（validate_log）中，存在可回放日志通常视为状态提示而非硬错误，
+    /// 因此校验器中的 LOG_REPLAY_REQUIRED 为 status hint 语义。本 Error 变体专用于
+    /// 打开路径的阻断语义。
+    /// 对应 CODE：LOG_REPLAY_REQUIRED（ROEXT）
     LogReplayRequired,
 
     /// 日志条目损坏
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.5
+    /// 涵盖：EntryLength 非法 / Tail 非法 / DescriptorCount 不匹配等
+    /// 对应 CODE（由 message 区分）：
+    /// - EntryLength 非法 → LOG_ENTRY_LENGTH_INVALID（MS-VHDX/2.3.1.1）
+    /// - Tail 非法 → LOG_ENTRY_TAIL_INVALID（MS-VHDX/2.3.1.1）
+    /// - 描述符数量不匹配 → LOG_DESCRIPTOR_COUNT_MISMATCH（MS-VHDX/2.3.1）
     LogEntryCorrupted(String),
 
-    /// BAT 条目未找到
+    /// 日志 sequence 不连续
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.5
+    /// 对应 CODE：LOG_SEQUENCE_GAP（MS-VHDX/2.3.2）
+    /// active sequence 内相邻 log entry 的 SequenceNumber 不连续。
+    LogSequenceGap {
+        expected: u64,
+        found: u64,
+    },
+
+    /// 日志 sequence GUID 不匹配
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.5
+    /// 对应 CODE：LOG_SEQUENCE_GUID_MISMATCH（MS-VHDX/2.3.2）
+    /// Log Entry 的 LogGuid 与 Header 的 LogGuid 不一致。
+    LogSequenceGuidMismatch {
+        entry_log_guid: Guid,
+        header_log_guid: Guid,
+    },
+
+    /// 活跃 sequence 为空（日志损坏）
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.5
+    /// 对应 CODE：LOG_ACTIVE_SEQUENCE_EMPTY（MS-VHDX/2.3.3）
+    /// 在日志中未找到有效的 active sequence。
+    LogActiveSequenceEmpty,
+
+    /// BAT 条目未找到（索引越界）
+    ///
+    /// 索引超出 BAT entry 数量范围时返回。
     BatEntryNotFound {
         index: u64,
     },
@@ -1261,21 +1615,48 @@ pub enum Error {
     },
 
     /// 扇区索引越界
+    ///
+    /// IO 数据面读取路径错误：请求的虚拟扇区范围超出虚拟磁盘大小。
     SectorOutOfBounds {
         sector: u64,
         max: u64,
     },
 
-    /// 父磁盘未找到
+    /// 父磁盘未找到（三个路径均不可访问）
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.6
+    /// 对应 CODE：PARENT_LOCATOR_NO_VALID_PATH（MS-VHDX/2.6.2.6.3）
+    /// 按规范顺序尝试 relative_path → volume_path → absolute_win32_path 后，
+    /// 三个路径均无法访问或丢失。携带已尝试的三个路径以供调试。
     ParentNotFound {
-        path: std::path::PathBuf,
+        relative: Option<std::path::PathBuf>,
+        volume: Option<std::path::PathBuf>,
+        absolute: Option<std::path::PathBuf>,
     },
 
     /// 父磁盘 GUID 不匹配
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.6
+    /// 子盘 parent_linkage 记录的父盘 DataWriteGuid 与实际父盘不一致。
+    /// 对应 CODE：PARENT_LOCATOR_GUID_MISMATCH（MS-VHDX/2.6.2.6）
     ParentMismatch {
         expected: Guid,
         actual: Guid,
     },
+
+    /// parent_linkage key 不存在
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.6
+    /// 对应 CODE：PARENT_LOCATOR_MISSING_LINKAGE（MS-VHDX/2.6.2.6.3）
+    /// Parent Locator 中缺少 parent_linkage key。
+    ParentLocatorMissingLinkage,
+
+    /// parent_linkage2 存在（merge 过渡期冲突）
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.6
+    /// 对应 CODE：PARENT_LOCATOR_LINKAGE2_CONFLICT（MS-VHDX/2.6.2.6.3）
+    /// 本库不支持 merge 过渡期，parent_linkage2 的出现被视为格式冲突。
+    ParentLocatorLinkage2Conflict,
 
     /// 参数无效
     InvalidParameter(String),
@@ -1308,7 +1689,7 @@ mod types;
 pub mod validation;
 
 pub use error::{Error, Result};
-pub use file::{File, LogReplayPolicy, ParentChainInfo, ReadSemanticsPolicy};
+pub use file::{File, LogReplayPolicy, ReadSemanticsPolicy};
 pub use io::{IO, Sector};
 pub use types::Guid;
 
@@ -1360,7 +1741,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let metadata = sections.metadata()?;
     
     // 从 FileParameters 获取磁盘类型和块大小
-    if let Some(fp) = metadata.items().file_parameters() {
+    if let Ok(fp) = metadata.items().file_parameters() {
         println!("Block Size: {} bytes", fp.block_size());
         println!("Has Parent: {}", fp.has_parent());
         println!("Leave Blocks Allocated: {}", fp.leave_block_allocated());
@@ -1415,13 +1796,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file = File::open("disk.vhdx").finish()?;
     let validator = file.validator();
 
-    // 按需分项校验
-    validator.validate_header()?;
-    validator.validate_region_table()?;
-    validator.validate_bat()?;
-    validator.validate_metadata()?;
-    validator.validate_required_metadata_items()?;
-    validator.validate_log()?;
+    // 按需分项校验，每项返回 Vec<ValidationIssue>
+    let header_issues = validator.validate_header()?;
+    let region_issues = validator.validate_region_table()?;
+    let bat_issues = validator.validate_bat()?;
+    let metadata_issues = validator.validate_metadata()?;
+    let required_issues = validator.validate_required_metadata_items()?;
+    let log_issues = validator.validate_log()?;
+
+    // 汇总输出所有校验问题
+    let all_issues = header_issues.into_iter()
+        .chain(region_issues)
+        .chain(bat_issues)
+        .chain(metadata_issues)
+        .chain(required_issues)
+        .chain(log_issues)
+        .collect::<Vec<_>>();
+
+    if all_issues.is_empty() {
+        println!("All validations passed.");
+    } else {
+        for issue in &all_issues {
+            println!("[{}] {}: {} ({})",
+                issue.section(), issue.code(), issue.message(), issue.spec_ref());
+        }
+    }
 
     Ok(())
 }
@@ -1442,14 +1841,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .finish()?;
     
     // 写入数据（通过 IO/Sector 执行扇区写）
+    use std::io::Write;
     let io = file.io()?;
-    let sector0 = io.sector(0, 1)?;
+    let mut sector = io.sector(0, 1)?;
     let data = vec![0u8; 4096];
-    sector0.write(&data, 0)?;
+    sector.write_all(&data)?;
     
     // 验证创建的Metadata
     let metadata = file.sections().metadata()?;
-    if let Some(fp) = metadata.items().file_parameters() {
+    if let Ok(fp) = metadata.items().file_parameters() {
         assert_eq!(fp.block_size(), 32 * 1024 * 1024);
         assert!(!fp.has_parent());
         assert!(!fp.leave_block_allocated());  // 动态磁盘
@@ -1476,7 +1876,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // 验证
     let metadata = file.sections().metadata()?;
-    if let Some(fp) = metadata.items().file_parameters() {
+    if let Ok(fp) = metadata.items().file_parameters() {
         assert!(fp.leave_block_allocated());  // 固定磁盘
         assert!(!fp.has_parent());
     }
@@ -1530,12 +1930,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sections = file.sections();
     let metadata = sections.metadata()?;
     
-    if let Some(fp) = metadata.items().file_parameters() {
+    if let Ok(fp) = metadata.items().file_parameters() {
         if fp.has_parent() {
             println!("This is a differencing disk");
             println!("Block size: {}", fp.block_size());
             
-            if let Some(locator) = metadata.items().parent_locator() {
+            if let Ok(locator) = metadata.items().parent_locator() {
                 file.validator().validate_parent_locator()?;
                 println!("Parent Locator Entries: {}", locator.header().key_value_count());
                 for (i, entry) in locator.entries().enumerate() {
