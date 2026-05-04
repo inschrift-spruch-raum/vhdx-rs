@@ -93,7 +93,7 @@ vhdx::
 │   │   └── len(&self) -> usize
 │   │
 │   │   └── BatEntry<'a>                    # BAT Entry 结构体
-│   │       ├── state(&self) -> BatState
+│   │       ├── state(&self) -> Result<BatState>
 │   │       ├── file_offset_mb(&self) -> u64
 │   │
 │   │       └── BatState 枚举:                  # Entry 类型枚举
@@ -685,7 +685,7 @@ impl<'a> Bat<'a> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BatEntry<'a> {
     /// Entry 类型和状态
-    pub fn state(&self) -> BatState,
+    pub fn state(&self) -> Result<BatState>,
     /// 文件偏移（MB为单位）
     pub fn file_offset_mb(&self) -> u64,
 }
