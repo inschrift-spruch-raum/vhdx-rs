@@ -283,11 +283,14 @@ vhdx-tool::
 │   ├── --type <dynamic|fixed|differencing> # 磁盘类型 (默认: dynamic)
 │   ├── --block-size <size>                 # 块大小 (默认: 32MB)
 │   ├── --parent <path>                     # 父磁盘路径 (差分磁盘必需)
+│   ├── --logical-sector-size <size>        # 逻辑扇区大小 (默认: 4096)
+│   ├── --physical-sector-size <size>       # 物理扇区大小 (默认: 4096)
 │   └── --force                             # 覆盖已存在文件
 │
 ├── check [file]                            # 检查文件完整性
 │   ├── --repair                            # 尝试修复
-│   └── --log-replay                        # 重放日志
+│   ├── --log-replay                        # 重放日志
+│   └── --strict                            # 启用严格模式 (默认: true)
 │
 ├── sections [file]                         # 查看内部Sections
 │   ├── header                              # 查看Header Section
