@@ -229,11 +229,13 @@ vhdx::
 │               └── data(&self) -> Cow<'a, [u8]>    # Cow：拼接 LeadingBytes+中间段+TrailingBytes 无法零拷贝
 │    
 ├── IO<'a>                                  # IO模块 (扇区级操作)
-│   └── sector(&self, sector: u64) -> Result<Sector<'_>>   # 输入: 全局扇区号
+│   └── sector(&self, start: u64, count: u64) -> Result<Sector<'_>>   # 输入: 起始扇区号 + 连续扇区数
 │
-│   └── Sector<'a>                          # 扇区级定位与操作
-│       ├── read(&self, buf: &mut [u8], semantics: ReadSemanticsPolicy) -> Result<usize>
-│       └── write(&self, data: &[u8]) -> Result<()>
+│   └── Sector<'a>                          # 扇区级定位与操作（游标式）
+│       ├── impl Read   → fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>
+│       ├── impl Write  → fn write(&mut self, buf: &[u8]) -> io::Result<usize>
+│       │               + fn flush(&mut self) -> io::Result<()>
+│       └── impl Seek   → fn seek(&mut self, pos: SeekFrom) -> io::Result<u64>
 │
 ├── Guid                                    # GUID 类型
 ├── LogReplayPolicy                         # 日志回放策略
@@ -1091,48 +1093,86 @@ pub struct DataSector<'a> {
 /// - File 层不提供 read/write/flush
 /// - 所有虚拟磁盘读写必须经由 IO::sector -> Sector::read/write
 /// - 禁止在 File 层新增等价的数据读写接口
-/// 输入: 全局扇区号 -> 内部自动计算块索引和块内扇区偏移
 pub struct IO<'a>;
 
 impl<'a> IO<'a> {
-    /// 通过全局扇区号定位并返回Sector
-    /// 内部自动: 1) 通过BAT找到对应块 2) 计算块内扇区偏移
-    /// 懒加载: Sector缓存按需从文件读取
+    /// 通过起始扇区号和连续扇区数定位并返回 Sector
+    /// 
+    /// 参数：
+    /// - `start`: 起始全局扇区号（0-based）
+    /// - `count`: 连续扇区数量（必须 > 0）
+    ///
+    /// 内部自动:
+    /// 1) 通过 BAT 找到对应块 2) 计算块内扇区偏移
+    /// 3) 跨块边界时自动按块拆分读写操作
+    /// 
+    /// 懒加载: Sector 缓存按需从文件读取
     ///
     /// 失败条件：
-    /// - 扇区号越界（超出虚拟磁盘范围） -> Error::SectorOutOfBounds
-    /// - 文件状态异常（如父链不可用）    -> 对应具体错误
-    pub fn sector(&self, sector: u64) -> Result<Sector<'_>>;
+    /// - `count == 0`                       -> Error::InvalidParameter
+    /// - `start + count` 算术溢出            -> Error::InvalidParameter
+    /// - 扇区范围超出虚拟磁盘范围            -> Error::SectorOutOfBounds
+    /// - 文件状态异常（如父链不可用）         -> 对应具体错误
+    pub fn sector(&self, start: u64, count: u64) -> Result<Sector<'_>>;
 }
 
-/// Sector - 扇区级定位与操作
-/// 
-/// 封装了块内扇区索引和内部块引用
+/// Sector —— 扇区级定位与操作（游标式 IO）
 ///
-/// PartialEq 是手动实现的（比较 file 指针、block_idx、sector_in_block
-/// 等字段），因为 IO/File 不实现 PartialEq。
-#[derive(Clone, Debug)]
-pub struct Sector<'a>;
-
-impl<'a> Sector<'a> {
-    /// 读取扇区数据
-    /// buf长度必须为扇区大小的整数倍
-    ///
-    /// 读取语义补充：
-    /// - 差分磁盘始终以子磁盘数据优先。
-    /// - `Undefined` 状态：原始/实际语义均返回 0。
-    /// - `Unmapped` 状态：
-    ///   - `ReadSemanticsPolicy::EffectiveDataPreferred` 返回 0；
-    ///   - `ReadSemanticsPolicy::RawDataPreferred` 返回当前存储的原始数据。
-    ///
-    /// 调用方可按本次读取传入语义策略；推荐默认传入
-    /// `ReadSemanticsPolicy::EffectiveDataPreferred`（实际数据优先）。
-    pub fn read(&self, buf: &mut [u8], semantics: ReadSemanticsPolicy) -> Result<usize>;
-    
-    /// 写入扇区数据
-    /// data长度必须为扇区大小的整数倍
-    pub fn write(&self, data: &[u8]) -> Result<()>;
-}
+/// 通过 `IO::sector()` 创建，行为对标 `std::fs::File`。
+///
+/// # 游标
+///
+/// Sector 内部维护一个字节游标（`pos`），所有读写操作都从游标位置开始，
+/// 操作完成后自动推进游标。通过 `Seek` trait 调整游标位置。
+///
+/// # 实现 Traits
+///
+/// | Trait | 方法 | 说明 |
+/// |-------|------|------|
+/// | `Read` | `read(&mut self, buf) -> io::Result<usize>` | 从游标位置读取，返回实际读取字节数。在范围末尾返回 `Ok(0)`。 |
+/// | `Write` | `write(&mut self, buf) -> io::Result<usize>` | 从游标位置写入，返回实际写入字节数。在范围末尾返回 `Ok(0)`。 |
+/// | `Write` | `flush(&mut self) -> io::Result<()>` | 无操作（写入直接入文件，无缓冲区）。 |
+/// | `Seek` | `seek(&mut self, pos: SeekFrom) -> io::Result<u64>` | 移动游标。`Start`/`End`/`Current` 均被支持，结果钳位到 `[0, range_bytes]`。 |
+///
+/// # 行为说明
+///
+/// - **部分读写**：当 `buf.len()` 超过剩余可用范围时，只读取/写入可用部分。
+/// - **范围末尾 (EOF)**：游标在末尾时，`read`/`write` 返回 `Ok(0)`，不是错误。
+/// - **块边界**：跨块范围自动按 VHDX block 边界拆分，对调用方透明。
+/// - **读取语义**：固定使用 `EffectiveDataPreferred`（`Unmapped` 块返回零）。
+/// - **写入前提**：目标块必须为 `FullyPresent` 或 `PartiallyPresent` 状态。
+///
+/// # 错误映射
+///
+/// 内部 VHDX 错误自动转换为 `std::io::Error`：
+///
+/// | 内部错误 | io::ErrorKind |
+/// |---|---|
+/// | 参数错误、格式错误、校验失败等 | `InvalidData` |
+/// | 块/元数据不存在 | `NotFound` |
+/// | 只读、日志待回放 | `PermissionDenied` |
+/// | 扇区越界 | `UnexpectedEof` |
+///
+/// # 示例
+///
+/// ```rust,ignore
+/// let file = File::open("disk.vhdx").finish()?;
+/// let io = file.io()?;
+/// let mut sector = io.sector(0, 256)?;  // 256 sectors = 1MB
+///
+/// // 写入数据
+/// sector.seek(SeekFrom::Start(500))?;
+/// sector.write_all(b"hello")?;
+///
+/// // 读取并验证
+/// sector.seek(SeekFrom::Start(0))?;
+/// let mut buf = vec![0u8; 4096];
+/// sector.read_exact(&mut buf)?;
+///
+/// // 查询大小
+/// let size = sector.seek(SeekFrom::End(0))?;
+/// assert_eq!(size, 256 * 4096);
+/// ```
 
 ```
 
@@ -1403,9 +1443,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // 写入数据（通过 IO/Sector 执行扇区写）
     let io = file.io()?;
-    let sector0 = io.sector(0)?;
+    let sector0 = io.sector(0, 1)?;
     let data = vec![0u8; 4096];
-    sector0.write(&data)?;
+    sector0.write(&data, 0)?;
     
     // 验证创建的Metadata
     let metadata = file.sections().metadata()?;
