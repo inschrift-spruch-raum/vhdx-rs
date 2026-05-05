@@ -94,6 +94,8 @@ MS-VHDX/{chapter}.{section}[.{subsection}[.{sub}]]
 | `HEADER_LOG_VERSION_UNSUPPORTED` | `MS-VHDX/2.2.2` | Header LogVersion != 0（规范要求 LogVersion MUST be 0；若 LogGuid 非零则不得继续处理） |
 | `HEADER_LOG_GUID_MISMATCH` | `MS-VHDX/2.2.2` | 双 Header LogGuid 不一致 |
 | `HEADER_SEQUENCE_NUMBER_INVALID` | `MS-VHDX/2.2.2` | 序列号异常（无法选择 active header） |
+| `HEADER_LOG_LENGTH_NOT_ALIGNED` | `MS-VHDX/2.2.2` | LogLength 不是 1MB 的整数倍 |
+| `HEADER_LOG_OFFSET_NOT_ALIGNED` | `MS-VHDX/2.2.2` | LogOffset 不是 1MB 的整数倍 |
 
 ### 4.2 Region Table 校验
 
@@ -103,6 +105,7 @@ MS-VHDX/{chapter}.{section}[.{subsection}[.{sub}]]
 | `REGION_ENTRY_ALIGNMENT` | `MS-VHDX/2.2.3.2` | Region Table Entry FileOffset 未按 1MB 对齐 |
 | `REGION_ENTRY_OFFSET_MINIMUM` | `MS-VHDX/2.2.3.2` | Region Table Entry FileOffset 必须 >= 1MB |
 | `REGION_ENTRY_OVERLAP` | `MS-VHDX/2.1` | Region 区间重叠/越界 |
+| `REGION_ENTRY_COUNT_EXCEEDS_MAXIMUM` | `MS-VHDX/2.2.3.1` | Region table entry count 超过 2047 |
 | `REGION_OPTIONAL_UNKNOWN` | `RELAX` | optional unknown region GUID 在严格模式下被拒绝 |
 | `REGION_REQUIRED_UNKNOWN` | `RELAX` | required unknown region 存在且 strict=true |
 | `REGION_SIGNATURE_INVALID` | `MS-VHDX/2.2.3.1` | Region Table Header 签名非 `regi` |
@@ -132,6 +135,8 @@ MS-VHDX/{chapter}.{section}[.{subsection}[.{sub}]]
 | `METADATA_REQUIRED_UNKNOWN` | `RELAX` | required unknown metadata item 存在 |
 | `METADATA_RESERVED_FLAGS_SET` | `MS-VHDX/2.6.1.2` | metadata entry 的保留标志位被设置 |
 | `METADATA_TABLE_SIGNATURE_INVALID` | `MS-VHDX/2.6.1.1` | Metadata Table Header 签名非 `metadata` |
+| `METADATA_ENTRY_RESERVED_NONZERO` | `MS-VHDX/2.6.1.2` | Metadata entry reserved 字段不为 0 |
+| `METADATA_FILE_PARAMETERS_RESERVED_FLAGS` | `MS-VHDX/2.6.2.1` | FileParameters 保留标志位（bits 2-31）被设置 |
 
 ### 4.5 Log 校验
 

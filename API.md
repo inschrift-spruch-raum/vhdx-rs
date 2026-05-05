@@ -285,6 +285,8 @@ vhdx::
     ├── InvalidRegionTable(String)          # 区域表格式错误
     ├── RegionRequiredUnknown               # 未知的 required region
     │   { guid: Guid }
+    ├── RegionOptionalUnknown               # 未知的 optional region
+    │   { guid: Guid }
     ├── InvalidMetadata(String)             # 元数据格式错误
     ├── MetadataGuidUnknown                 # 未知 Metadata Item GUID
     │   { guid: Guid }
@@ -310,7 +312,8 @@ vhdx::
     │   { block_idx: u64, state: String }
     ├── SectorOutOfBounds                   # 扇区索引越界
     │   { sector: u64, max: u64 }
-    ├── ParentNotFound { path: PathBuf }    # 父磁盘未找到
+    ├── ParentNotFound                      # 父磁盘未找到（三个路径均不可访问）
+    │   { relative: Option<PathBuf>, volume: Option<PathBuf>, absolute: Option<PathBuf> }
     ├── ParentMismatch                      # 父磁盘 GUID 不匹配
     │   { expected: Guid, actual: Guid }
     ├── ParentLocatorMissingLinkage         # parent_linkage key 不存在
@@ -337,7 +340,7 @@ vhdx-tool::
 │
 ├── check [file]                            # 检查文件完整性
 │   ├── --log-replay                        # 重放日志
-│   └── --strict                            # 启用严格模式 (默认: true)
+│   └── --strict [<bool>]                   # 启用/禁用严格模式 (默认: true)
 │
 ├── sections [file]                         # 查看内部Sections
 │   ├── header                              # 查看Header Section
@@ -1688,8 +1691,8 @@ mod sections;
 mod types;
 pub mod validation;
 
-pub use error::{Error, Result};
-pub use file::{File, LogReplayPolicy, ReadSemanticsPolicy};
+pub use error::{Error, Result, SignaturePosition};
+pub use file::{CreateOptions, File, LogReplayPolicy, OpenOptions, ReadSemanticsPolicy};
 pub use io::{IO, Sector};
 pub use types::Guid;
 
@@ -1702,11 +1705,6 @@ pub mod section {
     pub use log::{Log, Entry, LogEntryHeader, Descriptor, DataDescriptor, ZeroDescriptor, DataSector};
 }
 
-// IO模块（根级）
-pub use io::{IO, Sector};
-
-// 主 API
-pub use file::File;
 ```
 
 ---
