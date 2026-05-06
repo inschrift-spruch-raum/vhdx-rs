@@ -149,6 +149,7 @@ MS-VHDX/{chapter}.{section}[.{subsection}[.{sub}]]
 | `LOG_ENTRY_TAIL_INVALID` | `MS-VHDX/2.3.1.1` | Tail 非 4KB 倍数或越界 |
 | `LOG_DESCRIPTOR_SIGNATURE_INVALID` | `MS-VHDX/2.3.1` | Descriptor 签名非 `desc`（Data Desc, §2.3.1.3）或 `zero`（Zero Desc, §2.3.1.2） |
 | `LOG_DESCRIPTOR_COUNT_MISMATCH` | `MS-VHDX/2.3.1` | DescriptorCount 与实际数量不符 |
+| `LOG_DESCRIPTOR_SEQUENCE_MISMATCH` | `MS-VHDX/2.3.1` | Descriptor SequenceNumber 与所属 Entry 的 SequenceNumber 不一致 |
 | `LOG_SEQUENCE_GAP` | `MS-VHDX/2.3.2` | sequence 内相邻 entry 的 SequenceNumber 不连续 |
 | `LOG_SEQUENCE_GUID_MISMATCH` | `MS-VHDX/2.3.2` | Entry LogGuid 与 Header LogGuid 不一致 |
 | `LOG_ACTIVE_SEQUENCE_EMPTY` | `MS-VHDX/2.3.3` | 候选活跃序列为空（日志损坏） |

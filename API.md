@@ -1,4 +1,4 @@
-# VHDX Rust 库 API 设计分析
+﻿# VHDX Rust 库 API 设计分析
 
 ## 基于 MS-VHDX v20240423 规范的导出设计
 
@@ -313,7 +313,6 @@ vhdx::
     ├── SectorOutOfBounds                   # 扇区索引越界
     │   { sector: u64, max: u64 }
     ├── ParentNotFound                      # 父磁盘未找到（三个路径均不可访问）
-    │   { relative: Option<PathBuf>, volume: Option<PathBuf>, absolute: Option<PathBuf> }
     ├── ParentMismatch                      # 父磁盘 GUID 不匹配
     │   { expected: Guid, actual: Guid }
     ├── ParentLocatorMissingLinkage         # parent_linkage key 不存在
@@ -767,12 +766,6 @@ impl<'a> Bat<'a> {
 /// 存储 Payload Block 或 Sector Bitmap Block 的元数据
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BatEntry<'a> {
-    /// 原始 8 字节，借用自 BAT 缓冲区（零拷贝）
-    bytes: &'a [u8; 8],
-    /// 是否为 Sector Bitmap Block 条目（由 chunk ratio 交织位置决定）
-    is_sector_bitmap: bool,
-
-    /// Entry 类型和状态
     pub fn state(&self) -> Result<BatState>,
     /// 文件偏移（MB为单位）
     pub fn file_offset_mb(&self) -> u64,
@@ -979,8 +972,7 @@ impl<'a> ParentLocator<'a> {
     /// 返回 owned `PathBuf`：UTF-16LE 解码需要分配内存，无法返回借用视图。
     ///
     /// 失败条件：
-    /// - 所有路径均无法访问或丢失 -> Error::ParentNotFound { relative, volume, absolute }
-    ///   （三个字段分别携带尝试过的路径，均为 None 表示该类型路径不存在）
+    /// - 所有路径均无法访问或丢失 -> Error::ParentNotFound
     pub fn resolve_parent_path(&self) -> Result<PathBuf>;
 }
 
@@ -1636,12 +1628,8 @@ pub enum Error {
     /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.6
     /// 对应 CODE：PARENT_LOCATOR_NO_VALID_PATH（MS-VHDX/2.6.2.6.3）
     /// 按规范顺序尝试 relative_path → volume_path → absolute_win32_path 后，
-    /// 三个路径均无法访问或丢失。携带已尝试的三个路径以供调试。
-    ParentNotFound {
-        relative: Option<std::path::PathBuf>,
-        volume: Option<std::path::PathBuf>,
-        absolute: Option<std::path::PathBuf>,
-    },
+    /// 三个路径均无法访问或丢失。
+    ParentNotFound,
 
     /// 父磁盘 GUID 不匹配
     ///
