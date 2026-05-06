@@ -96,6 +96,7 @@ MS-VHDX/{chapter}.{section}[.{subsection}[.{sub}]]
 | `HEADER_SEQUENCE_NUMBER_INVALID` | `MS-VHDX/2.2.2` | 序列号异常（无法选择 active header） |
 | `HEADER_LOG_LENGTH_NOT_ALIGNED` | `MS-VHDX/2.2.2` | LogLength 不是 1MB 的整数倍 |
 | `HEADER_LOG_OFFSET_NOT_ALIGNED` | `MS-VHDX/2.2.2` | LogOffset 不是 1MB 的整数倍 |
+| `HEADER_CORRUPTED` | `MS-VHDX/2.2.2` | 无法归类到具体错误码时的通用 Header 数据损坏 |
 
 ### 4.2 Region Table 校验
 

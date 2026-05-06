@@ -876,16 +876,22 @@ impl<'a> TableEntry<'a> {
 }
 
 /// Entry Flags (TableEntry.flags的包装)
+///
+/// Flags 字段按小端 u32 存储，标准 MS-VHDX §2.6.1.2 Figure 19：
+/// - A=IsUser     (bit 0, 即 Byte24 bit0)
+/// - B=IsVirtualDisk (bit 1, 即 Byte24 bit1)
+/// - C=IsRequired (bit 2, 即 Byte24 bit2)
+/// - 其余位保留（MUST be 0）
 pub struct EntryFlags(pub u32);
 
 impl EntryFlags {
-    /// 是否为用户元数据 (Bit 31)
+    /// 是否为用户元数据 (Bit 0)
     pub fn is_user(&self) -> bool;
     
-    /// 是否为虚拟磁盘元数据 (Bit 30)
+    /// 是否为虚拟磁盘元数据 (Bit 1)
     pub fn is_virtual_disk(&self) -> bool;
     
-    /// 是否为必需项 (Bit 29)
+    /// 是否为必需项 (Bit 2)
     pub fn is_required(&self) -> bool;
 }
 
