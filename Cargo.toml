@@ -17,10 +17,13 @@ version.workspace = true
 edition.workspace = true
 description = "VHDX (Virtual Hard Disk v2) library"
 
+[lib]
+name = "vhdx"
+
 [dependencies]
 uuid = { version = "1.22", features = ["v4"] }
 thiserror = "2.0.18"
-byteorder = "1.5"
+bitvec = "1"
 crc32c = "0.6"
 
 [dev-dependencies]
