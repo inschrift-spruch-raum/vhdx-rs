@@ -131,103 +131,57 @@ The VHDX format is designed to support three types of virtual hard disks:
 **Figure 1: Logical layout**
 
 ```svg
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 300">
-  <rect width="600" height="300" fill="white"/>
-  <text x="300" y="25" font-family="Arial" font-size="14" font-weight="bold" text-anchor="middle">Logical Layout</text>
-  <rect x="50" y="50" width="120" height="200" fill="#e8f4f8" stroke="#333" stroke-width="2"/>
-  <text x="110" y="70" font-family="Arial" font-size="12" font-weight="bold" text-anchor="middle">Virtual Disk</text>
-  <rect x="60" y="85" width="100" height="25" fill="#b8d4e3" stroke="#333" stroke-width="1"/>
-  <text x="110" y="102" font-family="Arial" font-size="10" text-anchor="middle">Block 0</text>
-  <rect x="60" y="115" width="100" height="25" fill="#b8d4e3" stroke="#333" stroke-width="1"/>
-  <text x="110" y="132" font-family="Arial" font-size="10" text-anchor="middle">Block 1</text>
-  <rect x="60" y="145" width="100" height="25" fill="#b8d4e3" stroke="#333" stroke-width="1"/>
-  <text x="110" y="162" font-family="Arial" font-size="10" text-anchor="middle">Block 2</text>
-  <text x="110" y="195" font-family="Arial" font-size="10" text-anchor="middle">...</text>
-  <rect x="60" y="210" width="100" height="25" fill="#b8d4e3" stroke="#333" stroke-width="1"/>
-  <text x="110" y="227" font-family="Arial" font-size="10" text-anchor="middle">Block N</text>
-  <path d="M 180 150 L 240 150" stroke="#333" stroke-width="2" fill="none" marker-end="url(#ah1)"/>
-  <defs><marker id="ah1" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#333"/></marker></defs>
-  <text x="210" y="140" font-family="Arial" font-size="10" text-anchor="middle">BAT</text>
-  <rect x="260" y="50" width="140" height="200" fill="#f0f8e8" stroke="#333" stroke-width="2"/>
-  <text x="330" y="70" font-family="Arial" font-size="12" font-weight="bold" text-anchor="middle">VHDX File</text>
-  <rect x="270" y="85" width="120" height="20" fill="#d4e8b8" stroke="#333" stroke-width="1"/>
-  <text x="330" y="98" font-family="Arial" font-size="9" text-anchor="middle">Header Section</text>
-  <rect x="270" y="110" width="120" height="20" fill="#d4e8b8" stroke="#333" stroke-width="1"/>
-  <text x="330" y="123" font-family="Arial" font-size="9" text-anchor="middle">Region Table</text>
-  <rect x="270" y="135" width="120" height="20" fill="#d4e8b8" stroke="#333" stroke-width="1"/>
-  <text x="330" y="148" font-family="Arial" font-size="9" text-anchor="middle">Log</text>
-  <rect x="270" y="160" width="120" height="20" fill="#d4e8b8" stroke="#333" stroke-width="1"/>
-  <text x="330" y="173" font-family="Arial" font-size="9" text-anchor="middle">BAT</text>
-  <rect x="270" y="185" width="120" height="20" fill="#d4e8b8" stroke="#333" stroke-width="1"/>
-  <text x="330" y="198" font-family="Arial" font-size="9" text-anchor="middle">Metadata Region</text>
-  <rect x="270" y="210" width="120" height="25" fill="#d4e8b8" stroke="#333" stroke-width="1"/>
-  <text x="330" y="223" font-family="Arial" font-size="9" text-anchor="middle">Payload Blocks</text>
-  <path d="M 410 150 L 470 150" stroke="#333" stroke-width="2" fill="none" marker-end="url(#ah2)"/>
-  <defs><marker id="ah2" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#333"/></marker></defs>
-  <rect x="490" y="50" width="100" height="200" fill="#fff4e8" stroke="#333" stroke-width="2"/>
-  <text x="540" y="70" font-family="Arial" font-size="12" font-weight="bold" text-anchor="middle">Host Disk</text>
-  <rect x="500" y="85" width="80" height="150" fill="#f8e4c8" stroke="#333" stroke-width="1"/>
-  <text x="540" y="165" font-family="Arial" font-size="10" text-anchor="middle">Physical</text>
-  <text x="540" y="180" font-family="Arial" font-size="10" text-anchor="middle">Storage</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 830" width="100%" height="100%">
+    <rect width="1100" height="830" fill="#ffffff" />
+    <defs>
+        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#000000" />
+        </marker>
+    </defs>
+    <rect x="155" y="45" width="110" height="90" fill="#ebebeb" stroke="#000000" stroke-width="2" stroke-dasharray="10, 8" />
+    <text x="210" y="95" font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="#000000" text-anchor="middle">Log</text>
+    <rect x="150" y="355" width="120" height="90" fill="#ebebeb" stroke="#000000" stroke-width="2" stroke-dasharray="10, 8" />
+    <text x="210" y="405" font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="#000000" text-anchor="middle">Header</text>
+    <rect x="465" y="170" width="110" height="95" fill="#ebebeb" stroke="#000000" stroke-width="2" stroke-dasharray="10, 8" />
+    <text x="520" y="222" font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="#000000" text-anchor="middle">BAT</text>
+    <rect x="690" y="115" width="150" height="75" fill="#ebebeb" stroke="#000000" stroke-width="2" stroke-dasharray="10, 8" />
+    <text x="765" y="145" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#000000" text-anchor="middle">Payload</text>
+    <text x="765" y="170" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#000000" text-anchor="middle">Blocks</text>
+    <rect x="683" y="245" width="165" height="95" fill="#ebebeb" stroke="#000000" stroke-width="2" stroke-dasharray="10, 8" />
+    <text x="765" y="275" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#000000" text-anchor="middle">Sector</text>
+    <text x="765" y="305" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#000000" text-anchor="middle">Bitmap</text>
+    <text x="765" y="335" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#000000" text-anchor="middle">Blocks</text>
+    <rect x="430" y="395" width="600" height="380" fill="none" stroke="#000000" stroke-width="2" stroke-dasharray="10, 8" />
+    <rect x="525" y="470" width="120" height="85" fill="#ebebeb" stroke="#000000" stroke-width="2" />
+    <text x="585" y="505" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#000000" text-anchor="middle">Metadata</text>
+    <text x="585" y="530" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#000000" text-anchor="middle">Table</text>
+    <rect x="755" y="415" width="140" height="75" fill="#ebebeb" stroke="#000000" stroke-width="2" />
+    <text x="825" y="445" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#000000" text-anchor="middle">User Defined</text>
+    <text x="825" y="468" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#000000" text-anchor="middle">Metadata</text>
+    <rect x="755" y="535" width="140" height="75" fill="#ebebeb" stroke="#000000" stroke-width="2" />
+    <text x="825" y="565" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#000000" text-anchor="middle">System</text>
+    <text x="825" y="588" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#000000" text-anchor="middle">Metadata</text>
+    <line x1="210" y1="355" x2="210" y2="140" stroke="#000000" stroke-width="2" marker-end="url(#arrowhead)" />
+    <path d="M 270 380 L 420 380 L 420 222 L 465 222" fill="none" stroke="#000000" stroke-width="2" marker-end="url(#arrowhead)" />
+    <path d="M 270 415 L 380 415 L 380 512 L 520 512" fill="none" stroke="#000000" stroke-width="2" marker-end="url(#arrowhead)" />
+    <path d="M 575 200 L 640 200 L 640 150 L 685 150" fill="none" stroke="#000000" stroke-width="2" marker-end="url(#arrowhead)" />
+    <path d="M 575 220 L 640 220 L 640 292 L 678 292" fill="none" stroke="#000000" stroke-width="2" marker-end="url(#arrowhead)" />
+    <path d="M 645 490 L 720 490 L 720 453 L 750 453" fill="none" stroke="#000000" stroke-width="2" marker-end="url(#arrowhead)" />
+    <path d="M 645 505 L 720 505 L 720 555 L 750 555" fill="none" stroke="#000000" stroke-width="2" marker-end="url(#arrowhead)" />
+    <text x="730" y="760" font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="#000000" text-anchor="middle">Metadata Region</text>
+    <line x1="120" y1="655" x2="180" y2="655" stroke="#000000" stroke-width="2" stroke-dasharray="10, 8" />
+    <text x="195" y="660" font-family="Arial, sans-serif" font-size="20" fill="#000000">Large Allocation</text>
+    <text x="195" y="685" font-family="Arial, sans-serif" font-size="20" fill="#000000">&amp; MB Aligned</text>
 </svg>
 ```
 
 **Figure 2: File layout example**
 
-```svg
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 400">
-  <rect width="700" height="400" fill="white"/>
-  <text x="350" y="25" font-family="Arial" font-size="14" font-weight="bold" text-anchor="middle">File Layout Example</text>
-  <rect x="50" y="50" width="600" height="320" fill="#f8f8f8" stroke="#333" stroke-width="2"/>
-  <rect x="60" y="60" width="580" height="50" fill="#e8d4f8" stroke="#333" stroke-width="1"/>
-  <text x="350" y="80" font-family="Arial" font-size="11" font-weight="bold" text-anchor="middle">Header Section (1 MB)</text>
-  <rect x="70" y="90" width="80" height="15" fill="#d4b8e8" stroke="#333" stroke-width="1"/>
-  <text x="110" y="101" font-family="Arial" font-size="8" text-anchor="middle">File Type ID</text>
-  <rect x="160" y="90" width="80" height="15" fill="#d4b8e8" stroke="#333" stroke-width="1"/>
-  <text x="200" y="101" font-family="Arial" font-size="8" text-anchor="middle">Header 1</text>
-  <rect x="250" y="90" width="80" height="15" fill="#d4b8e8" stroke="#333" stroke-width="1"/>
-  <text x="290" y="101" font-family="Arial" font-size="8" text-anchor="middle">Header 2</text>
-  <rect x="340" y="90" width="80" height="15" fill="#d4b8e8" stroke="#333" stroke-width="1"/>
-  <text x="380" y="101" font-family="Arial" font-size="8" text-anchor="middle">Region Table 1</text>
-  <rect x="430" y="90" width="80" height="15" fill="#d4b8e8" stroke="#333" stroke-width="1"/>
-  <text x="470" y="101" font-family="Arial" font-size="8" text-anchor="middle">Region Table 2</text>
-  <rect x="60" y="120" width="580" height="30" fill="#f0f0f0" stroke="#333" stroke-width="1" stroke-dasharray="4"/>
-  <text x="350" y="140" font-family="Arial" font-size="10" text-anchor="middle">Free Space</text>
-  <rect x="60" y="160" width="200" height="40" fill="#d4f8e8" stroke="#333" stroke-width="1"/>
-  <text x="160" y="185" font-family="Arial" font-size="10" text-anchor="middle">BAT Region</text>
-  <rect x="270" y="160" width="100" height="40" fill="#f0f0f0" stroke="#333" stroke-width="1" stroke-dasharray="4"/>
-  <text x="320" y="185" font-family="Arial" font-size="9" text-anchor="middle">Free Space</text>
-  <rect x="380" y="160" width="150" height="40" fill="#f8e8d4" stroke="#333" stroke-width="1"/>
-  <text x="455" y="185" font-family="Arial" font-size="10" text-anchor="middle">Metadata Region</text>
-  <rect x="540" y="160" width="100" height="40" fill="#f0f0f0" stroke="#333" stroke-width="1" stroke-dasharray="4"/>
-  <text x="590" y="185" font-family="Arial" font-size="9" text-anchor="middle">Free</text>
-  <rect x="60" y="210" width="180" height="40" fill="#f8d4d4" stroke="#333" stroke-width="1"/>
-  <text x="150" y="235" font-family="Arial" font-size="10" text-anchor="middle">Log Region</text>
-  <rect x="250" y="210" width="390" height="40" fill="#f0f0f0" stroke="#333" stroke-width="1" stroke-dasharray="4"/>
-  <text x="445" y="235" font-family="Arial" font-size="10" text-anchor="middle">Free Space</text>
-  <rect x="60" y="260" width="120" height="40" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="120" y="285" font-family="Arial" font-size="10" text-anchor="middle">Payload Block 0</text>
-  <rect x="190" y="260" width="120" height="40" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="250" y="285" font-family="Arial" font-size="10" text-anchor="middle">Payload Block 1</text>
-  <rect x="320" y="260" width="80" height="40" fill="#f0f0f0" stroke="#333" stroke-width="1" stroke-dasharray="4"/>
-  <text x="360" y="285" font-family="Arial" font-size="9" text-anchor="middle">Free</text>
-  <rect x="410" y="260" width="120" height="40" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="470" y="285" font-family="Arial" font-size="10" text-anchor="middle">Payload Block N</text>
-  <rect x="540" y="260" width="100" height="40" fill="#f0f0f0" stroke="#333" stroke-width="1" stroke-dasharray="4"/>
-  <text x="590" y="285" font-family="Arial" font-size="9" text-anchor="middle">Free</text>
-  <rect x="60" y="310" width="100" height="40" fill="#e8f8d4" stroke="#333" stroke-width="1"/>
-  <text x="110" y="335" font-family="Arial" font-size="9" text-anchor="middle">Sector Bitmap 0</text>
-  <rect x="170" y="310" width="470" height="40" fill="#f0f0f0" stroke="#333" stroke-width="1" stroke-dasharray="4"/>
-  <text x="405" y="335" font-family="Arial" font-size="10" text-anchor="middle">Free Space (can be used for file expansion)</text>
-  <text x="30" y="85" font-family="Arial" font-size="8" text-anchor="end">0 MB</text>
-  <text x="30" y="340" font-family="Arial" font-size="8" text-anchor="end">N MB</text>
-  <rect x="450" y="365" width="15" height="10" fill="#e8d4f8" stroke="#333" stroke-width="1"/>
-  <text x="475" y="373" font-family="Arial" font-size="8" text-anchor="start">Header</text>
-  <rect x="520" y="365" width="15" height="10" fill="#d4f8e8" stroke="#333" stroke-width="1"/>
-  <text x="545" y="373" font-family="Arial" font-size="8" text-anchor="start">BAT</text>
-  <rect x="580" y="365" width="15" height="10" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="605" y="373" font-family="Arial" font-size="8" text-anchor="start">Payload</text>
-</svg>
+```
+┌────────┬─────┬─────┬────────┬──────┬───────┬──────────┬───────┬──────┐
+│ Header │ Log │ BAT │ Sector │ Data │ Free  │ Metadata │ Free  │ Data │
+│        │     │     │ Bitmap │      │ Space │  Region  │ Space │      │
+└────────┴─────┴─────┴────────┴──────┴───────┴──────────┴───────┴──────┘
 ```
 
 ### 1.4 Relationship to Protocols and Other Structures
@@ -296,42 +250,13 @@ The header section contains five items: the file type identifier, two headers, a
 
 **Figure 3: Header section layout**
 
-```svg
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 200">
-  <rect width="700" height="200" fill="white"/>
-  <text x="350" y="20" font-family="Arial" font-size="14" font-weight="bold" text-anchor="middle">Header Section Layout (1 MB)</text>
-  <rect x="50" y="35" width="600" height="140" fill="#f8f8f8" stroke="#333" stroke-width="2"/>
-  <rect x="60" y="45" width="100" height="110" fill="#e8d4f8" stroke="#333" stroke-width="1"/>
-  <text x="110" y="60" font-family="Arial" font-size="9" font-weight="bold" text-anchor="middle">File Type</text>
-  <text x="110" y="72" font-family="Arial" font-size="9" font-weight="bold" text-anchor="middle">Identifier</text>
-  <text x="110" y="95" font-family="Arial" font-size="8" text-anchor="middle">64 KB</text>
-  <text x="110" y="110" font-family="Arial" font-size="8" text-anchor="middle">Offset: 0</text>
-  <text x="110" y="130" font-family="Arial" font-size="7" text-anchor="middle">Signature:</text>
-  <text x="110" y="142" font-family="Arial" font-size="7" text-anchor="middle">"vhdxfile"</text>
-  <rect x="170" y="45" width="100" height="110" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="220" y="65" font-family="Arial" font-size="10" font-weight="bold" text-anchor="middle">Header 1</text>
-  <text x="220" y="95" font-family="Arial" font-size="8" text-anchor="middle">4 KB</text>
-  <text x="220" y="110" font-family="Arial" font-size="8" text-anchor="middle">Offset: 64 KB</text>
-  <text x="220" y="130" font-family="Arial" font-size="7" text-anchor="middle">(64 KB aligned)</text>
-  <rect x="280" y="45" width="100" height="110" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="330" y="65" font-family="Arial" font-size="10" font-weight="bold" text-anchor="middle">Header 2</text>
-  <text x="330" y="95" font-family="Arial" font-size="8" text-anchor="middle">4 KB</text>
-  <text x="330" y="110" font-family="Arial" font-size="8" text-anchor="middle">Offset: 128 KB</text>
-  <text x="330" y="130" font-family="Arial" font-size="7" text-anchor="middle">(64 KB aligned)</text>
-  <rect x="390" y="45" width="100" height="110" fill="#f8e8d4" stroke="#333" stroke-width="1"/>
-  <text x="440" y="60" font-family="Arial" font-size="9" font-weight="bold" text-anchor="middle">Region</text>
-  <text x="440" y="72" font-family="Arial" font-size="9" font-weight="bold" text-anchor="middle">Table 1</text>
-  <text x="440" y="95" font-family="Arial" font-size="8" text-anchor="middle">64 KB</text>
-  <text x="440" y="110" font-family="Arial" font-size="8" text-anchor="middle">Offset: 192 KB</text>
-  <rect x="500" y="45" width="100" height="110" fill="#f8e8d4" stroke="#333" stroke-width="1"/>
-  <text x="550" y="60" font-family="Arial" font-size="9" font-weight="bold" text-anchor="middle">Region</text>
-  <text x="550" y="72" font-family="Arial" font-size="9" font-weight="bold" text-anchor="middle">Table 2</text>
-  <text x="550" y="95" font-family="Arial" font-size="8" text-anchor="middle">64 KB</text>
-  <text x="550" y="110" font-family="Arial" font-size="8" text-anchor="middle">Offset: 256 KB</text>
-  <rect x="610" y="45" width="30" height="110" fill="#f0f0f0" stroke="#333" stroke-width="1" stroke-dasharray="3"/>
-  <text x="625" y="85" font-family="Arial" font-size="7" text-anchor="middle" transform="rotate(90, 625, 85)">Reserved</text>
-  <text x="350" y="175" font-family="Arial" font-size="9" text-anchor="middle">Total: 1 MB (All items are 64 KB aligned)</text>
-</svg>
+```
+┌────────────┬───────────┬────────────┬────────────┬────────────┬────────────┐
+│ File Type  │   Header  │   Header   │  Region    │   Region   │  Reserved  │
+│ Identifier │     1     │     2      │  Table 1   │  Table 2   │            │
+├────────────┼───────────┼────────────┼────────────┼────────────┼────────────┤
+│ 0 KB~64 KB │ 64~128 KB │ 128~192 KB │ 192~256 KB │ 256~320 KB │ 320 KB~1MB │
+└────────────┴───────────┴────────────┴────────────┴────────────┴────────────┘
 ```
 
 #### 2.2.1 File Type Identifier
@@ -339,17 +264,19 @@ The header section contains five items: the file type identifier, two headers, a
 The file type identifier is a structure stored at offset zero of the file.
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                           Signature                           |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                          Creator (512 bytes)                  |
-|                              ...                              |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│                           Signature                           │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                            Creator                            │
+│                          (512 bytes)                          │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **Signature (8 bytes):** MUST be 0x7668647866696C65, which is a UTF-8 string representing "vhdxfile".
@@ -367,48 +294,53 @@ Since the header is used to locate the log, updates to the headers cannot be mad
 Each of the two headers is a 4-KB structure that is aligned to a 64-KB boundary.<sup>1</sup> One header is stored at offset 64 KB and the other at 128 KB. Only one header is considered current and in use at any point in time.
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                          Signature                            |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                          Checksum                             |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                       SequenceNumber                          |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                       FileWriteGuid (16 bytes)                |
-|                                                               |
-|                                                               |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                       DataWriteGuid (16 bytes)                |
-|                                                               |
-|                                                               |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                         LogGuid (16 bytes)                    |
-|                                                               |
-|                                                               |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|         LogVersion            |           Version             |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|          LogLength            |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                          LogOffset                            |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                     Reserved (4016 bytes)                     |
-|                              ...                              |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│                           Signature                           │
+├───────────────────────────────────────────────────────────────┤
+│                           Checksum                            │
+├───────────────────────────────────────────────────────────────┤
+│                        SequenceNumber                         │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                         FileWriteGuid                         │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                         DataWriteGuid                         │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                            LogGuid                            │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────┬───────────────────────────────┤
+│          LogVersion           │            Version            │
+├───────────────────────────────┴───────────────────────────────┤
+│                           LogLength                           │
+├───────────────────────────────────────────────────────────────┤
+│                           LogOffset                           │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                            Reserved                           │
+│                         (4016 bytes)                          │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **Signature (4 bytes):** MUST be 0x68656164 which is a UTF-8 string representing "head".
@@ -460,17 +392,18 @@ The region table consists of a header followed by a variable number of entries, 
 ##### 2.2.3.1 Region Table Header
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                          Signature                            |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                          Checksum                             |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                         EntryCount                            |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                          Reserved                             |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│                           Signature                           │
+├───────────────────────────────────────────────────────────────┤
+│                           Checksum                            │
+├───────────────────────────────────────────────────────────────┤
+│                          EntryCount                           │
+├───────────────────────────────────────────────────────────────┤
+│                           Reserved                            │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **Signature (4 bytes):** MUST be 0x72656769, which is a UTF-8 string representing "regi".
@@ -484,22 +417,26 @@ The region table consists of a header followed by a variable number of entries, 
 ##### 2.2.3.2 Region Table Entry
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                            Guid (16 bytes)                    |
-|                                                               |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                          FileOffset                           |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                           Length                              |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                          Required                             |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│                             Guid                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                          FileOffset                           │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                            Length                             │
+├───────────────────────────────────────────────────────────────┤
+│                           Required                            │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **Guid (16 bytes):** Specifies a 128-bit identifier for the object (a GUID in binary form) and MUST be unique within the table.
@@ -542,50 +479,46 @@ Updates that were not written and flushed to their final location on the VHDX fi
 **Figure 4: Log layout example**
 
 ```svg
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 280">
-  <rect width="700" height="280" fill="white"/>
-  <text x="350" y="20" font-family="Arial" font-size="14" font-weight="bold" text-anchor="middle">Log Layout Example (Circular Buffer)</text>
-  <rect x="50" y="40" width="600" height="100" fill="#f8f8f8" stroke="#333" stroke-width="2"/>
-  <text x="350" y="58" font-family="Arial" font-size="10" text-anchor="middle">Log Region</text>
-  <rect x="60" y="70" width="80" height="60" fill="#f8d4d4" stroke="#333" stroke-width="1"/>
-  <text x="100" y="95" font-family="Arial" font-size="9" text-anchor="middle">Entry 1</text>
-  <text x="100" y="110" font-family="Arial" font-size="8" text-anchor="middle">Seq: 100</text>
-  <rect x="150" y="70" width="80" height="60" fill="#f8d4d4" stroke="#333" stroke-width="1"/>
-  <text x="190" y="95" font-family="Arial" font-size="9" text-anchor="middle">Entry 2</text>
-  <text x="190" y="110" font-family="Arial" font-size="8" text-anchor="middle">Seq: 101</text>
-  <rect x="240" y="70" width="80" height="60" fill="#f8d4d4" stroke="#333" stroke-width="1"/>
-  <text x="280" y="95" font-family="Arial" font-size="9" text-anchor="middle">Entry 3</text>
-  <text x="280" y="110" font-family="Arial" font-size="8" text-anchor="middle">Seq: 102</text>
-  <rect x="330" y="70" width="100" height="60" fill="#e8f8e8" stroke="#333" stroke-width="1" stroke-dasharray="4"/>
-  <text x="380" y="105" font-family="Arial" font-size="9" text-anchor="middle">Free Space</text>
-  <rect x="440" y="70" width="80" height="60" fill="#f8d4d4" stroke="#333" stroke-width="1"/>
-  <text x="480" y="95" font-family="Arial" font-size="9" text-anchor="middle">Entry N-1</text>
-  <text x="480" y="110" font-family="Arial" font-size="8" text-anchor="middle">Seq: 150</text>
-  <rect x="530" y="70" width="80" height="60" fill="#d4f8d4" stroke="#333" stroke-width="2"/>
-  <text x="570" y="95" font-family="Arial" font-size="9" font-weight="bold" text-anchor="middle">Entry N</text>
-  <text x="570" y="110" font-family="Arial" font-size="8" text-anchor="middle">Seq: 151</text>
-  <text x="570" y="125" font-family="Arial" font-size="7" text-anchor="middle">(HEAD)</text>
-  <path d="M 570 140 Q 570 160 350 160 Q 100 160 100 140" stroke="#333" stroke-width="1.5" fill="none" marker-end="url(#ah3)"/>
-  <defs><marker id="ah3" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#333"/></marker></defs>
-  <text x="350" y="175" font-family="Arial" font-size="9" text-anchor="middle">Circular Buffer - wraps around when full</text>
-  <rect x="50" y="195" width="600" height="70" fill="#fff8f0" stroke="#333" stroke-width="1"/>
-  <text x="350" y="210" font-family="Arial" font-size="10" font-weight="bold" text-anchor="middle">Log Entry Structure</text>
-  <rect x="60" y="220" width="100" height="35" fill="#f8e8d4" stroke="#333" stroke-width="1"/>
-  <text x="110" y="235" font-family="Arial" font-size="8" text-anchor="middle">Entry Header</text>
-  <text x="110" y="248" font-family="Arial" font-size="7" text-anchor="middle">(4 KB)</text>
-  <rect x="170" y="220" width="80" height="35" fill="#e8d4f8" stroke="#333" stroke-width="1"/>
-  <text x="210" y="235" font-family="Arial" font-size="8" text-anchor="middle">Descriptors</text>
-  <text x="210" y="248" font-family="Arial" font-size="7" text-anchor="middle">(variable)</text>
-  <rect x="260" y="220" width="80" height="35" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="300" y="235" font-family="Arial" font-size="8" text-anchor="middle">Data Sector 1</text>
-  <text x="300" y="248" font-family="Arial" font-size="7" text-anchor="middle">(4 KB)</text>
-  <rect x="350" y="220" width="80" height="35" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="390" y="235" font-family="Arial" font-size="8" text-anchor="middle">Data Sector 2</text>
-  <text x="390" y="248" font-family="Arial" font-size="7" text-anchor="middle">(4 KB)</text>
-  <text x="480" y="240" font-family="Arial" font-size="9" text-anchor="middle">...</text>
-  <rect x="520" y="220" width="80" height="35" fill="#d4f8e8" stroke="#333" stroke-width="1"/>
-  <text x="560" y="235" font-family="Arial" font-size="8" text-anchor="middle">Data Sector N</text>
-  <text x="560" y="248" font-family="Arial" font-size="7" text-anchor="middle">(4 KB)</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 450" width="100%" height="100%">
+    <defs>
+        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#000000" />
+        </marker>
+        <marker id="straight-arrow" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#000000" />
+        </marker>
+    </defs>
+    <rect width="1000" height="450" fill="#ffffff" />
+    <rect x="30" y="15" width="860" height="350" fill="none" stroke="#888888" stroke-width="2" stroke-dasharray="4, 6" />
+    <line x1="280" y1="15" x2="280" y2="360" stroke="#888888" stroke-width="2" stroke-dasharray="4, 6" />
+    <line x1="650" y1="15" x2="650" y2="360" stroke="#888888" stroke-width="2" stroke-dasharray="4, 6" />
+    <text x="155" y="55" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#000000" text-anchor="middle">Older Sequences</text>
+    <text x="470" y="55" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#000000" text-anchor="middle">Active Sequence</text>
+    <text x="770" y="55" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#000000" text-anchor="middle">Older Sequences</text>
+    <rect x="30" y="120" width="250" height="150" fill="#ebebeb" stroke="#000000" stroke-width="2" />
+    <rect x="600" y="120" width="290" height="150" fill="#ebebeb" stroke="#000000" stroke-width="2" />
+    <rect x="280" y="120" width="90" height="150" fill="#e0e0e0" stroke="#000000" stroke-width="2" />
+    <text x="325" y="200" font-family="Arial, sans-serif" font-size="22" font-weight="bold" fill="#000000" text-anchor="middle">N</text>
+    <rect x="370" y="120" width="60" height="150" fill="#ebebeb" stroke="#000000" stroke-width="2" />
+    <text x="400" y="200" font-family="Arial, sans-serif" font-size="22" font-weight="bold" fill="#000000" text-anchor="middle">N</text>
+    <text x="400" y="230" font-family="Arial, sans-serif" font-size="22" font-weight="bold" fill="#000000" text-anchor="middle">+1</text>
+    <rect x="430" y="120" width="65" height="150" fill="#ebebeb" stroke="#000000" stroke-width="2" />
+    <text x="462" y="200" font-family="Arial, sans-serif" font-size="22" font-weight="bold" fill="#000000" text-anchor="middle">N</text>
+    <text x="462" y="230" font-family="Arial, sans-serif" font-size="22" font-weight="bold" fill="#000000" text-anchor="middle">+2</text>
+    <rect x="495" y="120" width="70" height="150" fill="#e0e0e0" stroke="#000000" stroke-width="2" />
+    <text x="530" y="200" font-family="Arial, sans-serif" font-size="22" font-weight="bold" fill="#000000" text-anchor="middle">N</text>
+    <text x="530" y="230" font-family="Arial, sans-serif" font-size="22" font-weight="bold" fill="#000000" text-anchor="middle">+3</text>
+    <rect x="565" y="120" width="85" height="150" fill="#e0e0e0" stroke="#000000" stroke-width="2" />
+    <text x="607" y="200" font-family="Arial, sans-serif" font-size="22" font-weight="bold" fill="#000000" text-anchor="middle">N</text>
+    <text x="607" y="230" font-family="Arial, sans-serif" font-size="22" font-weight="bold" fill="#000000" text-anchor="middle">+4</text>
+    <text x="325" y="75" font-family="Arial, sans-serif" font-size="22" font-weight="bold" fill="#000000" text-anchor="middle">Tail</text>
+    <line x1="325" y1="120" x2="325" y2="80" stroke="#000000" stroke-width="2" marker-end="url(#straight-arrow)" />
+    <text x="610" y="75" font-family="Arial, sans-serif" font-size="22" font-weight="bold" fill="#000000" text-anchor="middle">Head</text>
+    <line x1="610" y1="120" x2="610" y2="80" stroke="#000000" stroke-width="2" marker-end="url(#straight-arrow)" />
+	<path d="M 400 270 C 462 355, 325 355, 325 270" fill="none" stroke="#000000" stroke-width="2" stroke-dasharray="8, 6" marker-end="url(#arrowhead)" />
+	<path d="M 462 270 C 462 355, 325 355, 325 270" fill="none" stroke="#000000" stroke-width="2" stroke-dasharray="8, 6" marker-end="url(#arrowhead)" />
+    <path d="M 530 270 C 530 375, 325 375, 325 270" fill="none" stroke="#000000" stroke-width="2" stroke-dasharray="8, 6" marker-end="url(#arrowhead)" />
+    <path d="M 607 270 C 607 390, 325 390, 325 270" fill="none" stroke="#000000" stroke-width="2" stroke-dasharray="8, 6" marker-end="url(#arrowhead)" />
 </svg>
 ```
 
@@ -598,70 +531,59 @@ The descriptor sectors contain header information and describe the writes that a
 **Figure 5: Log Entry Structure Layout Example**
 
 ```svg
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 750 350">
-  <rect width="750" height="350" fill="white"/>
-  <text x="375" y="20" font-family="Arial" font-size="14" font-weight="bold" text-anchor="middle">Log Entry Structure Layout Example</text>
-  <rect x="30" y="35" width="690" height="290" fill="#f8f8f8" stroke="#333" stroke-width="2"/>
-  <rect x="40" y="50" width="200" height="120" fill="#f8e8d4" stroke="#333" stroke-width="1"/>
-  <text x="140" y="68" font-family="Arial" font-size="10" font-weight="bold" text-anchor="middle">Descriptor Sector (4 KB)</text>
-  <rect x="50" y="80" width="180" height="35" fill="#f8d4a0" stroke="#333" stroke-width="1"/>
-  <text x="140" y="95" font-family="Arial" font-size="9" text-anchor="middle">Entry Header</text>
-  <text x="140" y="108" font-family="Arial" font-size="8" text-anchor="middle">(64 bytes)</text>
-  <rect x="50" y="120" width="40" height="40" fill="#e8d4f8" stroke="#333" stroke-width="1"/>
-  <text x="70" y="135" font-family="Arial" font-size="7" text-anchor="middle">Desc</text>
-  <text x="70" y="145" font-family="Arial" font-size="7" text-anchor="middle">0</text>
-  <text x="70" y="155" font-family="Arial" font-size="6" text-anchor="middle">(Data)</text>
-  <rect x="95" y="120" width="40" height="40" fill="#e8d4f8" stroke="#333" stroke-width="1"/>
-  <text x="115" y="135" font-family="Arial" font-size="7" text-anchor="middle">Desc</text>
-  <text x="115" y="145" font-family="Arial" font-size="7" text-anchor="middle">1</text>
-  <text x="115" y="155" font-family="Arial" font-size="6" text-anchor="middle">(Data)</text>
-  <rect x="140" y="120" width="40" height="40" fill="#e8d4f8" stroke="#333" stroke-width="1"/>
-  <text x="160" y="135" font-family="Arial" font-size="7" text-anchor="middle">Desc</text>
-  <text x="160" y="145" font-family="Arial" font-size="7" text-anchor="middle">2</text>
-  <text x="160" y="155" font-family="Arial" font-size="6" text-anchor="middle">(Zero)</text>
-  <rect x="185" y="120" width="40" height="40" fill="#e8d4f8" stroke="#333" stroke-width="1"/>
-  <text x="205" y="135" font-family="Arial" font-size="7" text-anchor="middle">Desc</text>
-  <text x="205" y="145" font-family="Arial" font-size="7" text-anchor="middle">3</text>
-  <text x="205" y="155" font-family="Arial" font-size="6" text-anchor="middle">(Data)</text>
-  <path d="M 250 110 L 300 110" stroke="#333" stroke-width="1.5" fill="none" marker-end="url(#ah4)"/>
-  <defs><marker id="ah4" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#333"/></marker></defs>
-  <text x="275" y="100" font-family="Arial" font-size="8" text-anchor="middle">refers to</text>
-  <rect x="310" y="55" width="80" height="110" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="350" y="75" font-family="Arial" font-size="9" font-weight="bold" text-anchor="middle">Data</text>
-  <text x="350" y="88" font-family="Arial" font-size="9" font-weight="bold" text-anchor="middle">Sector 1</text>
-  <text x="350" y="110" font-family="Arial" font-size="8" text-anchor="middle">(4 KB)</text>
-  <text x="350" y="130" font-family="Arial" font-size="7" text-anchor="middle">Matches</text>
-  <text x="350" y="142" font-family="Arial" font-size="7" text-anchor="middle">Desc 0</text>
-  <rect x="400" y="55" width="80" height="110" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="440" y="75" font-family="Arial" font-size="9" font-weight="bold" text-anchor="middle">Data</text>
-  <text x="440" y="88" font-family="Arial" font-size="9" font-weight="bold" text-anchor="middle">Sector 2</text>
-  <text x="440" y="110" font-family="Arial" font-size="8" text-anchor="middle">(4 KB)</text>
-  <text x="440" y="130" font-family="Arial" font-size="7" text-anchor="middle">Matches</text>
-  <text x="440" y="142" font-family="Arial" font-size="7" text-anchor="middle">Desc 1</text>
-  <rect x="490" y="55" width="80" height="110" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="530" y="75" font-family="Arial" font-size="9" font-weight="bold" text-anchor="middle">Data</text>
-  <text x="530" y="88" font-family="Arial" font-size="9" font-weight="bold" text-anchor="middle">Sector 3</text>
-  <text x="530" y="110" font-family="Arial" font-size="8" text-anchor="middle">(4 KB)</text>
-  <text x="530" y="130" font-family="Arial" font-size="7" text-anchor="middle">Matches</text>
-  <text x="530" y="142" font-family="Arial" font-size="7" text-anchor="middle">Desc 3</text>
-  <rect x="580" y="55" width="80" height="110" fill="#f0f0f0" stroke="#333" stroke-width="1" stroke-dasharray="4"/>
-  <text x="620" y="90" font-family="Arial" font-size="8" text-anchor="middle">No Data</text>
-  <text x="620" y="105" font-family="Arial" font-size="8" text-anchor="middle">Sector</text>
-  <text x="620" y="125" font-family="Arial" font-size="7" text-anchor="middle">(Zero Desc</text>
-  <text x="620" y="137" font-family="Arial" font-size="7" text-anchor="middle">implies</text>
-  <text x="620" y="149" font-family="Arial" font-size="7" text-anchor="middle">zeros)</text>
-  <rect x="50" y="185" width="15" height="10" fill="#f8d4a0" stroke="#333" stroke-width="1"/>
-  <text x="75" y="194" font-family="Arial" font-size="8" text-anchor="start">Entry Header</text>
-  <rect x="160" y="185" width="15" height="10" fill="#e8d4f8" stroke="#333" stroke-width="1"/>
-  <text x="185" y="194" font-family="Arial" font-size="8" text-anchor="start">Descriptors</text>
-  <rect x="270" y="185" width="15" height="10" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="295" y="194" font-family="Arial" font-size="8" text-anchor="start">Data Sectors</text>
-  <rect x="40" y="210" width="670" height="100" fill="#fff0f0" stroke="#333" stroke-width="1"/>
-  <text x="375" y="228" font-family="Arial" font-size="10" font-weight="bold" text-anchor="middle">Validation Mechanisms</text>
-  <text x="50" y="250" font-family="Arial" font-size="8" text-anchor="start">- SequenceNumber is duplicated in each descriptor and data sector</text>
-  <text x="50" y="268" font-family="Arial" font-size="8" text-anchor="start">- For data sectors: SequenceNumber is split (high bytes at start, low bytes at end)</text>
-  <text x="50" y="286" font-family="Arial" font-size="8" text-anchor="start">- 32-bit CRC computed over entire log entry</text>
-  <text x="50" y="304" font-family="Arial" font-size="8" text-anchor="start">- LogGuid in entry header must match LogGuid in file header</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="420" viewBox="0 0 900 420">
+  <defs>
+    <marker id="arrowDown" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="black"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="900" height="420" fill="white"/>
+  <rect x="100" y="160" width="500" height="80" fill="#f0f0f0" stroke="black" stroke-width="2"/>
+  <rect x="100" y="160" width="26" height="80" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="112" y="205" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">H</text>
+  <rect x="126" y="160" width="20" height="80" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="135" y="192" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="bold" text-anchor="middle" fill="black">D</text>
+  <text x="135" y="205" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="bold" text-anchor="middle" fill="black">D</text>
+  <text x="135" y="218" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="bold" text-anchor="middle" fill="black">1</text>
+  <rect x="146" y="160" width="20" height="80" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="155" y="192" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="bold" text-anchor="middle" fill="black">D</text>
+  <text x="155" y="205" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="bold" text-anchor="middle" fill="black">D</text>
+  <text x="155" y="218" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="bold" text-anchor="middle" fill="black">2</text>
+  <rect x="166" y="160" width="20" height="80" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="175" y="192" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="bold" text-anchor="middle" fill="black">Z</text>
+  <text x="175" y="205" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="bold" text-anchor="middle" fill="black">D</text>
+  <text x="175" y="218" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="bold" text-anchor="middle" fill="black">3</text>
+  <rect x="186" y="160" width="20" height="80" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="195" y="192" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="bold" text-anchor="middle" fill="black">D</text>
+  <text x="195" y="205" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="bold" text-anchor="middle" fill="black">D</text>
+  <text x="195" y="218" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="bold" text-anchor="middle" fill="black">4</text>
+  <rect x="206" y="160" width="24" height="80" fill="#ffffff" stroke="black" stroke-width="1.5"/>
+  <rect x="230" y="160" width="100" height="80" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="280" y="195" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">Data Sector</text>
+  <text x="280" y="215" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">1</text>
+  <rect x="330" y="160" width="200" height="80" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="415" y="195" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">Data Sector</text>
+  <text x="415" y="215" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">2</text>
+  <rect x="530" y="160" width="100" height="80" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="580" y="195" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">Data Sector</text>
+  <text x="580" y="215" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">3</text>
+  <polyline points="135,160 135,120 280,120 280,160" stroke="black" stroke-width="1.2" fill="none" stroke-dasharray="3,2" marker-end="url(#arrowDown)"/>
+  <polyline points="155,160 155,110 415,110 415,160" stroke="black" stroke-width="1.2" fill="none" stroke-dasharray="3,2" marker-end="url(#arrowDown)"/>
+  <polyline points="195,160 195,90 580,90 580,160" stroke="black" stroke-width="1.2" fill="none" stroke-dasharray="3,2" marker-end="url(#arrowDown)"/>
+  <text x="100" y="255" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">0</text>
+  <text x="100" y="270" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">KB</text>
+  <text x="230" y="255" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">4</text>
+  <text x="230" y="270" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">KB</text>
+  <text x="330" y="255" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">8</text>
+  <text x="330" y="270" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">KB</text>
+  <text x="530" y="255" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">16</text>
+  <text x="530" y="270" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">KB</text>
+  <text x="630" y="255" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">20</text>
+  <text x="630" y="270" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">KB</text>
+  <text x="480" y="300" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="start" fill="black">DD</text>
+  <text x="510" y="300" font-family="Arial, Helvetica, sans-serif" font-size="16" text-anchor="start" fill="black">Data Descriptor</text>
+  <text x="480" y="320" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="start" fill="black">ZD</text>
+  <text x="510" y="320" font-family="Arial, Helvetica, sans-serif" font-size="16" text-anchor="start" fill="black">Zero Descriptor</text>
 </svg>
 ```
 
@@ -674,38 +596,42 @@ The space for the log entries can be reused for subsequent log writes only when 
 ##### 2.3.1.1 Entry Header
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                          Signature                            |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                          Checksum                             |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                         EntryLength                           |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                            Tail                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                       SequenceNumber                          |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                       DescriptorCount                         |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                          Reserved                             |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                           LogGuid (16 bytes)                  |
-|                                                               |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                       FlushedFileOffset                       |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                        LastFileOffset                         |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│                           Signature                           │
+├───────────────────────────────────────────────────────────────┤
+│                           Checksum                            │
+├───────────────────────────────────────────────────────────────┤
+│                          EntryLength                          │
+├───────────────────────────────────────────────────────────────┤
+│                             Tail                              │
+├───────────────────────────────────────────────────────────────┤
+│                        SequenceNumber                         │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                        DescriptorCount                        │
+├───────────────────────────────────────────────────────────────┤
+│                           Reserved                            │
+├───────────────────────────────────────────────────────────────┤
+│                            LogGuid                            │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                       FlushedFileOffset                       │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                        LastFileOffset                         │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **Signature (4 bytes):** MUST be 0x65676F6C ("loge" as UTF8).
@@ -731,25 +657,26 @@ The space for the log entries can be reused for subsequent log writes only when 
 ##### 2.3.1.2 Zero Descriptor
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                        ZeroSignature                          |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                          Reserved                             |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                          ZeroLength                           |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                          FileOffset                           |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                       SequenceNumber                          |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│                         ZeroSignature                         │
+├───────────────────────────────────────────────────────────────┤
+│                           Reserved                            │
+├───────────────────────────────────────────────────────────────┤
+│                          ZeroLength                           │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                          FileOffset                           │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                        SequenceNumber                         │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **ZeroSignature (4 bytes):** MUST be 0x6F72657A ("zero" as ASCII).
@@ -765,25 +692,26 @@ The space for the log entries can be reused for subsequent log writes only when 
 ##### 2.3.1.3 Data Descriptor
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                        DataSignature                          |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                        TrailingBytes                          |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                         LeadingBytes                          |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                          FileOffset                           |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                       SequenceNumber                          |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│                         DataSignature                         │
+├───────────────────────────────────────────────────────────────┤
+│                         TrailingBytes                         │
+├───────────────────────────────────────────────────────────────┤
+│                         LeadingBytes                          │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                          FileOffset                           │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                        SequenceNumber                         │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **DataSignature (4 bytes):** MUST be 0x63736564 ("desc" as ASCII).
@@ -799,20 +727,19 @@ The space for the log entries can be reused for subsequent log writes only when 
 ##### 2.3.1.4 Data Sector
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                        DataSignature                          |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                         SequenceHigh                          |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                     Data (4084 bytes)                         |
-|                              ...                              |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                         SequenceLow                           |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│                         DataSignature                         │
+├───────────────────────────────────────────────────────────────┤
+│                         SequenceHigh                          │
+├───────────────────────────────────────────────────────────────┤
+│                             Data                              │
+│                         (4084 bytes)                          │
+├───────────────────────────────────────────────────────────────┤
+│                          SequenceLow                          │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **DataSignature (4 bytes):** MUST be 0x61746164 ("data" as ASCII).
@@ -872,69 +799,43 @@ BAT is a region consisting of a single array of 64-bit values, with an entry for
 **Figure 6: BAT layout example**
 
 ```svg
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 320">
-  <rect width="700" height="320" fill="white"/>
-  <text x="350" y="20" font-family="Arial" font-size="14" font-weight="bold" text-anchor="middle">BAT Layout Example (Chunk Ratio = 4)</text>
-  <rect x="50" y="35" width="600" height="250" fill="#f8f8f8" stroke="#333" stroke-width="2"/>
-  <rect x="60" y="50" width="60" height="80" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="90" y="75" font-family="Arial" font-size="9" text-anchor="middle">Payload</text>
-  <text x="90" y="90" font-family="Arial" font-size="9" text-anchor="middle">Block 0</text>
-  <text x="90" y="110" font-family="Arial" font-size="8" text-anchor="middle">Entry 0</text>
-  <text x="90" y="125" font-family="Arial" font-size="7" text-anchor="middle">(64 bits)</text>
-  <rect x="130" y="50" width="60" height="80" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="160" y="75" font-family="Arial" font-size="9" text-anchor="middle">Payload</text>
-  <text x="160" y="90" font-family="Arial" font-size="9" text-anchor="middle">Block 1</text>
-  <text x="160" y="110" font-family="Arial" font-size="8" text-anchor="middle">Entry 1</text>
-  <rect x="200" y="50" width="60" height="80" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="230" y="75" font-family="Arial" font-size="9" text-anchor="middle">Payload</text>
-  <text x="230" y="90" font-family="Arial" font-size="9" text-anchor="middle">Block 2</text>
-  <text x="230" y="110" font-family="Arial" font-size="8" text-anchor="middle">Entry 2</text>
-  <rect x="270" y="50" width="60" height="80" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="300" y="75" font-family="Arial" font-size="9" text-anchor="middle">Payload</text>
-  <text x="300" y="90" font-family="Arial" font-size="9" text-anchor="middle">Block 3</text>
-  <text x="300" y="110" font-family="Arial" font-size="8" text-anchor="middle">Entry 3</text>
-  <rect x="340" y="50" width="60" height="80" fill="#e8f8d4" stroke="#333" stroke-width="2"/>
-  <text x="370" y="75" font-family="Arial" font-size="9" text-anchor="middle">Sector</text>
-  <text x="370" y="90" font-family="Arial" font-size="9" text-anchor="middle">Bitmap 0</text>
-  <text x="370" y="110" font-family="Arial" font-size="8" text-anchor="middle">Entry 4</text>
-  <text x="370" y="125" font-family="Arial" font-size="7" text-anchor="middle">(1 MB)</text>
-  <path d="M 60 140 L 400 140" stroke="#666" stroke-width="1" fill="none"/>
-  <path d="M 60 135 L 60 140" stroke="#666" stroke-width="1"/>
-  <path d="M 400 135 L 400 140" stroke="#666" stroke-width="1"/>
-  <text x="230" y="155" font-family="Arial" font-size="9" text-anchor="middle">Chunk 0</text>
-  <rect x="60" y="170" width="60" height="80" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="90" y="195" font-family="Arial" font-size="9" text-anchor="middle">Payload</text>
-  <text x="90" y="210" font-family="Arial" font-size="9" text-anchor="middle">Block 4</text>
-  <text x="90" y="230" font-family="Arial" font-size="8" text-anchor="middle">Entry 5</text>
-  <rect x="130" y="170" width="60" height="80" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="160" y="195" font-family="Arial" font-size="9" text-anchor="middle">Payload</text>
-  <text x="160" y="210" font-family="Arial" font-size="9" text-anchor="middle">Block 5</text>
-  <text x="160" y="230" font-family="Arial" font-size="8" text-anchor="middle">Entry 6</text>
-  <rect x="200" y="170" width="60" height="80" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="230" y="195" font-family="Arial" font-size="9" text-anchor="middle">Payload</text>
-  <text x="230" y="210" font-family="Arial" font-size="9" text-anchor="middle">Block 6</text>
-  <text x="230" y="230" font-family="Arial" font-size="8" text-anchor="middle">Entry 7</text>
-  <rect x="270" y="170" width="60" height="80" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="300" y="195" font-family="Arial" font-size="9" text-anchor="middle">Payload</text>
-  <text x="300" y="210" font-family="Arial" font-size="9" text-anchor="middle">Block 7</text>
-  <text x="300" y="230" font-family="Arial" font-size="8" text-anchor="middle">Entry 8</text>
-  <rect x="340" y="170" width="60" height="80" fill="#e8f8d4" stroke="#333" stroke-width="2"/>
-  <text x="370" y="195" font-family="Arial" font-size="9" text-anchor="middle">Sector</text>
-  <text x="370" y="210" font-family="Arial" font-size="9" text-anchor="middle">Bitmap 1</text>
-  <text x="370" y="230" font-family="Arial" font-size="8" text-anchor="middle">Entry 9</text>
-  <path d="M 60 260 L 400 260" stroke="#666" stroke-width="1" fill="none"/>
-  <path d="M 60 255 L 60 260" stroke="#666" stroke-width="1"/>
-  <path d="M 400 255 L 400 260" stroke="#666" stroke-width="1"/>
-  <text x="230" y="275" font-family="Arial" font-size="9" text-anchor="middle">Chunk 1</text>
-  <text x="450" y="160" font-family="Arial" font-size="12" text-anchor="middle">...</text>
-  <rect x="480" y="60" width="15" height="10" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="505" y="68" font-family="Arial" font-size="8" text-anchor="start">Payload Block Entry</text>
-  <rect x="480" y="80" width="15" height="10" fill="#e8f8d4" stroke="#333" stroke-width="1"/>
-  <text x="505" y="88" font-family="Arial" font-size="8" text-anchor="start">Sector Bitmap Entry</text>
-  <text x="480" y="110" font-family="Arial" font-size="8" text-anchor="start">Formula:</text>
-  <text x="480" y="125" font-family="Arial" font-size="7" text-anchor="start">ChunkRatio =</text>
-  <text x="480" y="137" font-family="Arial" font-size="7" text-anchor="start">  (2^23 * LogicalSectorSize)</text>
-  <text x="480" y="149" font-family="Arial" font-size="7" text-anchor="start">  / BlockSize</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="220" viewBox="0 0 900 220">
+  <rect x="0" y="0" width="900" height="220" fill="white"/>
+  <rect x="50" y="30" width="800" height="100" fill="#f0f0f0" stroke="black" stroke-width="2"/>
+  <rect x="50" y="30" width="60" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="80" y="70" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">PB</text>
+  <text x="80" y="95" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">0</text>
+  <rect x="110" y="30" width="60" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="140" y="70" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">PB</text>
+  <text x="140" y="95" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">1</text>
+  <rect x="170" y="30" width="60" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="200" y="70" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">PB</text>
+  <text x="200" y="95" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">2</text>
+  <rect x="230" y="30" width="60" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="260" y="70" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">PB</text>
+  <text x="260" y="95" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">3</text>
+  <rect x="290" y="30" width="60" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="320" y="70" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">SB</text>
+  <text x="320" y="95" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">0</text>
+  <rect x="350" y="30" width="60" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="380" y="70" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">PB</text>
+  <text x="380" y="95" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">4</text>
+  <rect x="410" y="30" width="60" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="440" y="70" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">PB</text>
+  <text x="440" y="95" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">5</text>
+  <rect x="470" y="30" width="60" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="500" y="70" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">PB</text>
+  <text x="500" y="95" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">6</text>
+  <rect x="530" y="30" width="60" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="560" y="70" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">PB</text>
+  <text x="560" y="95" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">7</text>
+  <rect x="590" y="30" width="60" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="620" y="70" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">SB</text>
+  <text x="620" y="95" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">1</text>
+  <text x="480" y="175" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="start" fill="black">PB</text>
+  <text x="510" y="175" font-family="Arial, Helvetica, sans-serif" font-size="16" text-anchor="start" fill="black">Entry for Payload Block</text>
+  <text x="480" y="200" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="start" fill="black">SB</text>
+  <text x="510" y="200" font-family="Arial, Helvetica, sans-serif" font-size="16" text-anchor="start" fill="black">Entry for Sector Bitmap Block</text>
 </svg>
 ```
 
@@ -972,13 +873,14 @@ TotalBATEntries = (NumberOfSectorBitmapBlocks * (ChunkRatio + 1)) -
 A BAT entry is 64 bits in length and is divided into bit fields.
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|A|         Reserved            |         FileOffsetMB           |
-| |         (17 bits)           |         (44 bits)              |
-| (3 bits)                      |                                |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┼─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┼─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│  A  │            Reserved             │     FileOffsetMB      │
+├─────┴─────────────────────────────────┴───────────────────────┤
+│                              ...                              │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **A - State (3 bits):** Specifies how the associated data block or sector bitmap block is treated. The values are specified in section 2.5.1.1 and section 2.5.1.2.
@@ -1117,55 +1019,57 @@ The metadata region consists of a fixed-size, 64-KB, unsorted metadata table, fo
 **Figure 7: Metadata region layout example**
 
 ```svg
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 300">
-  <rect width="700" height="300" fill="white"/>
-  <text x="350" y="20" font-family="Arial" font-size="14" font-weight="bold" text-anchor="middle">Metadata Region Layout Example</text>
-  <rect x="50" y="35" width="600" height="240" fill="#f8f8f8" stroke="#333" stroke-width="2"/>
-  <rect x="60" y="45" width="580" height="70" fill="#f8e8d4" stroke="#333" stroke-width="1"/>
-  <text x="350" y="62" font-family="Arial" font-size="10" font-weight="bold" text-anchor="middle">Metadata Table (64 KB)</text>
-  <rect x="70" y="72" width="100" height="35" fill="#f8d4a0" stroke="#333" stroke-width="1"/>
-  <text x="120" y="87" font-family="Arial" font-size="8" text-anchor="middle">Table Header</text>
-  <text x="120" y="100" font-family="Arial" font-size="7" text-anchor="middle">(32 bytes)</text>
-  <rect x="180" y="72" width="50" height="35" fill="#e8d4f8" stroke="#333" stroke-width="1"/>
-  <text x="205" y="87" font-family="Arial" font-size="7" text-anchor="middle">Entry</text>
-  <text x="205" y="98" font-family="Arial" font-size="7" text-anchor="middle">0</text>
-  <rect x="240" y="72" width="50" height="35" fill="#e8d4f8" stroke="#333" stroke-width="1"/>
-  <text x="265" y="87" font-family="Arial" font-size="7" text-anchor="middle">Entry</text>
-  <text x="265" y="98" font-family="Arial" font-size="7" text-anchor="middle">1</text>
-  <rect x="300" y="72" width="50" height="35" fill="#e8d4f8" stroke="#333" stroke-width="1"/>
-  <text x="325" y="87" font-family="Arial" font-size="7" text-anchor="middle">Entry</text>
-  <text x="325" y="98" font-family="Arial" font-size="7" text-anchor="middle">2</text>
-  <text x="420" y="92" font-family="Arial" font-size="10" text-anchor="middle">...</text>
-  <rect x="500" y="72" width="50" height="35" fill="#e8d4f8" stroke="#333" stroke-width="1"/>
-  <text x="525" y="87" font-family="Arial" font-size="7" text-anchor="middle">Entry</text>
-  <text x="525" y="98" font-family="Arial" font-size="7" text-anchor="middle">N</text>
-  <rect x="560" y="72" width="70" height="35" fill="#f0f0f0" stroke="#333" stroke-width="1" stroke-dasharray="3"/>
-  <text x="595" y="92" font-family="Arial" font-size="7" text-anchor="middle">Reserved</text>
-  <rect x="60" y="125" width="580" height="140" fill="#e8f4f8" stroke="#333" stroke-width="1"/>
-  <text x="350" y="140" font-family="Arial" font-size="9" font-weight="bold" text-anchor="middle">Metadata Items (variable size, unaligned)</text>
-  <rect x="70" y="150" width="100" height="40" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="120" y="168" font-family="Arial" font-size="8" text-anchor="middle">File</text>
-  <text x="120" y="180" font-family="Arial" font-size="8" text-anchor="middle">Parameters</text>
-  <rect x="180" y="150" width="100" height="40" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="230" y="168" font-family="Arial" font-size="8" text-anchor="middle">Virtual Disk</text>
-  <text x="230" y="180" font-family="Arial" font-size="8" text-anchor="middle">Size</text>
-  <rect x="290" y="150" width="100" height="40" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="340" y="168" font-family="Arial" font-size="8" text-anchor="middle">Virtual Disk</text>
-  <text x="340" y="180" font-family="Arial" font-size="8" text-anchor="middle">ID</text>
-  <rect x="400" y="150" width="100" height="40" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="450" y="168" font-family="Arial" font-size="8" text-anchor="middle">Logical Sector</text>
-  <text x="450" y="180" font-family="Arial" font-size="8" text-anchor="middle">Size</text>
-  <rect x="510" y="150" width="100" height="40" fill="#d4e8f8" stroke="#333" stroke-width="1"/>
-  <text x="560" y="168" font-family="Arial" font-size="8" text-anchor="middle">Physical Sector</text>
-  <text x="560" y="180" font-family="Arial" font-size="8" text-anchor="middle">Size</text>
-  <rect x="70" y="200" width="150" height="55" fill="#f8e8d4" stroke="#333" stroke-width="1"/>
-  <text x="145" y="220" font-family="Arial" font-size="8" text-anchor="middle">Parent Locator</text>
-  <text x="145" y="235" font-family="Arial" font-size="7" text-anchor="middle">(Header + Entries)</text>
-  <text x="145" y="248" font-family="Arial" font-size="7" text-anchor="middle">Key-Value pairs</text>
-  <rect x="230" y="200" width="400" height="55" fill="#f0f0f0" stroke="#333" stroke-width="1" stroke-dasharray="4"/>
-  <text x="430" y="232" font-family="Arial" font-size="9" text-anchor="middle">Free Space (may contain data that can be disregarded)</text>
-  <rect x="60" y="275" width="580" height="15" fill="white" stroke="none"/>
-  <text x="70" y="285" font-family="Arial" font-size="7" text-anchor="start">All entries are 32 bytes. Items can be in any order. Free space may contain arbitrary data.</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="420" viewBox="0 0 1000 420">
+  <defs>
+    <marker id="arrowDown" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#000000" />
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1000" height="420" fill="white"/>
+  <rect x="50" y="0" width="900" height="300" fill="none" stroke="#888888" stroke-width="1.5" stroke-dasharray="3,3"/>
+  <line x1="320" y1="0" x2="320" y2="300" fill="none" stroke="#888888" stroke-width="1.5" stroke-dasharray="3,3" />
+  <rect x="50" y="110" width="900" height="100" fill="#ffffff" stroke="black" stroke-width="2"/>
+  <rect x="50" y="110" width="30" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="65" y="165" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">H</text>
+  <rect x="80" y="110" width="35" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="97" y="155" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="black">SE</text>
+  <text x="97" y="175" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="black">1</text>
+  <rect x="115" y="110" width="35" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="132" y="155" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="black">UE</text>
+  <text x="132" y="175" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="black">2</text>
+  <rect x="150" y="110" width="35" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="167" y="155" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="black">SE</text>
+  <text x="167" y="175" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="black">3</text>
+  <rect x="185" y="110" width="35" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="202" y="155" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="black">SE</text>
+  <text x="202" y="175" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="black">4</text>
+  <rect x="220" y="110" width="100" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <rect x="380" y="110" width="90" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="425" y="150" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">S MD</text>
+  <text x="425" y="175" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">1</text>
+  <rect x="550" y="110" width="90" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="595" y="150" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">S MD</text>
+  <text x="595" y="175" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">2</text>
+  <rect x="660" y="110" width="90" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="705" y="150" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">U MD</text>
+  <text x="705" y="175" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">3</text>
+  <rect x="830" y="110" width="90" height="100" fill="#f0f0f0" stroke="black" stroke-width="1.5"/>
+  <text x="875" y="150" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">S MD</text>
+  <text x="875" y="175" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="black">4</text>
+  <polyline points="97,110 97,80 425,80 425,110" stroke="black" stroke-width="1.2" fill="none" stroke-dasharray="5,3" marker-end="url(#arrowDown)"/>
+  <polyline points="132,110 132,60 705,60 705,110" stroke="black" stroke-width="1.2" fill="none" stroke-dasharray="5,3" marker-end="url(#arrowDown)"/>
+  <polyline points="167,110 167,70 875,70 875,110" stroke="black" stroke-width="1.2" fill="none" stroke-dasharray="5,3" marker-end="url(#arrowDown)"/>
+  <polyline points="202,110 202,50 595,50 595,110" stroke="black" stroke-width="1.2" fill="none" stroke-dasharray="5,3" marker-end="url(#arrowDown)"/>
+  <text x="185" y="260" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">MetaData Table</text>
+  <text x="630" y="260" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="black">MetaData Items</text>
+  <text x="50" y="340" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="bold" text-anchor="start" fill="black">SE</text>
+  <text x="75" y="340" font-family="Arial, Helvetica, sans-serif" font-size="15" text-anchor="start" fill="black">System Metadata Item Entry</text>
+  <text x="50" y="365" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="bold" text-anchor="start" fill="black">UE</text>
+  <text x="75" y="365" font-family="Arial, Helvetica, sans-serif" font-size="15" text-anchor="start" fill="black">User Metadata Item Entry</text>
+  <text x="750" y="340" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="bold" text-anchor="start" fill="black">S MD</text>
+  <text x="795" y="340" font-family="Arial, Helvetica, sans-serif" font-size="15" text-anchor="start" fill="black">System Metadata</text>
+  <text x="750" y="365" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="bold" text-anchor="start" fill="black">U MD</text>
+  <text x="795" y="365" font-family="Arial, Helvetica, sans-serif" font-size="15" text-anchor="start" fill="black">User Metadata</text>
 </svg>
 ```
 
@@ -1176,20 +1080,27 @@ A metadata table contains a 32-byte header followed immediately by a variable nu
 ##### 2.6.1.1 Metadata Table Header
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                          Signature (8 bytes)                  |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|          Reserved             |          EntryCount           |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                     Reserved2 (20 bytes)                      |
-|                              ...                              |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│                           Signature                           │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────┬───────────────────────────────┤
+│           Reserved            │          EntryCount           │
+├───────────────────────────────┴───────────────────────────────┤
+│                           Reserved2                           │
+│                          (20 bytes)                           │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **Signature (8 bytes):** MUST be 0x617461646174656D ("metadata" as ASCII).
@@ -1203,20 +1114,26 @@ A metadata table contains a 32-byte header followed immediately by a variable nu
 ##### 2.6.1.2 Metadata Table Entry
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                        ItemID (16 bytes)                      |
-|                                                               |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                           Offset                              |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                           Length                              |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|A B C|       Reserved          |          Reserved2            |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│                            ItemID                             │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                            Offset                             │
+├───────────────────────────────────────────────────────────────┤
+│                            Length                             │
+├─┬─┬─┬─────────────────────────────────────────────────────────┤
+│A│B│C│                        Reserved                         │
+├─┴─┴─┴─────────────────────────────────────────────────────────┤
+│                           Reserved2                           │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **ItemID (16 bytes):** Specifies a 128-bit identifier (a GUID) for the metadata item. The ItemId and IsUser value pair for an entry MUST be unique within the table.
@@ -1253,12 +1170,14 @@ There are certain metadata items that are defined in this specification, some of
 ##### 2.6.2.1 File Parameters
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|A B|         Reserved          |          BlockSize            |
-|   |         (30 bits)         |                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│                           BlockSize                           │
+├─┬─┬───────────────────────────────────────────────────────────┤
+│A│B│                         Reserved                          │
+└─┴─┴───────────────────────────────────────────────────────────┘
 ```
 
 **BlockSize (4 bytes):** Specifies the size of each payload block in bytes. The value MUST be at least 1 MB and not greater than 256 MB, and MUST be a power of 2.
@@ -1272,13 +1191,14 @@ There are certain metadata items that are defined in this specification, some of
 ##### 2.6.2.2 Virtual Disk Size
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                        VirtualDiskSize                        |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│                        VirtualDiskSize                        │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **VirtualDiskSize (8 bytes):** Specifies the virtual disk size, in bytes. This field MUST be a multiple of the LogicalSectorSize (see section 2.6.2.4) metadata item and MUST be at most 64 TB.
@@ -1286,14 +1206,18 @@ There are certain metadata items that are defined in this specification, some of
 ##### 2.6.2.3 Virtual Disk ID
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                        VirtualDiskId (16 bytes)               |
-|                                                               |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│                         VirtualDiskId                         │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **VirtualDiskId (16 bytes):** A GUID that specifies the identification of the disk.
@@ -1301,11 +1225,12 @@ There are certain metadata items that are defined in this specification, some of
 ##### 2.6.2.4 Logical Sector Size
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                      LogicalSectorSize                        |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│                       LogicalSectorSize                       │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **LogicalSectorSize (4 bytes):** Specifies the virtual disk's sector size, in bytes. This value MUST be set to 512 or 4,096. An implementation MUST expose the virtual disk as having the specified sector size, but it can fail to load files with sector sizes that it does not support. If the file has a parent, the logical sector size for the parent and child MUST be the same. Note that the LogicalSectorSize value also determines the chunk size.
@@ -1313,11 +1238,12 @@ There are certain metadata items that are defined in this specification, some of
 ##### 2.6.2.5 Physical Sector Size
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                     PhysicalSectorSize                        |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│                      PhysicalSectorSize                       │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **PhysicalSectorSize (4 bytes):** Specifies the virtual disk's physical sector size, in bytes. This value MUST be set to 512 or 4,096. An implementation MUST expose the virtual disk as having the specified physical sector size, but it can fail to load files with sector sizes that it does not support.
@@ -1335,16 +1261,20 @@ The parent locator item is made up of a 20-byte header immediately followed by a
 ###### 2.6.2.6.1 Parent Locator Header
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                     LocatorType (16 bytes)                    |
-|                                                               |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|          Reserved             |         KeyValueCount         |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│                          LocatorType                          │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────────────────────────────────────┤
+│                              ...                              │
+├───────────────────────────────┬───────────────────────────────┤
+│           Reserved            │         KeyValueCount         │
+└───────────────────────────────┴───────────────────────────────┘
 ```
 
 **LocatorType (16 bytes):** Specifies the type of the parent virtual disk. This value will be different for each type (for example, VHDX, VHD or iSCSI). An implementation MUST validate that it understands that type.
@@ -1356,15 +1286,16 @@ The parent locator item is made up of a 20-byte header immediately followed by a
 ###### 2.6.2.6.2 Parent Locator Entry
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                          KeyOffset                            |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                         ValueOffset                           |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|          KeyLength            |          ValueLength          |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+│ │ │ │ │ │ │ │ │ │ │1│ │ │ │ │ │ │ │ │ │2│ │ │ │ │ │ │ │ │ │3│ │
+│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│2│3│4│5│6│7│8│9│0│1│
+├─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┤
+│                           KeyOffset                           │
+├───────────────────────────────────────────────────────────────┤
+│                          ValueOffset                          │
+├───────────────────────────────┬───────────────────────────────┤
+│           KeyLength           │          ValueLength          │
+└───────────────────────────────┴───────────────────────────────┘
 ```
 
 **KeyOffset (4 bytes):** Specifies the offset within the metadata item. This field MUST be must be greater than zero.

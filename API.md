@@ -1530,7 +1530,7 @@ pub enum Error {
     ///
     /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.4
     /// 对应 CODE：METADATA_RESERVED_FLAGS_SET（MS-VHDX/2.6.1.2）
-    /// Metadata Table Entry 中的保留位（非 Bit 29-31）被置 1。
+    /// Metadata Table Entry 中的保留位（bits 3-31）被置 1。
     MetadataReservedFlagsSet {
         flags: u32,
     },
