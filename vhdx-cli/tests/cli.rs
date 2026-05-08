@@ -82,7 +82,9 @@ fn check_command_on_test_fs_exit_zero() {
 fn check_command_with_log_replay_on_temp_vhdx() {
     let (path, _dir) = create_temp_valid_vhdx();
     let mut cmd = Command::cargo_bin("vhdx-tool").unwrap();
-    cmd.arg("check").arg(path.to_str().unwrap()).arg("--log-replay");
+    cmd.arg("check")
+        .arg(path.to_str().unwrap())
+        .arg("--log-replay");
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("No issues found"));
@@ -142,10 +144,9 @@ fn sections_header_command_on_test_void() {
     init();
     let mut cmd = Command::cargo_bin("vhdx-tool").unwrap();
     cmd.arg("sections").arg(TEST_VOID).arg("header");
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("vhdx")
-            .and(predicate::str::contains("File Type Identifier")));
+    cmd.assert().success().stdout(
+        predicate::str::contains("vhdx").and(predicate::str::contains("File Type Identifier")),
+    );
 }
 
 #[test]
@@ -154,10 +155,10 @@ fn sections_bat_command_on_test_void() {
     // test-void.vhdx has block_size=32MB, so BAT can be displayed.
     let mut cmd = Command::cargo_bin("vhdx-tool").unwrap();
     cmd.arg("sections").arg(TEST_VOID).arg("bat");
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("Block Allocation Table")
-            .and(predicate::str::contains("Total Entries")));
+    cmd.assert().success().stdout(
+        predicate::str::contains("Block Allocation Table")
+            .and(predicate::str::contains("Total Entries")),
+    );
 }
 
 #[test]
@@ -244,7 +245,10 @@ fn check_strict_plain_flag() {
 fn check_strict_explicit_true() {
     let (path, _dir) = create_temp_valid_vhdx();
     let mut cmd = Command::cargo_bin("vhdx-tool").unwrap();
-    cmd.arg("check").arg(path.to_str().unwrap()).arg("--strict").arg("true");
+    cmd.arg("check")
+        .arg(path.to_str().unwrap())
+        .arg("--strict")
+        .arg("true");
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("No issues found"));
@@ -254,7 +258,10 @@ fn check_strict_explicit_true() {
 fn check_strict_false_flag() {
     let (path, _dir) = create_temp_valid_vhdx();
     let mut cmd = Command::cargo_bin("vhdx-tool").unwrap();
-    cmd.arg("check").arg(path.to_str().unwrap()).arg("--strict").arg("false");
+    cmd.arg("check")
+        .arg(path.to_str().unwrap())
+        .arg("--strict")
+        .arg("false");
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("No issues found"));
@@ -290,17 +297,16 @@ fn create_command_dynamic_disk() {
 
     // Verify the file can be inspected
     let mut info = Command::cargo_bin("vhdx-tool").unwrap();
-    info.arg("info")
-        .arg(path.to_str().unwrap());
+    info.arg("info").arg(path.to_str().unwrap());
     info.assert()
         .success()
         .stdout(predicate::str::contains("vhdxfile"));
 
     // Verify check passes
     let mut check = Command::cargo_bin("vhdx-tool").unwrap();
-    check.arg("check")
-        .arg(path.to_str().unwrap());
-    check.assert()
+    check.arg("check").arg(path.to_str().unwrap());
+    check
+        .assert()
         .success()
         .stdout(predicate::str::contains("No issues found"));
 

@@ -20,17 +20,6 @@ pub struct Sections<'a> {
 }
 
 impl<'a> Sections<'a> {
-    /// Create a placeholder Sections (for use before lazy loading is wired up).
-    pub(crate) const fn empty() -> Sections<'static> {
-        Sections {
-            file: None,
-            header_cache: OnceLock::new(),
-            bat_cache: OnceLock::new(),
-            metadata_cache: OnceLock::new(),
-            log_cache: OnceLock::new(),
-        }
-    }
-
     /// Create a new Sections bound to a file reference.
     #[allow(dead_code)]
     pub(crate) fn new(file: &'a File) -> Self {
@@ -51,10 +40,14 @@ impl<'a> Sections<'a> {
     ///
     /// The header section includes the file type identifier, both VHDX headers,
     /// and both region tables.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sections are uninitialized or header parsing fails.
     pub fn header(&self) -> Result<Header<'_>> {
-        let file = self.file.ok_or_else(|| {
-            Error::InvalidFile("Sections not initialized".into())
-        })?;
+        let file = self
+            .file
+            .ok_or_else(|| Error::InvalidFile("Sections not initialized".into()))?;
         if let Some(cached) = self.header_cache.get() {
             return Ok(*cached);
         }
@@ -72,15 +65,20 @@ impl<'a> Sections<'a> {
     ///
     /// Lazily loads the BAT region from the file and computes the chunk ratio
     /// from metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sections are uninitialized, BAT loading fails,
+    /// or metadata needed for chunk ratio is invalid.
     pub fn bat(&self) -> Result<Bat<'_>> {
-        let file = self.file.ok_or_else(|| {
-            Error::InvalidFile("Sections not initialized".into())
-        })?;
+        let file = self
+            .file
+            .ok_or_else(|| Error::InvalidFile("Sections not initialized".into()))?;
         if let Some(cached) = self.bat_cache.get() {
             return Ok(*cached);
         }
         let bat_buf = file.bat_buf()?;
-        let chunk_ratio = self.compute_chunk_ratio(file)?;
+        let chunk_ratio = Self::compute_chunk_ratio(file)?;
         let parsed = Bat::new(bat_buf, chunk_ratio);
         // SAFETY: same justification as `header()` above.
         let static_parsed: Bat<'static> = unsafe { std::mem::transmute(parsed) };
@@ -91,10 +89,14 @@ impl<'a> Sections<'a> {
     /// Parse and return the Metadata section view.
     ///
     /// Lazily loads the metadata region from the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sections are uninitialized or metadata parsing fails.
     pub fn metadata(&self) -> Result<Metadata<'_>> {
-        let file = self.file.ok_or_else(|| {
-            Error::InvalidFile("Sections not initialized".into())
-        })?;
+        let file = self
+            .file
+            .ok_or_else(|| Error::InvalidFile("Sections not initialized".into()))?;
         if let Some(cached) = self.metadata_cache.get() {
             return Ok(*cached);
         }
@@ -109,10 +111,14 @@ impl<'a> Sections<'a> {
     /// Parse and return the Log section view.
     ///
     /// Lazily loads the log region from the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sections are uninitialized or log parsing fails.
     pub fn log(&self) -> Result<Log<'_>> {
-        let file = self.file.ok_or_else(|| {
-            Error::InvalidFile("Sections not initialized".into())
-        })?;
+        let file = self
+            .file
+            .ok_or_else(|| Error::InvalidFile("Sections not initialized".into()))?;
         if let Some(cached) = self.log_cache.get() {
             return Ok(*cached);
         }
@@ -130,20 +136,23 @@ impl<'a> Sections<'a> {
 
     /// Compute the chunk ratio from metadata:
     /// `chunk_ratio = (2^23 * LogicalSectorSize) / BlockSize`.
-    fn compute_chunk_ratio(&self, file: &File) -> Result<u64> {
+    fn compute_chunk_ratio(file: &File) -> Result<u64> {
         let meta_buf = file.metadata_buf()?;
         let metadata = Metadata::new(meta_buf)?;
         let items = metadata.items();
-        let fp = items.file_parameters().map_err(|_| {
-            Error::InvalidMetadata("FileParameters metadata item not found".into())
-        })?;
-        let block_size = fp.block_size() as u64;
+        let fp = items
+            .file_parameters()
+            .map_err(|_| Error::InvalidMetadata("FileParameters metadata item not found".into()))?;
+        let block_size = u64::from(fp.block_size());
         if block_size == 0 {
             return Err(Error::InvalidMetadata("block size must be non-zero".into()));
         }
-        let logical_sector_size = items.logical_sector_size().map_err(|_| {
+        let logical_sector_size = u64::from(items.logical_sector_size().map_err(|_| {
             Error::InvalidMetadata("LogicalSectorSize metadata item not found".into())
-        })? as u64;
-        Ok(crate::common::compute_chunk_ratio(block_size, logical_sector_size))
+        })?);
+        Ok(crate::common::compute_chunk_ratio(
+            block_size,
+            logical_sector_size,
+        ))
     }
 }

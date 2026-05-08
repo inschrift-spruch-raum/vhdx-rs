@@ -8,7 +8,7 @@ use vhdx::{File, LogReplayPolicy};
 // ---------------------------------------------------------------------------
 
 /// Create a test VHDX and return the opened File handle along with the
-/// backing tempdir (caller must hold the TempDir to keep files alive).
+/// backing tempdir (caller must hold the `TempDir` to keep files alive).
 fn create_test_vhdx(size: u64, block_size: u32, fixed: bool) -> (File, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("test.vhdx");
@@ -23,7 +23,7 @@ fn create_test_vhdx(size: u64, block_size: u32, fixed: bool) -> (File, tempfile:
 }
 
 /// Copy a reference file from misc/ into a tempdir under target/test/,
-/// return (TempDir, PathBuf). Hold TempDir for the test's lifetime.
+/// return (`TempDir`, `PathBuf`). Hold `TempDir` for the test's lifetime.
 fn ref_to_tmp(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let root = std::path::Path::new("target").join("test");
     let _ = std::fs::create_dir_all(&root);
@@ -37,11 +37,12 @@ fn ref_to_tmp(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     (dir, dst)
 }
 
-/// `File::create()` writes both headers with sequence_number=0.
-/// The SpecValidator requires different sequence numbers.
+/// `File::create()` writes both headers with `sequence_number=0`.
+/// The `SpecValidator` requires different sequence numbers.
 /// This helper patches Header 2 to sequence=1, fixes its CRC, then re-opens
 /// the file so `validate_file()` can succeed.
 fn patch_header2_seq_and_reopen(path: &std::path::Path) -> File {
+    const HEADER2_OFFSET: u64 = 128 * 1024;
     // Open raw file, patch Header 2 sequence number to 1
     let mut raw = std::fs::OpenOptions::new()
         .read(true)
@@ -49,7 +50,6 @@ fn patch_header2_seq_and_reopen(path: &std::path::Path) -> File {
         .open(path)
         .expect("re-open for header patch");
 
-    const HEADER2_OFFSET: u64 = 128 * 1024;
     let mut header = [0u8; 4096];
     raw.seek(SeekFrom::Start(HEADER2_OFFSET)).unwrap();
     raw.read_exact(&mut header).unwrap();
@@ -68,11 +68,15 @@ fn patch_header2_seq_and_reopen(path: &std::path::Path) -> File {
     drop(raw);
 
     // Re-open as a proper VHDX File
-    File::open(path).finish().expect("re-open after header patch")
+    File::open(path)
+        .finish()
+        .expect("re-open after header patch")
 }
 
 /// Create a test VHDX, patch sequence numbers, re-open, and return.
-fn create_and_reopen_for_validation(size: u64, block_size: u32, fixed: bool) -> (File, tempfile::TempDir) {
+fn create_and_reopen_for_validation(
+    size: u64, block_size: u32, fixed: bool,
+) -> (File, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("test.vhdx");
     let f = File::create(&path)
@@ -121,7 +125,7 @@ fn open_void_vhdx_validate_sections() {
     // BAT section (may fail if block_size=0, as in test-void)
     match sections.bat() {
         Ok(bat) => {
-            assert!(bat.len() > 0, "BAT should have entries");
+            assert!(!bat.is_empty(), "BAT should have entries");
         }
         Err(_) => {
             // test-void may have block_size=0 in FileParameters,
@@ -133,7 +137,10 @@ fn open_void_vhdx_validate_sections() {
     // Full validation — test-void is a minimal reference file that should
     // pass validation (no reserved flags issues in the reference).
     let result = f.validator().validate_file();
-    assert!(result.is_ok(), "test-void validation should pass, got: {result:?}");
+    assert!(
+        result.is_ok(),
+        "test-void validation should pass, got: {result:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -159,22 +166,22 @@ fn open_fs_vhdx_read_sector_zero() {
 
     // IO may or may not be available depending on whether reading is
     // supported for this file. If it works, verify the FAT32 boot sector.
-    if let Ok(io) = f.io() {
-        if let Ok(mut sector) = io.sector(0, 1) {
-            let mut buf = vec![0u8; 4096];
-            if sector.read_exact(&mut buf).is_ok() {
-                // Sector 0 of a FAT32-formatted disk should NOT be all zeros.
-                assert!(
-                    !buf.iter().all(|&b| b == 0),
-                    "sector 0 should contain boot sector data, not all zeros"
-                );
-                // Verify the FAT32 signature (bytes 0x52-0x59 = "FAT32   ")
-                assert_eq!(
-                    &buf[0x52..0x5A],
-                    b"FAT32   ",
-                    "FAT32 boot sector signature at offset 0x52"
-                );
-            }
+    if let Ok(io) = f.io()
+        && let Ok(mut sector) = io.sector(0, 1)
+    {
+        let mut buf = vec![0u8; 4096];
+        if sector.read_exact(&mut buf).is_ok() {
+            // Sector 0 of a FAT32-formatted disk should NOT be all zeros.
+            assert!(
+                !buf.iter().all(|&b| b == 0),
+                "sector 0 should contain boot sector data, not all zeros"
+            );
+            // Verify the FAT32 signature (bytes 0x52-0x59 = "FAT32   ")
+            assert_eq!(
+                &buf[0x52..0x5A],
+                b"FAT32   ",
+                "FAT32 boot sector signature at offset 0x52"
+            );
         }
     }
 }
@@ -188,7 +195,9 @@ fn create_dynamic_validate() {
     let (f, _dir) = create_and_reopen_for_validation(256 * 1024 * 1024, 32 * 1024 * 1024, false);
 
     // Structural validation
-    f.validator().validate_file().expect("validate dynamic disk");
+    f.validator()
+        .validate_file()
+        .expect("validate dynamic disk");
 
     // Metadata check
     let sections = f.sections();
@@ -241,10 +250,10 @@ fn create_fixed_verify_size_and_bat() {
     let virtual_size: u64 = 256 * 1024 * 1024;
     let block_size: u64 = 32 * 1024 * 1024;
     let logical_sector_size: u64 = 4096;
-    let num_payload = (virtual_size + block_size - 1) / block_size;
+    let num_payload = virtual_size.div_ceil(block_size);
     let chunk_ratio_calc = (1u64 << 23) * logical_sector_size / block_size;
-    let num_sb = (num_payload + chunk_ratio_calc - 1) / chunk_ratio_calc;
-    let total_expected = (num_payload + num_sb) as usize;
+    let num_sb = num_payload.div_ceil(chunk_ratio_calc);
+    let total_expected = usize::try_from(num_payload + num_sb).unwrap();
 
     let sections = f.sections();
     let bat = sections.bat().expect("BAT");
@@ -428,12 +437,12 @@ fn create_validation_rejects_zero_size() {
 
 #[test]
 fn create_dynamic_1mb_block_size() {
-    let (f, _dir) = create_and_reopen_for_validation(64 * 1024 * 1024, 1 * 1024 * 1024, false);
+    let (f, _dir) = create_and_reopen_for_validation(64 * 1024 * 1024, 1024 * 1024, false);
 
     let sections = f.sections();
     let metadata = sections.metadata().unwrap();
     let fp = metadata.items().file_parameters().unwrap();
-    assert_eq!(fp.block_size(), 1 * 1024 * 1024);
+    assert_eq!(fp.block_size(), 1024 * 1024);
     f.validator()
         .validate_file()
         .expect("validate 1MB block disk");
@@ -490,7 +499,7 @@ fn overlay_inmemory_read_sections_test_fs() {
     // the important thing is that the overlay doesn't crash.
     match sections.bat() {
         Ok(bat) => {
-            assert!(bat.len() > 0, "BAT should have entries via overlay");
+            assert!(!bat.is_empty(), "BAT should have entries via overlay");
         }
         Err(_) => {
             eprintln!("BAT loading skipped (block_size may be 0 in test-fs.vhdx)");
@@ -567,10 +576,7 @@ fn overlay_inmemory_clean_vhdx_no_pending_log() {
     );
 
     let bat = sections.bat().expect("BAT on clean vhdx");
-    assert!(
-        bat.len() > 0,
-        "BAT should have entries on clean vhdx"
-    );
+    assert!(!bat.is_empty(), "BAT should have entries on clean vhdx");
 
     let metadata = sections.metadata().expect("metadata on clean vhdx");
     assert!(
@@ -609,7 +615,10 @@ fn overlay_readonly_noreplay_structure_reads() {
     // (known pre-existing issue), so BAT may fail. Accept gracefully.
     match sections.bat() {
         Ok(bat) => {
-            assert!(bat.len() > 0, "BAT should have entries with ReadOnlyNoReplay");
+            assert!(
+                !bat.is_empty(),
+                "BAT should have entries with ReadOnlyNoReplay"
+            );
         }
         Err(_) => {
             eprintln!("BAT loading skipped (block_size may be 0 in test-fs.vhdx)");
@@ -679,8 +688,7 @@ fn create_differencing_disk_and_verify_parent() {
         .expect("validate_parent_locator should not error");
     assert!(
         issues.is_empty(),
-        "parent locator should have no validation issues: {:?}",
-        issues
+        "parent locator should have no validation issues: {issues:?}"
     );
 }
 
@@ -696,17 +704,14 @@ fn write_and_read_back_fixed_disk() {
     // Create fixed disk (blocks are FullyPresent)
     let f = File::create(&path)
         .size(4 * 1024 * 1024) // 4 MB
-        .block_size(1 * 1024 * 1024) // 1 MB blocks
+        .block_size(1024 * 1024) // 1 MB blocks
         .fixed(true)
         .finish()
         .expect("create fixed vhdx");
     drop(f);
 
     // Open writable
-    let f = File::open(&path)
-        .write()
-        .finish()
-        .expect("open writable");
+    let f = File::open(&path).write().finish().expect("open writable");
 
     let io = f.io().expect("IO context");
 
@@ -714,7 +719,6 @@ fn write_and_read_back_fixed_disk() {
     let pattern = vec![0xABu8; 4096];
     let mut writer = io.sector(0, 1).expect("sector 0 for write");
     writer.write_all(&pattern).expect("write sector 0");
-    drop(writer);
 
     // Read back and verify
     let mut reader = io.sector(0, 1).expect("sector 0 for read");
@@ -777,7 +781,7 @@ fn read_only_no_replay_with_write_is_error() {
 // 16. Default Require behaviour
 // ---------------------------------------------------------------------------
 
-/// Verify that the default policy (Require, without calling log_replay())
+/// Verify that the default policy (Require, without calling `log_replay()`)
 /// rejects files with pending logs.
 #[test]
 fn default_require_rejects_pending_log() {
@@ -787,9 +791,7 @@ fn default_require_rejects_pending_log() {
         Err(vhdx::Error::LogReplayRequired) => {
             // Expected: default Require mode rejects files with pending logs
         }
-        other => panic!(
-            "default Require should return LogReplayRequired, got: {other:?}"
-        ),
+        other => panic!("default Require should return LogReplayRequired, got: {other:?}"),
     }
 }
 
@@ -813,10 +815,7 @@ fn create_rejects_invalid_block_size() {
         .size(64 * 1024 * 1024)
         .block_size(300 * 1024 * 1024) // 300 MB — above maximum
         .finish();
-    assert!(
-        result.is_err(),
-        "block size above 256MB should be rejected"
-    );
+    assert!(result.is_err(), "block size above 256MB should be rejected");
 
     // Block size must be a power of 2
     let result = File::create(&path)
@@ -878,10 +877,7 @@ fn create_rejects_fixed_with_parent() {
         .fixed(true)
         .parent_path(&parent_path)
         .finish();
-    assert!(
-        result.is_err(),
-        "fixed disk with parent should be rejected"
-    );
+    assert!(result.is_err(), "fixed disk with parent should be rejected");
 
     let _dir = dir;
 }

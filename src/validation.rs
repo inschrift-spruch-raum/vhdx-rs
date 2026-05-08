@@ -7,13 +7,14 @@
 //! # Standard references
 //!
 //! - MS-VHDX (baseline specification)
-//! - MS-VHDX-校验扩展标准 (this module's error code dictionary)
-//! - MS-VHDX-宽松扩展标准 (permissive validation, RELAX)
-//! - MS-VHDX-只读扩展标准 (read-only semantics, ROEXT)
+//! - MS-VHDX-`校验扩展标准` (this module's error code dictionary)
+//! - MS-VHDX-`宽松扩展标准` (permissive validation, RELAX)
+//! - MS-VHDX-`只读扩展标准` (read-only semantics, ROEXT)
 
 use crate::error::{Error, Result, SignaturePosition};
 use crate::header::{Header, HeaderStructure};
-use crate::types::{StandardItems, Guid};
+use crate::types::{Guid, StandardItems};
+use crate::{bat::PayloadBlockState, bat::SectorBitmapState};
 
 // ---------------------------------------------------------------------------
 // ValidationIssue – structured diagnostic output
@@ -39,9 +40,7 @@ pub struct ValidationIssue {
 impl ValidationIssue {
     /// Create a new validation issue.
     pub(crate) fn new(
-        section: &'static str,
-        code: &'static str,
-        message: impl Into<String>,
+        section: &'static str, code: &'static str, message: impl Into<String>,
         spec_ref: &'static str,
     ) -> Self {
         Self {
@@ -53,21 +52,25 @@ impl ValidationIssue {
     }
 
     /// Validation phase (e.g. `"header"`, `"bat"`, `"log"`).
+    #[must_use]
     pub fn section(&self) -> &'static str {
         self.section
     }
 
     /// Standardised error code.
+    #[must_use]
     pub fn code(&self) -> &'static str {
         self.code
     }
 
     /// Human-readable description.
+    #[must_use]
     pub fn message(&self) -> String {
         self.message.clone()
     }
 
     /// Specification reference.
+    #[must_use]
     pub fn spec_ref(&self) -> &'static str {
         self.spec_ref
     }
@@ -116,9 +119,8 @@ impl<'a> SpecValidator<'a> {
     ///
     /// The returned validator borrows from the `File`'s internal `validator_buf`
     /// cache, which is built lazily on first access.
-    pub(crate) fn from_file(file: &'a crate::file::File) -> Result<Self> {
-        Ok(Self::new(file.validator_buf(), file.is_strict())
-            .with_child_path(file.path().to_path_buf()))
+    pub(crate) fn from_file(file: &'a crate::file::File) -> Self {
+        Self::new(file.validator_buf(), file.is_strict()).with_child_path(file.path().to_path_buf())
     }
 
     /// Set the child file path for parent chain validation.
@@ -158,17 +160,13 @@ impl<'a> SpecValidator<'a> {
             Error::UnsupportedVersion { version } => ValidationIssue::new(
                 "header",
                 "HEADER_VERSION_UNSUPPORTED",
-                format!(
-                    "header {header_idx} version {version} is not supported (expected 1)"
-                ),
+                format!("header {header_idx} version {version} is not supported (expected 1)"),
                 "MS-VHDX/2.2.2",
             ),
             Error::UnsupportedLogVersion { version } => ValidationIssue::new(
                 "header",
                 "HEADER_LOG_VERSION_UNSUPPORTED",
-                format!(
-                    "header {header_idx} log version {version} is not supported (expected 0)"
-                ),
+                format!("header {header_idx} log version {version} is not supported (expected 0)"),
                 "MS-VHDX/2.2.2",
             ),
             _ => ValidationIssue::new(
@@ -197,6 +195,10 @@ impl<'a> SpecValidator<'a> {
     /// - BAT:      MS-VHDX/2.5
     /// - Metadata: MS-VHDX/2.6
     /// - Differencing: parent locator + parent chain (when applicable)
+    ///
+    /// # Errors
+    ///
+    /// Returns the first hard validation error from a sub-validation stage.
     pub fn validate_file(&self) -> Result<Vec<ValidationIssue>> {
         let mut issues = Vec::new();
         issues.extend(self.validate_header()?);
@@ -222,15 +224,36 @@ impl<'a> SpecValidator<'a> {
     /// - File type identifier signature ("vhdxfile")
     /// - Header 1 and Header 2 signatures, CRC-32C, version
     /// - Sequence number comparison (both headers valid)
-    /// - LogGuid consistency between headers
+    /// - `LogGuid` consistency between headers
+    ///
+    /// # Panics
+    ///
+    /// Panics on internal invariant violations where code unwraps a known error
+    /// branch after `is_ok()` checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when required header invariants fail.
     pub fn validate_header(&self) -> Result<Vec<ValidationIssue>> {
         let mut issues = Vec::new();
         let header = self.parse_header()?;
+        Self::validate_file_type_identifier(&header, &mut issues)?;
+        Self::validate_header_pair(&header, &mut issues)?;
+        Self::validate_log_alignment(&header, &mut issues)?;
 
-        // -- File type identifier --
+        Ok(issues)
+    }
+
+    fn validate_file_type_identifier(
+        header: &Header<'a>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
         let ft = header.file_type();
-        if ft.signature() != b"vhdxfile" {
-            Self::push_issue(&mut issues, ValidationIssue::new(
+        if ft.signature() == b"vhdxfile" {
+            return Ok(());
+        }
+        Self::push_issue(
+            issues,
+            ValidationIssue::new(
                 "header",
                 "HEADER_FILE_TYPE_ID_INVALID",
                 format!(
@@ -238,109 +261,119 @@ impl<'a> SpecValidator<'a> {
                     std::str::from_utf8(ft.signature()).unwrap_or("<binary>")
                 ),
                 "MS-VHDX/2.2.1",
-            ));
-            return Err(Error::InvalidSignature {
-                position: SignaturePosition::FileTypeIdentifier,
-                expected: *b"vhdxfile",
-                found: *ft.signature(),
-            });
-        }
+            ),
+        );
+        Err(Error::InvalidSignature {
+            position: SignaturePosition::FileTypeIdentifier,
+            expected: *b"vhdxfile",
+            found: *ft.signature(),
+        })
+    }
 
-        // -- Validate both headers individually --
-        let h1 = header.header(1);
-        let h2 = header.header(2);
-
-        // Apply wrapper validation (version/log_version checks) to each
-        let v1 = h1.and_then(|h| self.validate_single_header(Ok(h)));
-        let v2 = h2.and_then(|h| self.validate_single_header(Ok(h)));
-
+    fn validate_header_pair(header: &Header<'a>, issues: &mut Vec<ValidationIssue>) -> Result<()> {
+        let v1 = header
+            .header(1)
+            .and_then(|h| Self::validate_single_header(Ok(h)));
+        let v2 = header
+            .header(2)
+            .and_then(|h| Self::validate_single_header(Ok(h)));
         let h1_valid = v1.is_ok();
         let h2_valid = v2.is_ok();
-
-        // Both invalid → file corrupt (produce per-header specific issues)
         if !h1_valid && !h2_valid {
-            Self::push_header_issue(&mut issues, 1, v1.as_ref().err().unwrap());
-            Self::push_header_issue(&mut issues, 2, v2.as_ref().err().unwrap());
+            Self::push_header_issue(issues, 1, v1.as_ref().err().unwrap());
+            Self::push_header_issue(issues, 2, v2.as_ref().err().unwrap());
             return Err(Error::CorruptedHeader("both headers are invalid".into()));
         }
-
-        // One invalid → push issue for the bad one, continue with valid header
         if !h1_valid {
-            Self::push_header_issue(&mut issues, 1, v1.as_ref().err().unwrap());
+            Self::push_header_issue(issues, 1, v1.as_ref().err().unwrap());
         }
         if !h2_valid {
-            Self::push_header_issue(&mut issues, 2, v2.as_ref().err().unwrap());
+            Self::push_header_issue(issues, 2, v2.as_ref().err().unwrap());
         }
-
-        // Only check sequence number equality + LogGuid consistency when BOTH are valid
         if h1_valid && h2_valid {
-            let v1 = v1.unwrap();
-            let v2 = v2.unwrap();
+            Self::validate_header_pair_consistency(header, issues, &v1.unwrap(), &v2.unwrap())?;
+        }
+        Ok(())
+    }
 
-            if v1.sequence_number() == v2.sequence_number() {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+    fn validate_header_pair_consistency(
+        header: &Header<'a>, issues: &mut Vec<ValidationIssue>, v1: &HeaderStructure<'a>,
+        v2: &HeaderStructure<'a>,
+    ) -> Result<()> {
+        if v1.sequence_number() == v2.sequence_number() {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "header",
                     "HEADER_SEQUENCE_NUMBER_INVALID",
                     "both headers have same sequence number",
                     "MS-VHDX/2.2.2",
-                ));
-                return Err(Error::HeaderSequenceNumberInvalid {
-                    sequence_number_1: v1.sequence_number(),
-                    sequence_number_2: v2.sequence_number(),
-                });
-            }
-
-            let log_guid = self.current_log_guid(&header)?;
-            if log_guid != v1.log_guid() || log_guid != v2.log_guid() {
-                Self::push_issue(&mut issues, ValidationIssue::new(
-                    "header",
-                    "HEADER_LOG_GUID_MISMATCH",
-                    "LogGuid differs between headers",
-                    "MS-VHDX/2.2.2",
-                ));
-                return Err(Error::HeaderLogGuidMismatch {
-                    header1_log_guid: v1.log_guid(),
-                    header2_log_guid: v2.log_guid(),
-                });
-            }
+                ),
+            );
+            return Err(Error::HeaderSequenceNumberInvalid {
+                sequence_number_1: v1.sequence_number(),
+                sequence_number_2: v2.sequence_number(),
+            });
         }
+        let log_guid = Self::current_log_guid(header)?;
+        if log_guid == v1.log_guid() && log_guid == v2.log_guid() {
+            return Ok(());
+        }
+        Self::push_issue(
+            issues,
+            ValidationIssue::new(
+                "header",
+                "HEADER_LOG_GUID_MISMATCH",
+                "LogGuid differs between headers",
+                "MS-VHDX/2.2.2",
+            ),
+        );
+        Err(Error::HeaderLogGuidMismatch {
+            header1_log_guid: v1.log_guid(),
+            header2_log_guid: v2.log_guid(),
+        })
+    }
 
-        // LogOffset and LogLength must be 1MB aligned (MS-VHDX §2.2.2)
+    fn validate_log_alignment(
+        header: &Header<'a>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
         let current = header.header(0)?;
         let log_offset = current.log_offset();
         let log_length = current.log_length();
         let mb: u64 = 1024 * 1024;
-        if log_length > 0 && log_length as u64 % mb != 0 {
-            Self::push_issue(&mut issues, ValidationIssue::new(
-                "header",
-                "HEADER_LOG_LENGTH_NOT_ALIGNED",
-                format!("log_length {log_length} is not a multiple of 1MB"),
-                "MS-VHDX/2.2.2",
-            ));
+        if log_length > 0 && u64::from(log_length) % mb != 0 {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "header",
+                    "HEADER_LOG_LENGTH_NOT_ALIGNED",
+                    format!("log_length {log_length} is not a multiple of 1MB"),
+                    "MS-VHDX/2.2.2",
+                ),
+            );
             return Err(Error::CorruptedHeader(format!(
                 "LOG_LENGTH_NOT_ALIGNED: log_length {log_length} is not a multiple of 1MB"
             )));
         }
         if log_offset > 0 && log_offset % mb != 0 {
-            Self::push_issue(&mut issues, ValidationIssue::new(
-                "header",
-                "HEADER_LOG_OFFSET_NOT_ALIGNED",
-                format!("log_offset {log_offset} is not a multiple of 1MB"),
-                "MS-VHDX/2.2.2",
-            ));
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "header",
+                    "HEADER_LOG_OFFSET_NOT_ALIGNED",
+                    format!("log_offset {log_offset} is not a multiple of 1MB"),
+                    "MS-VHDX/2.2.2",
+                ),
+            );
             return Err(Error::CorruptedHeader(format!(
                 "LOG_OFFSET_NOT_ALIGNED: log_offset {log_offset} is not a multiple of 1MB"
             )));
         }
-
-        Ok(issues)
+        Ok(())
     }
 
-    /// Validate a single header structure (signature, CRC, version, log_version).
-    fn validate_single_header(
-        &self,
-        result: Result<HeaderStructure<'a>>,
-    ) -> Result<HeaderStructure<'a>> {
+    /// Validate a single header structure (signature, CRC, version, `log_version`).
+    fn validate_single_header(result: Result<HeaderStructure<'a>>) -> Result<HeaderStructure<'a>> {
         let mut issues = Vec::new();
         let h = result?;
 
@@ -350,32 +383,35 @@ impl<'a> SpecValidator<'a> {
 
         // Version must be 1
         if h.version() != 1 {
-            Self::push_issue(&mut issues, ValidationIssue::new(
-                "header",
-                "HEADER_VERSION_UNSUPPORTED",
-                    format!(
-                        "version {} is not supported (expected 1)",
-                        h.version()
-                    ),
+            Self::push_issue(
+                &mut issues,
+                ValidationIssue::new(
+                    "header",
+                    "HEADER_VERSION_UNSUPPORTED",
+                    format!("version {} is not supported (expected 1)", h.version()),
                     "MS-VHDX/2.2.2",
-                ));
-                return Err(Error::UnsupportedVersion {
+                ),
+            );
+            return Err(Error::UnsupportedVersion {
                 version: h.version(),
             });
         }
 
         // Log version must be 0 (MS-VHDX §2.2.2: MUST NOT continue UNLESS LogGuid==0)
         if h.log_version() != 0 && h.log_guid() != Guid::zero() {
-            Self::push_issue(&mut issues, ValidationIssue::new(
-                "header",
-                "HEADER_LOG_VERSION_UNSUPPORTED",
+            Self::push_issue(
+                &mut issues,
+                ValidationIssue::new(
+                    "header",
+                    "HEADER_LOG_VERSION_UNSUPPORTED",
                     format!(
                         "log version {} is not supported (expected 0)",
                         h.log_version()
                     ),
                     "MS-VHDX/2.2.2",
-                ));
-                return Err(Error::UnsupportedLogVersion {
+                ),
+            );
+            return Err(Error::UnsupportedLogVersion {
                 version: h.log_version(),
             });
         }
@@ -395,6 +431,15 @@ impl<'a> SpecValidator<'a> {
     /// - Entry overlap (no two regions' ranges overlap)
     /// - Entry count <= 2047
     /// - Required unknown region handling (strict mode)
+    ///
+    /// # Panics
+    ///
+    /// Panics on internal invariant violations where code unwraps region tables
+    /// after prior successful checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when region table integrity checks fail.
     pub fn validate_region_table(&self) -> Result<Vec<ValidationIssue>> {
         let mut issues = Vec::new();
         let header = self.parse_header()?;
@@ -405,21 +450,31 @@ impl<'a> SpecValidator<'a> {
 
         match (&rt1, &rt2) {
             (Err(e), _) | (_, Err(e)) => {
-                if let Error::InvalidSignature { position: SignaturePosition::RegionTable, .. } = e {
-                    Self::push_issue(&mut issues, ValidationIssue::new(
-                        "region_table",
-                        "REGION_SIGNATURE_INVALID",
-                        format!("region table signature error: {e}"),
-                        "MS-VHDX/2.2.3.1",
-                    ));
+                if let Error::InvalidSignature {
+                    position: SignaturePosition::RegionTable,
+                    ..
+                } = e
+                {
+                    Self::push_issue(
+                        &mut issues,
+                        ValidationIssue::new(
+                            "region_table",
+                            "REGION_SIGNATURE_INVALID",
+                            format!("region table signature error: {e}"),
+                            "MS-VHDX/2.2.3.1",
+                        ),
+                    );
                     return Err(Error::InvalidRegionTable(format!("{e}")));
                 }
-                Self::push_issue(&mut issues, ValidationIssue::new(
-                    "region_table",
-                    "REGION_CHECKSUM_MISMATCH",
-                    format!("{e}"),
-                    "MS-VHDX/2.2.3.1",
-                ));
+                Self::push_issue(
+                    &mut issues,
+                    ValidationIssue::new(
+                        "region_table",
+                        "REGION_CHECKSUM_MISMATCH",
+                        format!("{e}"),
+                        "MS-VHDX/2.2.3.1",
+                    ),
+                );
                 return Err(Error::InvalidRegionTable(format!("{e}")));
             }
             _ => {}
@@ -433,12 +488,15 @@ impl<'a> SpecValidator<'a> {
         for (idx, rt) in [rt1, rt2].iter().enumerate() {
             let count = rt.header().entry_count();
             if count > 2047 {
-                Self::push_issue(&mut issues, ValidationIssue::new(
-                    "region_table",
-                    "REGION_ENTRY_COUNT_EXCEEDS_MAXIMUM",
-                    format!("region table {idx} entry count {count} exceeds maximum of 2047"),
-                    "MS-VHDX/2.2.3.1",
-                ));
+                Self::push_issue(
+                    &mut issues,
+                    ValidationIssue::new(
+                        "region_table",
+                        "REGION_ENTRY_COUNT_EXCEEDS_MAXIMUM",
+                        format!("region table {idx} entry count {count} exceeds maximum of 2047"),
+                        "MS-VHDX/2.2.3.1",
+                    ),
+                );
                 return Err(Error::InvalidRegionTable(format!(
                     "REGION_ENTRY_COUNT_EXCEEDS_MAXIMUM: region table {idx} entry count {count} exceeds maximum of 2047"
                 )));
@@ -449,128 +507,166 @@ impl<'a> SpecValidator<'a> {
         let current_rt = match header.region_table(0) {
             Ok(rt) => rt,
             Err(e) => {
-                Self::push_issue(&mut issues, ValidationIssue::new(
-                    "region_table",
-                    "REGION_CHECKSUM_MISMATCH",
-                    format!("current region table: {e}"),
-                    "MS-VHDX/2.2.3.1",
-                ));
-                return Err(Error::InvalidRegionTable(format!("current region table: {e}")));
+                Self::push_issue(
+                    &mut issues,
+                    ValidationIssue::new(
+                        "region_table",
+                        "REGION_CHECKSUM_MISMATCH",
+                        format!("current region table: {e}"),
+                        "MS-VHDX/2.2.3.1",
+                    ),
+                );
+                return Err(Error::InvalidRegionTable(format!(
+                    "current region table: {e}"
+                )));
             }
         };
 
-        issues.extend(self.validate_region_entries(current_rt)?);
+        issues.extend(self.validate_region_entries(&current_rt)?);
 
         Ok(issues)
     }
 
     /// Validate a region table's entries for alignment, overlap, and required-unknown.
     fn validate_region_entries(
-        &self,
-        rt: crate::header::RegionTable<'a>,
+        &self, rt: &crate::header::RegionTable<'a>,
     ) -> Result<Vec<ValidationIssue>> {
         let mut issues = Vec::new();
-        let mb: u64 = 1024 * 1024;
         let entries: Vec<_> = rt.entries().collect();
 
         for (i, entry) in entries.iter().enumerate() {
-            let file_offset = entry.file_offset();
-            let length = entry.length();
+            self.validate_region_entry(i, entry, &entries, &mut issues)?;
+        }
 
-            // Alignment: file_offset must be 1 MB aligned
-            if file_offset % mb != 0 {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+        Ok(issues)
+    }
+
+    fn validate_region_entry(
+        &self, i: usize, entry: &crate::header::RegionTableEntry<'a>,
+        entries: &[crate::header::RegionTableEntry<'a>], issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        let mb: u64 = 1024 * 1024;
+        let file_offset = entry.file_offset();
+        let length = entry.length();
+
+        if !file_offset.is_multiple_of(mb) {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "region_table",
                     "REGION_ENTRY_ALIGNMENT",
                     format!("entry {i} file_offset {file_offset:#x} not 1MB-aligned"),
                     "MS-VHDX/2.2.3.2",
-                ));
-                return Err(Error::InvalidRegionTable(format!(
-                    "REGION_ENTRY_ALIGNMENT: entry {i} file_offset {file_offset:#x} not 1MB-aligned"
-                )));
-            }
-
-            // T15: file_offset must be >= 1 MB (MS-VHDX §2.4)
-            if file_offset < mb {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+                ),
+            );
+            return Err(Error::InvalidRegionTable(format!(
+                "REGION_ENTRY_ALIGNMENT: entry {i} file_offset {file_offset:#x} not 1MB-aligned"
+            )));
+        }
+        if file_offset < mb {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "region_table",
                     "REGION_ENTRY_OFFSET_MINIMUM",
                     format!("entry {i} file_offset {file_offset} < 1MB minimum"),
                     "MS-VHDX/2.2.3.2",
-                ));
-                return Err(Error::InvalidRegionTable(format!(
-                    "REGION_ENTRY_OFFSET_MINIMUM: entry {i} file_offset {file_offset} < 1MB minimum"
-                )));
-            }
-
-            // Length must be a multiple of 1 MB
-            if u64::from(length) % mb != 0 {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+                ),
+            );
+            return Err(Error::InvalidRegionTable(format!(
+                "REGION_ENTRY_OFFSET_MINIMUM: entry {i} file_offset {file_offset} < 1MB minimum"
+            )));
+        }
+        if u64::from(length) % mb != 0 {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "region_table",
                     "REGION_ENTRY_ALIGNMENT",
                     format!("entry {i} length {length} not 1MB-aligned"),
                     "MS-VHDX/2.2.3.2",
-                ));
-                return Err(Error::InvalidRegionTable(format!(
-                    "REGION_ENTRY_ALIGNMENT: entry {i} length {length} not 1MB-aligned"
-                )));
-            }
+                ),
+            );
+            return Err(Error::InvalidRegionTable(format!(
+                "REGION_ENTRY_ALIGNMENT: entry {i} length {length} not 1MB-aligned"
+            )));
+        }
 
-            // Overlap check: compare against all previous entries
-            let end = file_offset + u64::from(length);
-            for (j, prev) in entries[..i].iter().enumerate() {
-                let prev_end = prev.file_offset() + u64::from(prev.length());
-                if file_offset < prev_end && prev.file_offset() < end {
-                    Self::push_issue(&mut issues, ValidationIssue::new(
+        Self::validate_region_entry_overlap(i, file_offset, length, entries, issues)?;
+        self.validate_region_entry_guid(entry, issues)
+    }
+
+    fn validate_region_entry_overlap(
+        i: usize, file_offset: u64, length: u32, entries: &[crate::header::RegionTableEntry<'a>],
+        issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        let end = file_offset + u64::from(length);
+        for (j, prev) in entries[..i].iter().enumerate() {
+            let prev_end = prev.file_offset() + u64::from(prev.length());
+            if file_offset < prev_end && prev.file_offset() < end {
+                Self::push_issue(
+                    issues,
+                    ValidationIssue::new(
                         "region_table",
                         "REGION_ENTRY_OVERLAP",
                         format!("entries {j} and {i} overlap"),
                         "MS-VHDX/2.1",
-                    ));
-                    return Err(Error::InvalidRegionTable(format!(
-                        "REGION_ENTRY_OVERLAP: entries {j} and {i} overlap"
-                    )));
-                }
+                    ),
+                );
+                return Err(Error::InvalidRegionTable(format!(
+                    "REGION_ENTRY_OVERLAP: entries {j} and {i} overlap"
+                )));
             }
+        }
+        Ok(())
+    }
 
-            // Required unknown: if required=1 and GUID is unknown → always error
-            // Optional unknown: if required=0 and GUID is unknown → error only in strict mode
-            if !is_known_region_guid(&entry.guid()) {
-                if entry.required() {
-                    Self::push_issue(&mut issues, ValidationIssue::new(
-                        "region_table",
-                        "REGION_REQUIRED_UNKNOWN",
-                        format!("required unknown region GUID {}", entry.guid()),
-                        "RELAX",
-                    ));
-                    return Err(Error::RegionRequiredUnknown {
-                        guid: entry.guid(),
-                    });
-                }
-                if self.strict {
-                    Self::push_issue(&mut issues, ValidationIssue::new(
-                        "region_table",
-                        "REGION_OPTIONAL_UNKNOWN",
-                        format!("optional unknown region GUID {} in strict mode", entry.guid()),
-                        "RELAX",
-                    ));
-                    return Err(Error::RegionOptionalUnknown {
-                        guid: entry.guid(),
-                    });
-                }
-                Self::push_issue(&mut issues, ValidationIssue::new(
+    fn validate_region_entry_guid(
+        &self, entry: &crate::header::RegionTableEntry<'a>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        if is_known_region_guid(&entry.guid()) {
+            return Ok(());
+        }
+        if entry.required() {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "region_table",
+                    "REGION_REQUIRED_UNKNOWN",
+                    format!("required unknown region GUID {}", entry.guid()),
+                    "RELAX",
+                ),
+            );
+            return Err(Error::RegionRequiredUnknown { guid: entry.guid() });
+        }
+        if self.strict {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "region_table",
                     "REGION_OPTIONAL_UNKNOWN",
                     format!(
-                        "optional unknown region GUID {} tolerated in non-strict mode",
+                        "optional unknown region GUID {} in strict mode",
                         entry.guid()
                     ),
                     "RELAX",
-                ));
-            }
+                ),
+            );
+            return Err(Error::RegionOptionalUnknown { guid: entry.guid() });
         }
-
-        Ok(issues)
+        Self::push_issue(
+            issues,
+            ValidationIssue::new(
+                "region_table",
+                "REGION_OPTIONAL_UNKNOWN",
+                format!(
+                    "optional unknown region GUID {} tolerated in non-strict mode",
+                    entry.guid()
+                ),
+                "RELAX",
+            ),
+        );
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -582,13 +678,21 @@ impl<'a> SpecValidator<'a> {
     /// Checks:
     /// - Entry states are valid values
     /// - State matches disk type (e.g., fixed disk has no Unmapped)
-    /// - Sector bitmap entries in non-differencing disks are NotPresent
+    /// - Sector bitmap entries in non-differencing disks are `NotPresent`
     /// - File offsets are aligned
+    ///
+    /// # Panics
+    ///
+    /// Panics on internal invariant violations where code unwraps previously
+    /// validated BAT states.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when BAT structure or state rules are violated.
     pub fn validate_bat(&self) -> Result<Vec<ValidationIssue>> {
         let mut issues = Vec::new();
-        let bat_data = match self.bat_region() {
-            Some(d) => d,
-            None => return Ok(issues), // No BAT region found; skip
+        let Some(bat_data) = self.bat_region() else {
+            return Ok(issues);
         };
 
         let chunk_ratio = self.chunk_ratio();
@@ -598,178 +702,231 @@ impl<'a> SpecValidator<'a> {
 
         let bat = crate::bat::Bat::new(bat_data, chunk_ratio);
         let has_parent = self.has_parent();
-        let block_size = self.block_size() as u64;
+        let block_size = u64::from(self.block_size());
 
-        // T17: BAT entry count vs VirtualDiskSize/BlockSize
-        let virtual_disk_size = self.virtual_disk_size();
-        if virtual_disk_size > 0 && block_size > 0 {
-            let min_entries = (virtual_disk_size + block_size - 1) / block_size;
-            if bat.len() < min_entries as usize {
-                Self::push_issue(&mut issues, ValidationIssue::new(
-                    "bat",
-                    "BAT_ENTRY_COUNT_INSUFFICIENT",
-                    format!("BAT has {} entries but virtual disk requires at least {}", bat.len(), min_entries),
-                    "MS-VHDX/2.5",
-                ));
-                return Err(Error::BatEntryCountInsufficient { actual: bat.len() as u64, expected: min_entries });
-            }
-        }
-
-        // T16: Collect non-zero file_offset_mb values for uniqueness check
+        self.validate_bat_entry_count(&bat, block_size, &mut issues)?;
         let mut seen_offsets = std::collections::HashSet::new();
-
-        for (_i, entry) in bat.entries().enumerate() {
-            let raw_state = entry.raw_state();
-
-            if entry.is_sector_bitmap() {
-                // Sector bitmap entry validation
-                let sb_state = entry.sector_bitmap_state();
-                if sb_state.is_none() {
-                    Self::push_issue(&mut issues, ValidationIssue::new(
-                        "bat",
-                        "BAT_SECTOR_BITMAP_INVALID_STATE",
-                        format!("invalid sector bitmap state: {raw_state}"),
-                        "MS-VHDX/2.5.1.2",
-                    ));
-                    return Err(Error::InvalidSectorBitmapState(raw_state));
-                }
-                let sb_state = sb_state.unwrap();
-
-                use crate::bat::SectorBitmapState;
-                if !has_parent && sb_state != SectorBitmapState::NotPresent {
-                    Self::push_issue(&mut issues, ValidationIssue::new(
-                        "bat",
-                        "BAT_ENTRY_STATE_MISMATCH",
-                        format!("sector bitmap state not NotPresent on non-differencing disk"),
-                        "MS-VHDX/2.5.1.1",
-                    ));
-                    return Err(Error::StateMismatch {
-                        state: raw_state,
-                        description: "sector bitmap state not NotPresent on non-differencing disk".into(),
-                    });
-                }
-            } else {
-                // Payload entry validation
-                let p_state = entry.payload_state();
-                if p_state.is_none() {
-                    Self::push_issue(&mut issues, ValidationIssue::new(
-                        "bat",
-                        "BAT_ENTRY_INVALID_STATE",
-                        format!("invalid payload block state: {raw_state}"),
-                        "MS-VHDX/2.5.1.1",
-                    ));
-                    return Err(Error::InvalidBlockState(raw_state));
-                }
-                let p_state = p_state.unwrap();
-
-                use crate::bat::PayloadBlockState;
-                // Fixed/dynamic (non-differencing) disk: no Unmapped or PartiallyPresent
-                if !has_parent {
-                    match p_state {
-                        PayloadBlockState::Unmapped | PayloadBlockState::PartiallyPresent => {
-                            Self::push_issue(&mut issues, ValidationIssue::new(
-                                "bat",
-                                "BAT_ENTRY_STATE_MISMATCH",
-                                format!("payload state Unmapped/PartiallyPresent on non-differencing disk"),
-                                "MS-VHDX/2.5.1.1",
-                            ));
-                            return Err(Error::StateMismatch {
-                                state: raw_state,
-                                description: "payload state Unmapped/PartiallyPresent on non-differencing disk".into(),
-                            });
-                        }
-                        _ => {}
-                    }
-                }
-
-                // File offset alignment check (for entries with data)
-                match p_state {
-                    PayloadBlockState::FullyPresent | PayloadBlockState::PartiallyPresent => {
-                        let offset_mb = entry.file_offset_mb();
-
-                        // T16: check file_offset_mb uniqueness
-                        if offset_mb != 0 && !seen_offsets.insert(offset_mb) {
-                            Self::push_issue(&mut issues, ValidationIssue::new(
-                                "bat",
-                                "BAT_FILE_OFFSET_DUPLICATE",
-                                format!("duplicate file_offset_mb {offset_mb} in BAT"),
-                                "MS-VHDX/2.5",
-                            ));
-                            return Err(Error::BatFileOffsetDuplicate { offset_mb });
-                        }
-
-                        // Per MS-VHDX §2.5.1.1, FileOffsetMB is in units of 1 MB.
-                        // Windows places blocks at MB-aligned offsets (e.g. 4 MB)
-                        // which need not be a multiple of BlockSize — only the
-                        // MB alignment itself is required. Skip block-size alignment
-                        // check; keep a duplicate-offset check above.
-                    }
-                    _ => {}
-                }
-            }
+        for entry in bat.entries() {
+            Self::validate_bat_entry(entry, has_parent, &mut seen_offsets, &mut issues)?;
         }
-
-        // T13: Sector bitmap consistency for differencing disks
-        if has_parent {
-            let stride = chunk_ratio + 1;
-            // Iterate through chunks. Each chunk has chunk_ratio payload entries
-            // followed by 1 sector bitmap entry.
-            let total_entries = bat.len() as u64;
-            let num_chunks = total_entries / stride;
-
-            for chunk_idx in 0..num_chunks {
-                let sb_bat_idx = chunk_idx * stride + chunk_ratio;
-                if sb_bat_idx >= total_entries {
-                    break;
-                }
-                let sb_entry = match bat.entry(sb_bat_idx) {
-                    Ok(e) => e,
-                    Err(_) => break,
-                };
-
-                // Check each payload entry in this chunk for PartiallyPresent
-                let mut any_partially_present = false;
-                for payload_offset_in_chunk in 0..chunk_ratio {
-                    let payload_bat_idx = chunk_idx * stride + payload_offset_in_chunk;
-                    if payload_bat_idx >= total_entries {
-                        break;
-                    }
-                    let payload_entry = match bat.entry(payload_bat_idx) {
-                        Ok(e) => e,
-                        Err(_) => continue,
-                    };
-                    if !payload_entry.is_sector_bitmap() {
-                        if let Some(crate::bat::PayloadBlockState::PartiallyPresent) =
-                            payload_entry.payload_state()
-                        {
-                            any_partially_present = true;
-                            break;
-                        }
-                    }
-                }
-
-                // If any payload is PartiallyPresent, the sector bitmap MUST be Present
-                if any_partially_present {
-                    let sb_state = sb_entry.sector_bitmap_state();
-                    match sb_state {
-                        Some(crate::bat::SectorBitmapState::Present) => {}
-                        _ => {
-                            Self::push_issue(&mut issues, ValidationIssue::new(
-                                "bat",
-                                "BAT_SECTOR_BITMAP_INVALID_STATE",
-                                format!(
-                                    "chunk {chunk_idx}: payload entry is PartiallyPresent but sector bitmap state is {:?}",
-                                    sb_state
-                                ),
-                                "MS-VHDX/2.5.1.2",
-                            ));
-                        }
-                    }
-                }
-            }
-        }
+        Self::validate_bat_sector_bitmap_consistency(&bat, has_parent, chunk_ratio, &mut issues);
 
         Ok(issues)
+    }
+
+    fn validate_bat_entry_count(
+        &self, bat: &crate::bat::Bat<'_>, block_size: u64, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        let virtual_disk_size = self.virtual_disk_size();
+        if virtual_disk_size > 0 && block_size > 0 {
+            let min_entries = virtual_disk_size.div_ceil(block_size);
+            if bat.len() < usize::try_from(min_entries).expect("minimum BAT entries fit usize") {
+                Self::push_issue(
+                    issues,
+                    ValidationIssue::new(
+                        "bat",
+                        "BAT_ENTRY_COUNT_INSUFFICIENT",
+                        format!(
+                            "BAT has {} entries but virtual disk requires at least {}",
+                            bat.len(),
+                            min_entries
+                        ),
+                        "MS-VHDX/2.5",
+                    ),
+                );
+                return Err(Error::BatEntryCountInsufficient {
+                    actual: bat.len() as u64,
+                    expected: min_entries,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_bat_entry(
+        entry: crate::bat::BatEntry<'_>, has_parent: bool,
+        seen_offsets: &mut std::collections::HashSet<u64>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        let raw_state = entry.raw_state();
+        if entry.is_sector_bitmap() {
+            return Self::validate_bat_sector_bitmap_entry(raw_state, entry, has_parent, issues);
+        }
+        Self::validate_bat_payload_entry(raw_state, entry, has_parent, seen_offsets, issues)
+    }
+
+    fn validate_bat_sector_bitmap_entry(
+        raw_state: u8, entry: crate::bat::BatEntry<'_>, has_parent: bool,
+        issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        let Some(sb_state) = entry.sector_bitmap_state() else {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "bat",
+                    "BAT_SECTOR_BITMAP_INVALID_STATE",
+                    format!("invalid sector bitmap state: {raw_state}"),
+                    "MS-VHDX/2.5.1.2",
+                ),
+            );
+            return Err(Error::InvalidSectorBitmapState(raw_state));
+        };
+        if !has_parent && sb_state != SectorBitmapState::NotPresent {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "bat",
+                    "BAT_ENTRY_STATE_MISMATCH",
+                    "sector bitmap state not NotPresent on non-differencing disk".to_string(),
+                    "MS-VHDX/2.5.1.1",
+                ),
+            );
+            return Err(Error::StateMismatch {
+                state: raw_state,
+                description: "sector bitmap state not NotPresent on non-differencing disk".into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_bat_payload_entry(
+        raw_state: u8, entry: crate::bat::BatEntry<'_>, has_parent: bool,
+        seen_offsets: &mut std::collections::HashSet<u64>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        let Some(p_state) = entry.payload_state() else {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "bat",
+                    "BAT_ENTRY_INVALID_STATE",
+                    format!("invalid payload block state: {raw_state}"),
+                    "MS-VHDX/2.5.1.1",
+                ),
+            );
+            return Err(Error::InvalidBlockState(raw_state));
+        };
+        Self::validate_bat_payload_state_for_disk_type(raw_state, p_state, has_parent, issues)?;
+        Self::validate_bat_payload_offset_uniqueness(entry, p_state, seen_offsets, issues)
+    }
+
+    fn validate_bat_payload_state_for_disk_type(
+        raw_state: u8, p_state: PayloadBlockState, has_parent: bool,
+        issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        if !has_parent {
+            match p_state {
+                PayloadBlockState::Unmapped | PayloadBlockState::PartiallyPresent => {
+                    Self::push_issue(
+                        issues,
+                        ValidationIssue::new(
+                            "bat",
+                            "BAT_ENTRY_STATE_MISMATCH",
+                            "payload state Unmapped/PartiallyPresent on non-differencing disk"
+                                .to_string(),
+                            "MS-VHDX/2.5.1.1",
+                        ),
+                    );
+                    return Err(Error::StateMismatch {
+                        state: raw_state,
+                        description:
+                            "payload state Unmapped/PartiallyPresent on non-differencing disk"
+                                .into(),
+                    });
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_bat_payload_offset_uniqueness(
+        entry: crate::bat::BatEntry<'_>, p_state: PayloadBlockState,
+        seen_offsets: &mut std::collections::HashSet<u64>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        match p_state {
+            PayloadBlockState::FullyPresent | PayloadBlockState::PartiallyPresent => {
+                let offset_mb = entry.file_offset_mb();
+                if offset_mb != 0 && !seen_offsets.insert(offset_mb) {
+                    Self::push_issue(
+                        issues,
+                        ValidationIssue::new(
+                            "bat",
+                            "BAT_FILE_OFFSET_DUPLICATE",
+                            format!("duplicate file_offset_mb {offset_mb} in BAT"),
+                            "MS-VHDX/2.5",
+                        ),
+                    );
+                    return Err(Error::BatFileOffsetDuplicate { offset_mb });
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn validate_bat_sector_bitmap_consistency(
+        bat: &crate::bat::Bat<'_>, has_parent: bool, chunk_ratio: u64,
+        issues: &mut Vec<ValidationIssue>,
+    ) {
+        if !has_parent {
+            return;
+        }
+        let stride = chunk_ratio + 1;
+        let total_entries = bat.len() as u64;
+        let num_chunks = total_entries / stride;
+        for chunk_idx in 0..num_chunks {
+            if !Self::chunk_has_partially_present_payload(
+                bat,
+                chunk_idx,
+                stride,
+                chunk_ratio,
+                total_entries,
+            ) {
+                continue;
+            }
+            let sb_bat_idx = chunk_idx * stride + chunk_ratio;
+            if sb_bat_idx >= total_entries {
+                break;
+            }
+            let Ok(sb_entry) = bat.entry(sb_bat_idx) else {
+                break;
+            };
+            let sb_state = sb_entry.sector_bitmap_state();
+            if !matches!(sb_state, Some(crate::bat::SectorBitmapState::Present)) {
+                Self::push_issue(
+                    issues,
+                    ValidationIssue::new(
+                        "bat",
+                        "BAT_SECTOR_BITMAP_INVALID_STATE",
+                        format!(
+                            "chunk {chunk_idx}: payload entry is PartiallyPresent but sector bitmap state is {sb_state:?}"
+                        ),
+                        "MS-VHDX/2.5.1.2",
+                    ),
+                );
+            }
+        }
+    }
+
+    fn chunk_has_partially_present_payload(
+        bat: &crate::bat::Bat<'_>, chunk_idx: u64, stride: u64, chunk_ratio: u64,
+        total_entries: u64,
+    ) -> bool {
+        for payload_offset_in_chunk in 0..chunk_ratio {
+            let payload_bat_idx = chunk_idx * stride + payload_offset_in_chunk;
+            if payload_bat_idx >= total_entries {
+                break;
+            }
+            let Ok(payload_entry) = bat.entry(payload_bat_idx) else {
+                continue;
+            };
+            if !payload_entry.is_sector_bitmap()
+                && let Some(crate::bat::PayloadBlockState::PartiallyPresent) =
+                    payload_entry.payload_state()
+            {
+                return true;
+            }
+        }
+        false
     }
 
     // -----------------------------------------------------------------------
@@ -783,112 +940,159 @@ impl<'a> SpecValidator<'a> {
     /// - Entry count <= 2047
     /// - Entry offset/length bounds (within metadata region)
     /// - No items extend beyond the region
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when metadata table or item constraints are violated.
+    ///
+    /// # Panics
+    ///
+    /// Panics if checked integer conversions for metadata range bookkeeping are
+    /// violated unexpectedly.
     pub fn validate_metadata(&self) -> Result<Vec<ValidationIssue>> {
         let mut issues = Vec::new();
-        let meta_data = match self.metadata_region() {
-            Some(d) => d,
-            None => return Ok(issues), // No metadata region; skip
+        let Some(meta_data) = self.metadata_region() else {
+            return Ok(issues);
         };
 
         let meta = crate::metadata::Metadata::new(meta_data)?;
         let table = meta.table();
 
-        // Table signature
+        Self::validate_metadata_header_checks(&table, &mut issues)?;
+        let mut ranges: Vec<(u32, u32, Guid)> = Vec::new();
+        for entry in table.entries() {
+            self.validate_metadata_entry(&entry, meta_data.len(), &mut ranges, &mut issues)?;
+        }
+        Self::validate_metadata_ranges_overlap(&ranges, &mut issues)?;
+        Self::push_corrupted_known_metadata_items(&table, &mut issues);
+
+        Ok(issues)
+    }
+
+    fn validate_metadata_header_checks(
+        table: &crate::metadata::MetadataTable<'_>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
         if let Err(e) = table.header().validate_signature() {
-            Self::push_issue(&mut issues, ValidationIssue::new(
-                "metadata",
-                "METADATA_TABLE_SIGNATURE_INVALID",
-                format!("{e}"),
-                "MS-VHDX/2.6.1.1",
-            ));
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "metadata",
+                    "METADATA_TABLE_SIGNATURE_INVALID",
+                    format!("{e}"),
+                    "MS-VHDX/2.6.1.1",
+                ),
+            );
             return Err(e);
         }
-
-        // Entry count
         let entry_count = table.header().entry_count();
         if entry_count > 2047 {
-            Self::push_issue(&mut issues, ValidationIssue::new(
-                "metadata",
-                "METADATA_ENTRY_INVALID",
-                format!("entry count {entry_count} > 2047"),
-                "MS-VHDX/2.6.1.2",
-            ));
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "metadata",
+                    "METADATA_ENTRY_INVALID",
+                    format!("entry count {entry_count} > 2047"),
+                    "MS-VHDX/2.6.1.2",
+                ),
+            );
             return Err(Error::InvalidMetadata(format!(
                 "METADATA_ENTRY_INVALID: entry count {entry_count} > 2047"
             )));
         }
+        Ok(())
+    }
 
-        // Validate each entry and collect ranges for overlap check (T18)
-        let region_len = meta_data.len();
-        let mut ranges: Vec<(u32, u32, Guid)> = Vec::new();
+    fn validate_metadata_entry(
+        &self, entry: &crate::metadata::TableEntry<'_>, region_len: usize,
+        ranges: &mut Vec<(u32, u32, Guid)>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        let offset = entry.offset() as usize;
+        let length = entry.length() as usize;
+        Self::validate_metadata_offset_and_length(
+            entry, offset, length, region_len, ranges, issues,
+        )?;
+        Self::validate_metadata_entry_reserved_flags(entry, issues)?;
+        Self::validate_metadata_entry_reserved_field(entry, issues)?;
+        self.validate_metadata_unknown_guid_policy(entry, issues)
+    }
 
-        for entry in table.entries() {
-            let offset = entry.offset() as usize;
-            let length = entry.length() as usize;
-
-            // Length=0 → Offset must also be 0 (MS-VHDX §2.6.1.2)
-            if length == 0 && offset != 0 {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+    fn validate_metadata_offset_and_length(
+        entry: &crate::metadata::TableEntry<'_>, offset: usize, length: usize, region_len: usize,
+        ranges: &mut Vec<(u32, u32, Guid)>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        if length == 0 && offset != 0 {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "metadata",
                     "METADATA_ENTRY_INVALID",
                     format!("length=0 but offset={offset} (expected 0)"),
                     "MS-VHDX/2.6.1.2",
-                ));
-                return Err(Error::InvalidMetadata(format!(
-                    "METADATA_ENTRY_INVALID: length=0 but offset={offset} (expected 0)"
-                )));
-            }
-
-            // Offset + length must fit in the metadata region
-            if length > 0 {
-                // T19: metadata entry offset must be >= 64KB minimum (MS-VHDX §2.6.1.2)
-                if offset < 65536 {
-                    Self::push_issue(&mut issues, ValidationIssue::new(
+                ),
+            );
+            return Err(Error::InvalidMetadata(format!(
+                "METADATA_ENTRY_INVALID: length=0 but offset={offset} (expected 0)"
+            )));
+        }
+        if length > 0 {
+            if offset < 65536 {
+                Self::push_issue(
+                    issues,
+                    ValidationIssue::new(
                         "metadata",
                         "METADATA_ENTRY_OFFSET_MINIMUM",
                         format!("metadata entry offset {offset} < 64KB minimum"),
                         "MS-VHDX/2.6.1.2",
-                    ));
-                    return Err(Error::InvalidMetadata(format!(
-                        "METADATA_ENTRY_OFFSET_MINIMUM: metadata entry offset {offset} < 64KB minimum"
-                    )));
-                }
-
-                let end = match offset.checked_add(length) {
-                    Some(e) => e,
-                    None => {
-                        Self::push_issue(&mut issues, ValidationIssue::new(
-                            "metadata",
-                            "METADATA_ENTRY_INVALID",
-                            "offset+length overflow",
-                            "MS-VHDX/2.6.1.2",
-                        ));
-                        return Err(Error::InvalidMetadata(
-                            "METADATA_ENTRY_INVALID: offset+length overflow".into(),
-                        ));
-                    }
-                };
-                if end > region_len {
-                    Self::push_issue(&mut issues, ValidationIssue::new(
+                    ),
+                );
+                return Err(Error::InvalidMetadata(format!(
+                    "METADATA_ENTRY_OFFSET_MINIMUM: metadata entry offset {offset} < 64KB minimum"
+                )));
+            }
+            let Some(end) = offset.checked_add(length) else {
+                Self::push_issue(
+                    issues,
+                    ValidationIssue::new(
+                        "metadata",
+                        "METADATA_ENTRY_INVALID",
+                        "offset+length overflow",
+                        "MS-VHDX/2.6.1.2",
+                    ),
+                );
+                return Err(Error::InvalidMetadata(
+                    "METADATA_ENTRY_INVALID: offset+length overflow".into(),
+                ));
+            };
+            if end > region_len {
+                Self::push_issue(
+                    issues,
+                    ValidationIssue::new(
                         "metadata",
                         "METADATA_ENTRY_INVALID",
                         format!("item extent [{offset}..{end}] exceeds region ({region_len})"),
                         "MS-VHDX/2.6.1.2",
-                    ));
-                    return Err(Error::InvalidMetadata(format!(
-                        "METADATA_ENTRY_INVALID: item extent [{offset}..{end}] exceeds region ({region_len})"
-                    )));
-                }
-
-                // Collect range for overlap check
-                ranges.push((offset as u32, (offset + length) as u32, entry.item_id()));
+                    ),
+                );
+                return Err(Error::InvalidMetadata(format!(
+                    "METADATA_ENTRY_INVALID: item extent [{offset}..{end}] exceeds region ({region_len})"
+                )));
             }
+            ranges.push((
+                u32::try_from(offset).expect("metadata item offset fits u32"),
+                u32::try_from(offset + length).expect("metadata item end fits u32"),
+                entry.item_id(),
+            ));
+        }
+        Ok(())
+    }
 
-            // Check flags reserved bits (bits 3-31 are reserved per MS-VHDX §2.6.1.2:
-            // the diagram puts A=IsUser(bit0), B=IsVirtualDisk(bit1), C=IsRequired(bit2);
-            // bits 3-31 are Reserved and MUST be 0).
-            if entry.flags().has_reserved_bits() {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+    fn validate_metadata_entry_reserved_flags(
+        entry: &crate::metadata::TableEntry<'_>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        if entry.flags().has_reserved_bits() {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "metadata",
                     "METADATA_RESERVED_FLAGS_SET",
                     format!(
@@ -897,15 +1101,22 @@ impl<'a> SpecValidator<'a> {
                         entry.flags_bits()
                     ),
                     "MS-VHDX/2.6.1.2",
-                ));
-                return Err(Error::MetadataReservedFlagsSet {
-                    flags: entry.flags_bits(),
-                });
-            }
+                ),
+            );
+            return Err(Error::MetadataReservedFlagsSet {
+                flags: entry.flags_bits(),
+            });
+        }
+        Ok(())
+    }
 
-            // Check entry reserved field (MS-VHDX §2.6.1.2: reserved must be 0)
-            if entry.reserved() != 0 {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+    fn validate_metadata_entry_reserved_field(
+        entry: &crate::metadata::TableEntry<'_>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        if entry.reserved() != 0 {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "metadata",
                     "METADATA_ENTRY_RESERVED_NONZERO",
                     format!(
@@ -914,126 +1125,173 @@ impl<'a> SpecValidator<'a> {
                         entry.reserved()
                     ),
                     "MS-VHDX/2.6.1.2",
-                ));
-                return Err(Error::InvalidMetadata(format!(
-                    "METADATA_ENTRY_RESERVED_NONZERO: metadata entry GUID {} has reserved field set to {:#010x}",
-                    entry.item_id(),
-                    entry.reserved()
-                )));
-            }
+                ),
+            );
+            return Err(Error::InvalidMetadata(format!(
+                "METADATA_ENTRY_RESERVED_NONZERO: metadata entry GUID {} has reserved field set to {:#010x}",
+                entry.item_id(),
+                entry.reserved()
+            )));
+        }
+        Ok(())
+    }
 
-            // Unknown metadata entry handling (strict mode per MS-VHDX-宽松扩展标准 §3)
-            if !is_known_metadata_guid(&entry.item_id()) {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+    fn validate_metadata_unknown_guid_policy(
+        &self, entry: &crate::metadata::TableEntry<'_>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        if is_known_metadata_guid(&entry.item_id()) {
+            return Ok(());
+        }
+        Self::push_issue(
+            issues,
+            ValidationIssue::new(
+                "metadata",
+                "METADATA_GUID_UNKNOWN",
+                format!("unknown metadata GUID {}", entry.item_id()),
+                "MS-VHDX/2.6.2",
+            ),
+        );
+        if entry.flags().is_required() {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "metadata",
-                    "METADATA_GUID_UNKNOWN",
-                    format!("unknown metadata GUID {}", entry.item_id()),
-                    "MS-VHDX/2.6.2",
-                ));
-                if entry.flags().is_required() {
-                    Self::push_issue(&mut issues, ValidationIssue::new(
-                        "metadata",
-                        "METADATA_REQUIRED_UNKNOWN",
-                        format!("required unknown metadata GUID {}", entry.item_id()),
-                        "RELAX",
-                    ));
-                    return Err(Error::MetadataRequiredUnknown {
-                        guid: entry.item_id(),
-                    });
-                }
-                if self.strict {
-                    Self::push_issue(&mut issues, ValidationIssue::new(
-                        "metadata",
-                        "METADATA_OPTIONAL_UNKNOWN",
-                        format!("optional unknown metadata GUID {} in strict mode", entry.item_id()),
-                        "RELAX",
-                    ));
-                    return Err(Error::MetadataOptionalUnknown {
-                        guid: entry.item_id(),
-                    });
-                }
-                Self::push_issue(&mut issues, ValidationIssue::new(
+                    "METADATA_REQUIRED_UNKNOWN",
+                    format!("required unknown metadata GUID {}", entry.item_id()),
+                    "RELAX",
+                ),
+            );
+            return Err(Error::MetadataRequiredUnknown {
+                guid: entry.item_id(),
+            });
+        }
+        if self.strict {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "metadata",
                     "METADATA_OPTIONAL_UNKNOWN",
                     format!(
-                        "optional unknown metadata GUID {} tolerated in non-strict mode",
+                        "optional unknown metadata GUID {} in strict mode",
                         entry.item_id()
                     ),
                     "RELAX",
-                ));
-            }
+                ),
+            );
+            return Err(Error::MetadataOptionalUnknown {
+                guid: entry.item_id(),
+            });
         }
+        Self::push_issue(
+            issues,
+            ValidationIssue::new(
+                "metadata",
+                "METADATA_OPTIONAL_UNKNOWN",
+                format!(
+                    "optional unknown metadata GUID {} tolerated in non-strict mode",
+                    entry.item_id()
+                ),
+                "RELAX",
+            ),
+        );
+        Ok(())
+    }
 
-        // T18: pairwise overlap check for metadata items
+    fn validate_metadata_ranges_overlap(
+        ranges: &[(u32, u32, Guid)], issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
         for i in 0..ranges.len() {
             for j in (i + 1)..ranges.len() {
                 let (s1, e1, g1) = &ranges[i];
                 let (s2, e2, g2) = &ranges[j];
                 if *s1 < *e2 && *s2 < *e1 {
-                    Self::push_issue(&mut issues, ValidationIssue::new(
-                        "metadata",
-                        "METADATA_ITEMS_OVERLAP",
-                        format!("metadata items overlap: {g1} and {g2}"),
-                        "MS-VHDX/2.6.2",
-                    ));
+                    Self::push_issue(
+                        issues,
+                        ValidationIssue::new(
+                            "metadata",
+                            "METADATA_ITEMS_OVERLAP",
+                            format!("metadata items overlap: {g1} and {g2}"),
+                            "MS-VHDX/2.6.2",
+                        ),
+                    );
                     return Err(Error::InvalidMetadata(format!(
                         "METADATA_ITEMS_OVERLAP: metadata items overlap: {g1} and {g2}"
                     )));
                 }
             }
         }
+        Ok(())
+    }
 
-        // Check for corrupted (undersized) known required metadata items.
-        // Non-blocking: push_issue and continue for each undersized item.
-        {
-            let known_items: &[(&Guid, &str, u32)] = &[
-                (&StandardItems::FILE_PARAMETERS, "FileParameters", 8),
-                (&StandardItems::VIRTUAL_DISK_SIZE, "VirtualDiskSize", 8),
-                (&StandardItems::VIRTUAL_DISK_ID, "VirtualDiskId", 16),
-                (&StandardItems::LOGICAL_SECTOR_SIZE, "LogicalSectorSize", 4),
-                (&StandardItems::PHYSICAL_SECTOR_SIZE, "PhysicalSectorSize", 4),
-            ];
-            for &(guid, name, min_len) in known_items {
-                if let Ok(entry) = table.entry(guid) {
-                    if entry.length() > 0 && entry.length() < min_len {
-                        Self::push_issue(&mut issues, ValidationIssue::new(
-                            "metadata",
-                            "METADATA_ITEM_CORRUPTED",
-                            format!(
-                                "{name}: data length {} < expected minimum {} bytes",
-                                entry.length(),
-                                min_len
-                            ),
-                            "MS-VHDX/2.6.2",
-                        ));
-                    }
-                }
+    fn push_corrupted_known_metadata_items(
+        table: &crate::metadata::MetadataTable<'_>, issues: &mut Vec<ValidationIssue>,
+    ) {
+        let known_items: &[(&Guid, &str, u32)] = &[
+            (&StandardItems::FILE_PARAMETERS, "FileParameters", 8),
+            (&StandardItems::VIRTUAL_DISK_SIZE, "VirtualDiskSize", 8),
+            (&StandardItems::VIRTUAL_DISK_ID, "VirtualDiskId", 16),
+            (&StandardItems::LOGICAL_SECTOR_SIZE, "LogicalSectorSize", 4),
+            (
+                &StandardItems::PHYSICAL_SECTOR_SIZE,
+                "PhysicalSectorSize",
+                4,
+            ),
+        ];
+        for &(guid, name, min_len) in known_items {
+            if let Ok(entry) = table.entry(guid)
+                && entry.length() > 0
+                && entry.length() < min_len
+            {
+                Self::push_issue(
+                    issues,
+                    ValidationIssue::new(
+                        "metadata",
+                        "METADATA_ITEM_CORRUPTED",
+                        format!(
+                            "{name}: data length {} < expected minimum {} bytes",
+                            entry.length(),
+                            min_len
+                        ),
+                        "MS-VHDX/2.6.2",
+                    ),
+                );
             }
         }
-
-        Ok(issues)
     }
 
     /// Validate that all required metadata items are present.
     ///
     /// Required items (MS-VHDX §2.6.2):
-    /// - FileParameters
-    /// - VirtualDiskSize
-    /// - VirtualDiskId
-    /// - LogicalSectorSize
-    /// - PhysicalSectorSize
-    /// - ParentLocator (if differencing disk)
+    /// - `FileParameters`
+    /// - `VirtualDiskSize`
+    /// - `VirtualDiskId`
+    /// - `LogicalSectorSize`
+    /// - `PhysicalSectorSize`
+    /// - `ParentLocator` (if differencing disk)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when required metadata entries or required payloads are
+    /// missing.
     pub fn validate_required_metadata_items(&self) -> Result<Vec<ValidationIssue>> {
         let mut issues = Vec::new();
-        let meta_data = match self.metadata_region() {
-            Some(d) => d,
-            None => return Ok(issues),
+        let Some(meta_data) = self.metadata_region() else {
+            return Ok(issues);
         };
 
         let meta = crate::metadata::Metadata::new(meta_data)?;
         let items = meta.items();
 
-        // Check each required item
+        Self::validate_required_metadata_core(&meta, &items, &mut issues)?;
+        self.validate_required_parent_locator_item(&meta, &items, &mut issues)?;
+
+        Ok(issues)
+    }
+
+    fn validate_required_metadata_core(
+        meta: &crate::metadata::Metadata<'_>, items: &crate::metadata::MetadataItems<'_>,
+        issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
         let required_items: &[(&Guid, &str)] = &[
             (&StandardItems::FILE_PARAMETERS, "FileParameters"),
             (&StandardItems::VIRTUAL_DISK_SIZE, "VirtualDiskSize"),
@@ -1041,125 +1299,137 @@ impl<'a> SpecValidator<'a> {
             (&StandardItems::LOGICAL_SECTOR_SIZE, "LogicalSectorSize"),
             (&StandardItems::PHYSICAL_SECTOR_SIZE, "PhysicalSectorSize"),
         ];
-
         for (guid, name) in required_items {
-            if meta.table().entry(guid).is_err() {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+            Self::ensure_required_metadata_entry_present(meta, guid, name, issues)?;
+            Self::ensure_required_metadata_item_data_present(items, guid, name, issues)?;
+        }
+        Ok(())
+    }
+
+    fn ensure_required_metadata_entry_present(
+        meta: &crate::metadata::Metadata<'_>, guid: &Guid, name: &str,
+        issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        if meta.table().entry(guid).is_err() {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "metadata_required",
                     "METADATA_REQUIRED_MISSING",
                     format!("{name} entry not found in metadata table"),
                     "RELAX",
-                ));
-                return Err(Error::MetadataRequiredMissing {
-                    guid: **guid,
-                });
-            }
-            // Also verify data is present
-            match name {
-                &"FileParameters" => {
-                    let fp = match items.file_parameters() {
-                        Ok(fp) => fp,
-                        Err(_) => {
-                            Self::push_issue(&mut issues, ValidationIssue::new(
-                                "metadata_required",
-                                "METADATA_REQUIRED_MISSING",
-                                "FileParameters data not present",
-                                "RELAX",
-                            ));
-                            return Err(Error::MetadataRequiredMissing {
-                                guid: StandardItems::FILE_PARAMETERS,
-                            });
-                        }
-                    };
-                    // MS-VHDX §2.6.2.1: bits 2-31 of flags are reserved (MUST be 0).
-                    if fp.has_reserved_bits_set() {
-                        let fp_flags = fp.flags();
-                        Self::push_issue(&mut issues, ValidationIssue::new(
-                            "metadata_required",
-                            "METADATA_FILE_PARAMETERS_RESERVED_FLAGS",
-                            format!(
-                                "FileParameters reserved flags (bits 2-31) are set: {:#010x}",
-                                fp_flags
-                            ),
-                            "MS-VHDX/2.6.2.1",
-                        ));
-                    }
-                }
-                &"VirtualDiskSize" => {
-                    if items.virtual_disk_size().is_err() {
-                        Self::push_issue(&mut issues, ValidationIssue::new(
-                            "metadata_required",
-                            "METADATA_REQUIRED_MISSING",
-                            format!("{name} data not present"),
-                            "RELAX",
-                        ));
-                        return Err(Error::MetadataRequiredMissing { guid: **guid });
-                    }
-                }
-                &"VirtualDiskId" => {
-                    if items.virtual_disk_id().is_err() {
-                        Self::push_issue(&mut issues, ValidationIssue::new(
-                            "metadata_required",
-                            "METADATA_REQUIRED_MISSING",
-                            format!("{name} data not present"),
-                            "RELAX",
-                        ));
-                        return Err(Error::MetadataRequiredMissing { guid: **guid });
-                    }
-                }
-                &"LogicalSectorSize" => {
-                    if items.logical_sector_size().is_err() {
-                        Self::push_issue(&mut issues, ValidationIssue::new(
-                            "metadata_required",
-                            "METADATA_REQUIRED_MISSING",
-                            format!("{name} data not present"),
-                            "RELAX",
-                        ));
-                        return Err(Error::MetadataRequiredMissing { guid: **guid });
-                    }
-                }
-                &"PhysicalSectorSize" => {
-                    if items.physical_sector_size().is_err() {
-                        Self::push_issue(&mut issues, ValidationIssue::new(
-                            "metadata_required",
-                            "METADATA_REQUIRED_MISSING",
-                            format!("{name} data not present"),
-                            "RELAX",
-                        ));
-                        return Err(Error::MetadataRequiredMissing { guid: **guid });
-                    }
-                }
-                _ => {}
-            }
+                ),
+            );
+            return Err(Error::MetadataRequiredMissing { guid: *guid });
         }
+        Ok(())
+    }
 
-        // ParentLocator required for differencing disks
-        if self.has_parent() {
-            if meta.table().entry(&StandardItems::PARENT_LOCATOR).is_err() {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+    fn ensure_required_metadata_item_data_present(
+        items: &crate::metadata::MetadataItems<'_>, guid: &Guid, name: &str,
+        issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        match name {
+            "FileParameters" => Self::ensure_file_parameters_data(items, issues),
+            "VirtualDiskSize" if items.virtual_disk_size().is_err() => {
+                Self::push_required_data_missing(issues, name, *guid)
+            }
+            "VirtualDiskId" if items.virtual_disk_id().is_err() => {
+                Self::push_required_data_missing(issues, name, *guid)
+            }
+            "LogicalSectorSize" if items.logical_sector_size().is_err() => {
+                Self::push_required_data_missing(issues, name, *guid)
+            }
+            "PhysicalSectorSize" if items.physical_sector_size().is_err() => {
+                Self::push_required_data_missing(issues, name, *guid)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn ensure_file_parameters_data(
+        items: &crate::metadata::MetadataItems<'_>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        let Ok(fp) = items.file_parameters() else {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "metadata_required",
+                    "METADATA_REQUIRED_MISSING",
+                    "FileParameters data not present",
+                    "RELAX",
+                ),
+            );
+            return Err(Error::MetadataRequiredMissing {
+                guid: StandardItems::FILE_PARAMETERS,
+            });
+        };
+        if fp.has_reserved_bits_set() {
+            let fp_flags = fp.flags();
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "metadata_required",
+                    "METADATA_FILE_PARAMETERS_RESERVED_FLAGS",
+                    format!("FileParameters reserved flags (bits 2-31) are set: {fp_flags:#010x}"),
+                    "MS-VHDX/2.6.2.1",
+                ),
+            );
+        }
+        Ok(())
+    }
+
+    fn push_required_data_missing(
+        issues: &mut Vec<ValidationIssue>, name: &str, guid: Guid,
+    ) -> Result<()> {
+        Self::push_issue(
+            issues,
+            ValidationIssue::new(
+                "metadata_required",
+                "METADATA_REQUIRED_MISSING",
+                format!("{name} data not present"),
+                "RELAX",
+            ),
+        );
+        Err(Error::MetadataRequiredMissing { guid })
+    }
+
+    fn validate_required_parent_locator_item(
+        &self, meta: &crate::metadata::Metadata<'_>, items: &crate::metadata::MetadataItems<'_>,
+        issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        if !self.has_parent() {
+            return Ok(());
+        }
+        if meta.table().entry(&StandardItems::PARENT_LOCATOR).is_err() {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "metadata_required",
                     "METADATA_REQUIRED_MISSING",
                     "ParentLocator entry not found for differencing disk",
                     "RELAX",
-                ));
-                return Err(Error::MetadataRequiredMissing {
-                    guid: StandardItems::PARENT_LOCATOR,
-                });
-            }
-            if items.parent_locator().is_err() {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+                ),
+            );
+            return Err(Error::MetadataRequiredMissing {
+                guid: StandardItems::PARENT_LOCATOR,
+            });
+        }
+        if items.parent_locator().is_err() {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "metadata_required",
                     "METADATA_REQUIRED_MISSING",
                     "ParentLocator data not present for differencing disk",
                     "RELAX",
-                ));
-                return Err(Error::MetadataRequiredMissing {
-                    guid: StandardItems::PARENT_LOCATOR,
-                });
-            }
+                ),
+            );
+            return Err(Error::MetadataRequiredMissing {
+                guid: StandardItems::PARENT_LOCATOR,
+            });
         }
-
-        Ok(issues)
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -1176,168 +1446,229 @@ impl<'a> SpecValidator<'a> {
     /// - Descriptor signatures ("desc"/"zero")
     /// - Data sector signatures ("data") and SequenceHigh/Low consistency
     /// - Sequence continuity
-    /// - LogGuid matching header LogGuid
+    /// - `LogGuid` matching header `LogGuid`
     /// - Active sequence non-empty
+    ///
+    /// # Panics
+    ///
+    /// Panics if raw log entry pre-scan indexing invariants are violated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when log entry integrity or sequencing checks fail.
     pub fn validate_log(&self) -> Result<Vec<ValidationIssue>> {
         let mut issues = Vec::new();
-        let log_data = match self.log_region() {
-            Some(d) => d,
-            None => return Ok(issues), // No log or empty log
+        let Some(log_data) = self.log_region() else {
+            return Ok(issues);
         };
-
-        // Empty log is valid
-        if log_data.is_empty() {
+        if Self::log_region_is_empty_or_zero(log_data) {
             return Ok(issues);
         }
-
-        // Check if log is "all zeros" — this indicates no log entries
-        let is_all_zero = log_data.iter().all(|&b| b == 0);
-        if is_all_zero {
-            return Ok(issues);
-        }
-
         let log = crate::log::Log::new(log_data)?;
-        let header = self.parse_header()?;
-        let current = header.header(0)?;
-        let header_log_guid = current.log_guid();
+        let header_log_guid = Self::read_current_header_log_guid(&self.parse_header()?)?;
+        Self::prescan_log_signatures(log_data, &mut issues);
+        let entries: Vec<_> = log.entries().collect();
+        if entries.is_empty() {
+            return Ok(issues);
+        }
+        Self::validate_log_entries(&entries, header_log_guid, &mut issues)?;
+        Self::push_log_replay_required_issue(header_log_guid, &mut issues);
 
-        // Raw pre-scan: detect entries with invalid signatures that
-        // LogEntryIter silently skips (sets done=true, returns None).
-        // Log entry header layout (MS-VHDX §2.3.1.1):
-        //   [0..4]  Signature  [4..8]  Checksum  [8..12]  EntryLength
-        {
-            let mut scan_offset: usize = 0;
-            while scan_offset + 64 <= log_data.len() {
-                let sig = &log_data[scan_offset..scan_offset + 4];
-                if sig == b"loge" {
-                    // Valid signature — read EntryLength at offset+8 to advance
-                    let entry_length = u32::from_le_bytes(log_data[scan_offset + 8..scan_offset + 12].try_into().unwrap()) as usize;
-                    if entry_length > 0 && entry_length % 4096 == 0
-                        && scan_offset + entry_length <= log_data.len()
-                    {
-                        scan_offset += entry_length;
-                    } else {
-                        // Bad entry_length — skip to next 4KB boundary
-                        scan_offset += 4096;
-                    }
-                } else if sig == [0u8; 4] {
-                    // All-zero padding — end of log entries
-                    break;
-                } else if sig == b"data" {
-                    // Data sector signature (MS-VHDX §2.3.1.4) — not an
-                    // entry header; skip to next 4KB boundary.
-                    scan_offset += 4096;
+        Ok(issues)
+    }
+
+    fn log_region_is_empty_or_zero(log_data: &[u8]) -> bool {
+        log_data.is_empty() || log_data.iter().all(|&b| b == 0)
+    }
+
+    fn read_current_header_log_guid(header: &Header<'a>) -> Result<Guid> {
+        Ok(header.header(0)?.log_guid())
+    }
+
+    fn prescan_log_signatures(log_data: &[u8], issues: &mut Vec<ValidationIssue>) {
+        let mut scan_offset: usize = 0;
+        while scan_offset + 64 <= log_data.len() {
+            let sig = &log_data[scan_offset..scan_offset + 4];
+            if sig == b"loge" {
+                let entry_length = u32::from_le_bytes(
+                    log_data[scan_offset + 8..scan_offset + 12]
+                        .try_into()
+                        .expect("slice length checked by loop guard"),
+                ) as usize;
+                if entry_length > 0
+                    && entry_length.is_multiple_of(4096)
+                    && scan_offset + entry_length <= log_data.len()
+                {
+                    scan_offset += entry_length;
                 } else {
-                    // Invalid signature
-                    let mut found = [0u8; 4];
-                    found.copy_from_slice(sig);
-                    Self::push_issue(&mut issues, ValidationIssue::new(
-                        "log",
-                        "LOG_SIGNATURE_INVALID",
-                        format!("expected \"loge\", found {:?}", found),
-                        "MS-VHDX/2.3.1.1",
-                    ));
-                    // Skip to next 4KB boundary
                     scan_offset += 4096;
                 }
+            } else if sig == [0u8; 4] {
+                break;
+            } else if sig == b"data" {
+                scan_offset += 4096;
+            } else {
+                let mut found = [0u8; 4];
+                found.copy_from_slice(sig);
+                Self::push_issue(
+                    issues,
+                    ValidationIssue::new(
+                        "log",
+                        "LOG_SIGNATURE_INVALID",
+                        format!("expected \"loge\", found {found:?}"),
+                        "MS-VHDX/2.3.1.1",
+                    ),
+                );
+                scan_offset += 4096;
             }
         }
+    }
 
-        let entries: Vec<_> = log.entries().collect();
-
-        if entries.is_empty() {
-            return Ok(issues); // No valid entries found
-        }
-
+    fn validate_log_entries(
+        entries: &[crate::log::Entry<'_>], header_log_guid: Guid, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
         let mut prev_seq: Option<u64> = None;
+        for entry in entries {
+            let seq = Self::validate_log_entry(entry, header_log_guid, prev_seq, issues)?;
+            prev_seq = Some(seq);
+        }
+        Ok(())
+    }
 
-        for entry in &entries {
-            // Entry signature already validated by Log::parse_entry_at
-            // Verify CRC
-            if let Err(_e) = entry.verify_checksum() {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+    fn validate_log_entry(
+        entry: &crate::log::Entry<'_>, header_log_guid: Guid, prev_seq: Option<u64>,
+        issues: &mut Vec<ValidationIssue>,
+    ) -> Result<u64> {
+        Self::validate_log_entry_checksum(entry, issues)?;
+        let hdr = entry.header();
+        Self::validate_log_entry_length_and_tail(&hdr, issues)?;
+        Self::validate_log_entry_guid(&hdr, header_log_guid, issues)?;
+        let seq = Self::validate_log_sequence_continuity(&hdr, prev_seq, issues)?;
+        let data_sectors = Self::validate_log_data_sector_count(entry, issues)?;
+        Self::validate_log_data_sectors(&data_sectors, seq, issues)?;
+        Self::validate_log_descriptors(entry, seq, issues)?;
+        Ok(seq)
+    }
+
+    fn validate_log_entry_checksum(
+        entry: &crate::log::Entry<'_>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        if entry.verify_checksum().is_err() {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "log",
                     "LOG_ENTRY_CHECKSUM_MISMATCH",
                     "entry CRC-32C mismatch",
                     "MS-VHDX/2.3.1.1",
-                ));
-                return Err(Error::LogEntryCorrupted(
-                    "LOG_ENTRY_CHECKSUM_MISMATCH: entry CRC-32C mismatch".into(),
-                ));
-            }
+                ),
+            );
+            return Err(Error::LogEntryCorrupted(
+                "LOG_ENTRY_CHECKSUM_MISMATCH: entry CRC-32C mismatch".into(),
+            ));
+        }
+        Ok(())
+    }
 
-            let hdr = entry.header();
-
-            // Entry length must be 4KB multiple
-            let entry_length = hdr.entry_length();
-            if entry_length == 0 || entry_length % 4096 != 0 {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+    fn validate_log_entry_length_and_tail(
+        hdr: &crate::log::LogEntryHeader<'_>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        let entry_length = hdr.entry_length();
+        if entry_length == 0 || !entry_length.is_multiple_of(4096) {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "log",
                     "LOG_ENTRY_LENGTH_INVALID",
                     format!("entry_length={entry_length}"),
                     "MS-VHDX/2.3.1.1",
-                ));
-                return Err(Error::LogEntryCorrupted(format!(
-                    "LOG_ENTRY_LENGTH_INVALID: entry_length={entry_length}"
-                )));
-            }
-
-            // Tail must be 4KB multiple (or 0)
-            let tail = hdr.tail();
-            if tail % 4096 != 0 {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+                ),
+            );
+            return Err(Error::LogEntryCorrupted(format!(
+                "LOG_ENTRY_LENGTH_INVALID: entry_length={entry_length}"
+            )));
+        }
+        let tail = hdr.tail();
+        if !tail.is_multiple_of(4096) {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "log",
                     "LOG_ENTRY_TAIL_INVALID",
                     format!("tail={tail}"),
                     "MS-VHDX/2.3.1.1",
-                ));
-                return Err(Error::LogEntryCorrupted(format!(
-                    "LOG_ENTRY_TAIL_INVALID: tail={tail}"
-                )));
-            }
+                ),
+            );
+            return Err(Error::LogEntryCorrupted(format!(
+                "LOG_ENTRY_TAIL_INVALID: tail={tail}"
+            )));
+        }
+        Ok(())
+    }
 
-            // LogGuid must match header LogGuid
-            let entry_log_guid = hdr.log_guid();
-            let is_zero_guid = entry_log_guid.to_bytes() == [0u8; 16];
-            if !is_zero_guid && entry_log_guid != header_log_guid {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+    fn validate_log_entry_guid(
+        hdr: &crate::log::LogEntryHeader<'_>, header_log_guid: Guid,
+        issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        let entry_log_guid = hdr.log_guid();
+        let is_zero_guid = entry_log_guid.to_bytes() == [0u8; 16];
+        if !is_zero_guid && entry_log_guid != header_log_guid {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "log",
                     "LOG_SEQUENCE_GUID_MISMATCH",
                     format!("entry LogGuid {entry_log_guid} != header LogGuid {header_log_guid}"),
                     "MS-VHDX/2.3.2",
-                ));
-                return Err(Error::LogSequenceGuidMismatch { entry_log_guid, header_log_guid });
-            }
+                ),
+            );
+            return Err(Error::LogSequenceGuidMismatch {
+                entry_log_guid,
+                header_log_guid,
+            });
+        }
+        Ok(())
+    }
 
-            // Sequence number continuity
-            let seq = hdr.sequence_number();
-            if let Some(prev) = prev_seq {
-                if seq != prev + 1 {
-                    Self::push_issue(&mut issues, ValidationIssue::new(
-                        "log",
-                        "LOG_SEQUENCE_GAP",
-                        format!("seq {seq} does not follow {prev}"),
-                        "MS-VHDX/2.3.2",
-                    ));
-                    return Err(Error::LogSequenceGap { expected: prev + 1, found: seq });
-                }
-            }
-            prev_seq = Some(seq);
+    fn validate_log_sequence_continuity(
+        hdr: &crate::log::LogEntryHeader<'_>, prev_seq: Option<u64>,
+        issues: &mut Vec<ValidationIssue>,
+    ) -> Result<u64> {
+        let seq = hdr.sequence_number();
+        if let Some(prev) = prev_seq
+            && seq != prev + 1
+        {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "log",
+                    "LOG_SEQUENCE_GAP",
+                    format!("seq {seq} does not follow {prev}"),
+                    "MS-VHDX/2.3.2",
+                ),
+            );
+            return Err(Error::LogSequenceGap {
+                expected: prev + 1,
+                found: seq,
+            });
+        }
+        Ok(seq)
+    }
 
-            // Descriptor count validation
-            let _desc_count = hdr.descriptor_count();
-            let actual_data_descs: usize = entry
-                .descriptors()
-                .filter_map(|d| d.ok())
-                .filter(|d| {
-                    matches!(d, crate::log::Descriptor::Data(_))
-                })
-                .count();
-
-            // Check data sector count matches data descriptors
-            let data_sectors: Vec<_> = entry.data().collect();
-            if data_sectors.len() != actual_data_descs {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+    fn validate_log_data_sector_count<'b>(
+        entry: &'b crate::log::Entry<'b>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<Vec<crate::log::DataSector<'b>>> {
+        let _desc_count = entry.header().descriptor_count();
+        let actual_data_descs: usize = entry
+            .descriptors()
+            .filter_map(std::result::Result::ok)
+            .filter(|d| matches!(d, crate::log::Descriptor::Data(_)))
+            .count();
+        let data_sectors: Vec<_> = entry.data().collect();
+        if data_sectors.len() != actual_data_descs {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "log",
                     "LOG_DESCRIPTOR_COUNT_MISMATCH",
                     format!(
@@ -1346,106 +1677,109 @@ impl<'a> SpecValidator<'a> {
                         actual_data_descs
                     ),
                     "MS-VHDX/2.3.1",
-                ));
-                return Err(Error::LogEntryCorrupted(format!(
-                    "LOG_DESCRIPTOR_COUNT_MISMATCH: data sectors ({}) != data descriptors ({})",
-                    data_sectors.len(),
-                    actual_data_descs
-                )));
-            }
+                ),
+            );
+            return Err(Error::LogEntryCorrupted(format!(
+                "LOG_DESCRIPTOR_COUNT_MISMATCH: data sectors ({}) != data descriptors ({})",
+                data_sectors.len(),
+                actual_data_descs
+            )));
+        }
+        Ok(data_sectors)
+    }
 
-            // Validate data sectors
-            for sector in &data_sectors {
-                let sig = sector.signature();
-                if sig != b"data" {
-                    Self::push_issue(&mut issues, ValidationIssue::new(
+    fn validate_log_data_sectors(
+        data_sectors: &[crate::log::DataSector<'_>], seq: u64, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        for sector in data_sectors {
+            let sig = sector.signature();
+            if sig != b"data" {
+                Self::push_issue(
+                    issues,
+                    ValidationIssue::new(
                         "log",
                         "LOG_DATA_SECTOR_INVALID",
                         "invalid data sector signature",
                         "MS-VHDX/2.3.1.4",
-                    ));
-                    return Err(Error::InvalidSignature {
-                        position: SignaturePosition::DataSector,
-                        expected: crate::error::pad_signature_4to8(b"data"),
-                        found: crate::error::pad_signature_4to8(sig),
-                    });
-                }
-
-                // SequenceHigh + SequenceLow should match entry sequence number
-                let sector_seq = sector.sequence_number();
-                if sector_seq != seq {
-                    Self::push_issue(&mut issues, ValidationIssue::new(
+                    ),
+                );
+                return Err(Error::InvalidSignature {
+                    position: SignaturePosition::DataSector,
+                    expected: crate::error::pad_signature_4to8(*b"data"),
+                    found: crate::error::pad_signature_4to8(*sig),
+                });
+            }
+            let sector_seq = sector.sequence_number();
+            if sector_seq != seq {
+                Self::push_issue(
+                    issues,
+                    ValidationIssue::new(
                         "log",
                         "LOG_DATA_SECTOR_INVALID",
                         format!("sector seq {sector_seq} != entry seq {seq}"),
                         "MS-VHDX/2.3.1.4",
-                    ));
-                    return Err(Error::LogEntryCorrupted(format!(
-                        "LOG_DATA_SECTOR_INVALID: sector seq {sector_seq} != entry seq {seq}"
-                    )));
-                }
+                    ),
+                );
+                return Err(Error::LogEntryCorrupted(format!(
+                    "LOG_DATA_SECTOR_INVALID: sector seq {sector_seq} != entry seq {seq}"
+                )));
             }
+        }
+        Ok(())
+    }
 
-            // Validate descriptors
-            for desc_result in entry.descriptors() {
-                let desc = match desc_result {
-                    Ok(d) => d,
-                    Err(e) => {
-                        Self::push_issue(&mut issues, ValidationIssue::new(
+    fn validate_log_descriptors(
+        entry: &crate::log::Entry<'_>, seq: u64, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        for desc_result in entry.descriptors() {
+            let desc = match desc_result {
+                Ok(d) => d,
+                Err(e) => {
+                    Self::push_issue(
+                        issues,
+                        ValidationIssue::new(
                             "log",
                             "LOG_DESCRIPTOR_SIGNATURE_INVALID",
                             format!("{e}"),
                             "MS-VHDX/2.3.1",
-                        ));
-                        return Err(Error::LogEntryCorrupted(format!(
-                            "LOG_DESCRIPTOR_SIGNATURE_INVALID: {e}"
-                        )));
-                    }
-                };
-                // Each descriptor's sequence number must match entry
-                let desc_seq = desc.sequence_number();
-                if desc_seq != seq {
-                    Self::push_issue(&mut issues, ValidationIssue::new(
+                        ),
+                    );
+                    return Err(Error::LogEntryCorrupted(format!(
+                        "LOG_DESCRIPTOR_SIGNATURE_INVALID: {e}"
+                    )));
+                }
+            };
+            let desc_seq = desc.sequence_number();
+            if desc_seq != seq {
+                Self::push_issue(
+                    issues,
+                    ValidationIssue::new(
                         "log",
                         "LOG_DESCRIPTOR_SEQUENCE_MISMATCH",
                         format!("descriptor seq {desc_seq} != entry seq {seq}"),
                         "MS-VHDX/2.3.1",
-                    ));
-                    return Err(Error::LogEntryCorrupted(format!(
-                        "LOG_DESCRIPTOR_SEQUENCE_MISMATCH: descriptor seq {desc_seq} != entry seq {seq}"
-                    )));
-                }
+                    ),
+                );
+                return Err(Error::LogEntryCorrupted(format!(
+                    "LOG_DESCRIPTOR_SEQUENCE_MISMATCH: descriptor seq {desc_seq} != entry seq {seq}"
+                )));
             }
         }
+        Ok(())
+    }
 
-        // Active sequence non-empty check
-        if entries.is_empty() {
-            Self::push_issue(&mut issues, ValidationIssue::new(
-                "log",
-                "LOG_ACTIVE_SEQUENCE_EMPTY",
-                "no valid log entries",
-                "MS-VHDX/2.3.3",
-            ));
-            return Err(Error::LogActiveSequenceEmpty);
-        }
-
-        // LOG_REPLAY_REQUIRED — non-blocking status hint
-        //
-        // Per MS-VHDX-校验扩展标准 §4.5:
-        // When a replayable log exists, emit LOG_REPLAY_REQUIRED as a
-        // non-blocking ValidationIssue.  This is distinct from the blocking
-        // Error::LogReplayRequired that the open path returns for Require
-        // policy — here it is purely informational.
+    fn push_log_replay_required_issue(header_log_guid: Guid, issues: &mut Vec<ValidationIssue>) {
         if header_log_guid != Guid::zero() {
-            Self::push_issue(&mut issues, ValidationIssue::new(
-                "log",
-                "LOG_REPLAY_REQUIRED",
-                "replayable log entries exist (use --log-replay to replay)",
-                "ROEXT",
-            ));
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "log",
+                    "LOG_REPLAY_REQUIRED",
+                    "replayable log entries exist (use --log-replay to replay)",
+                    "ROEXT",
+                ),
+            );
         }
-
-        Ok(issues)
     }
 
     // -----------------------------------------------------------------------
@@ -1457,43 +1791,54 @@ impl<'a> SpecValidator<'a> {
     /// Checks:
     /// - `parent_linkage` key exists
     /// - `parent_linkage2` key absent (conflict)
-    /// - At least one path entry (relative_path, volume_path, absolute_win32_path)
+    /// - At least one path entry (`relative_path`, `volume_path`, `absolute_win32_path`)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when required locator keys are missing, conflicting, or
+    /// invalid.
     pub fn validate_parent_locator(&self) -> Result<Vec<ValidationIssue>> {
         let mut issues = Vec::new();
-        let meta_data = match self.metadata_region() {
-            Some(d) => d,
-            None => return Ok(issues),
+        let Some(meta_data) = self.metadata_region() else {
+            return Ok(issues);
         };
 
         let meta = crate::metadata::Metadata::new(meta_data)?;
-        let locator = match meta.items().parent_locator() {
-            Ok(l) => l,
-            Err(_) => return Ok(issues), // No parent locator → nothing to validate
+        let Ok(locator) = meta.items().parent_locator() else {
+            return Ok(issues);
         };
+        let parent_linkage_guid = Self::validate_parent_locator_keys(&locator, &mut issues)?;
+        Self::validate_parent_locator_data_write_guid(parent_linkage_guid, &locator, &mut issues)?;
 
+        Ok(issues)
+    }
+
+    fn validate_parent_locator_keys(
+        locator: &crate::metadata::ParentLocator<'_>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<Option<Guid>> {
         let kv_data = locator.key_value_data();
         let mut has_parent_linkage = false;
         let mut has_path = false;
         let mut parent_linkage_guid: Option<Guid> = None;
-
         for kv in locator.entries() {
             let key = kv.key(kv_data)?;
-
             match key.as_str() {
                 "parent_linkage" => {
                     has_parent_linkage = true;
-                    // Capture the GUID value for DataWriteGuid check
                     if let Ok(value) = kv.value(kv_data) {
                         parent_linkage_guid = parse_guid_from_braced_string(&value);
                     }
                 }
                 "parent_linkage2" => {
-                    Self::push_issue(&mut issues, ValidationIssue::new(
-                        "parent_locator",
-                        "PARENT_LOCATOR_LINKAGE2_CONFLICT",
-                        "parent_linkage2 present",
-                        "MS-VHDX/2.6.2.6.3",
-                    ));
+                    Self::push_issue(
+                        issues,
+                        ValidationIssue::new(
+                            "parent_locator",
+                            "PARENT_LOCATOR_LINKAGE2_CONFLICT",
+                            "parent_linkage2 present",
+                            "MS-VHDX/2.6.2.6.3",
+                        ),
+                    );
                     return Err(Error::ParentLocatorLinkage2Conflict);
                 }
                 "relative_path" | "volume_path" | "absolute_win32_path" => {
@@ -1502,69 +1847,83 @@ impl<'a> SpecValidator<'a> {
                 _ => {}
             }
         }
-
         if !has_parent_linkage {
-            Self::push_issue(&mut issues, ValidationIssue::new(
-                "parent_locator",
-                "PARENT_LOCATOR_MISSING_LINKAGE",
-                "parent_linkage key not found",
-                "MS-VHDX/2.6.2.6.3",
-            ));
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "parent_locator",
+                    "PARENT_LOCATOR_MISSING_LINKAGE",
+                    "parent_linkage key not found",
+                    "MS-VHDX/2.6.2.6.3",
+                ),
+            );
             return Err(Error::ParentLocatorMissingLinkage);
         }
-
         if !has_path {
-            Self::push_issue(&mut issues, ValidationIssue::new(
-                "parent_locator",
-                "PARENT_LOCATOR_NO_VALID_PATH",
-                "no valid parent path (relative_path/volume_path/absolute_win32_path)",
-                "MS-VHDX/2.6.2.6.3",
-            ));
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "parent_locator",
+                    "PARENT_LOCATOR_NO_VALID_PATH",
+                    "no valid parent path (relative_path/volume_path/absolute_win32_path)",
+                    "MS-VHDX/2.6.2.6.3",
+                ),
+            );
             return Err(Error::ParentNotFound);
         }
+        Ok(parent_linkage_guid)
+    }
 
-        // DataWriteGuid check: compare child's parent_linkage GUID with
-        // parent's actual DataWriteGuid. Skip if parent file is inaccessible.
-        if let Some(expected_linkage) = parent_linkage_guid {
-            if let Ok(parent_path_buf) = locator.resolve_parent_path() {
-                use std::io::Read;
-                if let Ok(mut parent_file) = std::fs::File::open(&parent_path_buf) {
-                    let mut parent_header_buf = vec![0u8; 1024 * 1024];
-                    if let Ok(bytes_read) = parent_file.read(&mut parent_header_buf) {
-                        if bytes_read >= 8 {
-                            parent_header_buf.truncate(bytes_read);
-                            let expected_sig: [u8; 8] = [
-                                0x76, 0x68, 0x64, 0x78, 0x66, 0x69, 0x6C, 0x65,
-                            ];
-                            if parent_header_buf[..8] == expected_sig {
-                                if let Ok(parent_header) = crate::header::Header::new(&parent_header_buf) {
-                                    if let Ok(parent_current) = parent_header.header(0) {
-                                        let parent_data_write_guid = parent_current.data_write_guid();
-                                        if parent_data_write_guid != expected_linkage {
-                                            Self::push_issue(&mut issues, ValidationIssue::new(
-                                                "parent_locator",
-                                                "PARENT_LOCATOR_GUID_MISMATCH",
-                                                format!(
-                                                    "DataWriteGuid mismatch: expected {}, actual {}",
-                                                    expected_linkage, parent_data_write_guid
-                                                ),
-                                                "MS-VHDX/2.6.2.6",
-                                            ));
-                                            return Err(Error::ParentMismatch {
-                                                expected: expected_linkage,
-                                                actual: parent_data_write_guid,
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    fn validate_parent_locator_data_write_guid(
+        parent_linkage_guid: Option<Guid>, locator: &crate::metadata::ParentLocator<'_>,
+        issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        let Some(expected_linkage) = parent_linkage_guid else {
+            return Ok(());
+        };
+        let Ok(parent_path_buf) = locator.resolve_parent_path() else {
+            return Ok(());
+        };
+        let Some(parent_data_write_guid) = Self::read_parent_data_write_guid(&parent_path_buf)
+        else {
+            return Ok(());
+        };
+        if parent_data_write_guid != expected_linkage {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "parent_locator",
+                    "PARENT_LOCATOR_GUID_MISMATCH",
+                    format!(
+                        "DataWriteGuid mismatch: expected {expected_linkage}, actual {parent_data_write_guid}"
+                    ),
+                    "MS-VHDX/2.6.2.6",
+                ),
+            );
+            return Err(Error::ParentMismatch {
+                expected: expected_linkage,
+                actual: parent_data_write_guid,
+            });
         }
+        Ok(())
+    }
 
-        Ok(issues)
+    fn read_parent_data_write_guid(parent_path_buf: &std::path::Path) -> Option<Guid> {
+        use std::io::Read;
+        let mut parent_file = std::fs::File::open(parent_path_buf).ok()?;
+        let mut parent_header_buf = vec![0u8; 1024 * 1024];
+        let bytes_read = parent_file.read(&mut parent_header_buf).ok()?;
+        if bytes_read < 8 {
+            return None;
+        }
+        parent_header_buf.truncate(bytes_read);
+        let expected_sig: [u8; 8] = [0x76, 0x68, 0x64, 0x78, 0x66, 0x69, 0x6C, 0x65];
+        if parent_header_buf[..8] != expected_sig {
+            return None;
+        }
+        let parent_header = crate::header::Header::new(&parent_header_buf).ok()?;
+        let parent_current = parent_header.header(0).ok()?;
+        Some(parent_current.data_write_guid())
     }
 
     // -----------------------------------------------------------------------
@@ -1577,207 +1936,240 @@ impl<'a> SpecValidator<'a> {
     /// with the child's expected `parent_linkage` GUID.
     ///
     /// Returns [`ParentChainInfo`](crate::ParentChainInfo) on success.
+    #[cfg(test)]
     pub(crate) fn validate_parent_chain(&self) -> Result<crate::file::ParentChainInfo> {
         let mut issues = Vec::new();
-        let meta_data = match self.metadata_region() {
-            Some(d) => d,
-            None => {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+        let locator = self.load_parent_chain_locator(&mut issues)?;
+        let expected_linkage = Self::extract_expected_parent_linkage(&locator, &mut issues)?;
+        let parent_path_buf = Self::resolve_parent_chain_path(&locator, &mut issues)?;
+        let parent_data_write_guid =
+            Self::read_parent_chain_data_write_guid(&parent_path_buf, &mut issues)?;
+        Self::validate_parent_chain_linkage(expected_linkage, parent_data_write_guid, &mut issues)?;
+
+        let child = self
+            .child_path
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from("<unknown>"));
+        Ok(crate::file::ParentChainInfo {
+            _child_path: child,
+            _parent_path: parent_path_buf,
+            _linkage_matched: true,
+        })
+    }
+
+    #[cfg(test)]
+    fn load_parent_chain_locator<'b>(
+        &'b self, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<crate::metadata::ParentLocator<'b>> {
+        let Some(meta_data) = self.metadata_region() else {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "parent_locator",
                     "PARENT_LOCATOR_FORMAT_ERROR",
                     "no metadata region",
                     "VALEXT",
-                ));
-                return Err(Error::ParentNotFound);
-            }
+                ),
+            );
+            return Err(Error::ParentNotFound);
         };
-
         let meta = crate::metadata::Metadata::new(meta_data)?;
-        let locator = match meta.items().parent_locator() {
-            Ok(l) => l,
-            Err(_) => {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+        let Ok(locator) = meta.items().parent_locator() else {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "parent_locator",
                     "PARENT_LOCATOR_MISSING_LINKAGE",
                     "no parent locator",
                     "MS-VHDX/2.6.2.6.3",
-                ));
-                return Err(Error::ParentLocatorMissingLinkage);
-            }
+                ),
+            );
+            return Err(Error::ParentLocatorMissingLinkage);
         };
+        Ok(locator)
+    }
 
-        // Extract the expected parent_linkage GUID from the locator BEFORE
-        // resolving the path, so format errors are caught regardless of
-        // whether the parent file exists on disk.
-        // The value is a UTF-16LE string: "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}"
-        // with lowercase hex digits and enclosing braces.
+    #[cfg(test)]
+    fn extract_expected_parent_linkage(
+        locator: &crate::metadata::ParentLocator<'_>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<Guid> {
         let kv_data = locator.key_value_data();
         let mut expected_linkage: Option<Guid> = None;
-
         for kv in locator.entries() {
-            let key = match kv.key(kv_data) {
-                Ok(k) => k,
-                Err(_) => continue,
-            };
+            let Ok(key) = kv.key(kv_data) else { continue };
             if key == "parent_linkage2" {
-                Self::push_issue(&mut issues, ValidationIssue::new(
-                    "parent_locator",
-                    "PARENT_LOCATOR_LINKAGE2_CONFLICT",
-                    "parent_linkage2 present",
-                    "MS-VHDX/2.6.2.6.3",
-                ));
+                Self::push_issue(
+                    issues,
+                    ValidationIssue::new(
+                        "parent_locator",
+                        "PARENT_LOCATOR_LINKAGE2_CONFLICT",
+                        "parent_linkage2 present",
+                        "MS-VHDX/2.6.2.6.3",
+                    ),
+                );
                 return Err(Error::ParentLocatorLinkage2Conflict);
             }
             if key == "parent_linkage" {
-                let value = match kv.value(kv_data) {
-                    Ok(v) => v,
-                    Err(_) => continue,
+                let Ok(value) = kv.value(kv_data) else {
+                    continue;
                 };
                 expected_linkage = parse_guid_from_braced_string(&value);
             }
         }
-
-        let expected_linkage = match expected_linkage {
-            Some(g) => g,
-            None => {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+        let Some(expected_linkage) = expected_linkage else {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "parent_locator",
                     "PARENT_LOCATOR_FORMAT_ERROR",
                     "parent_linkage value is not a valid GUID format",
                     "VALEXT",
-                ));
-                return Err(Error::InvalidParentLocator(
-                    "parent_linkage value is not a valid GUID format".into(),
-                ));
-            }
+                ),
+            );
+            return Err(Error::InvalidParentLocator(
+                "parent_linkage value is not a valid GUID format".into(),
+            ));
         };
+        Ok(expected_linkage)
+    }
 
-        // Resolve the parent path (checks accessibility via std::fs::metadata)
-        let parent_path_buf = match locator.resolve_parent_path() {
-            Ok(p) => p,
-            Err(_) => {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+    #[cfg(test)]
+    fn resolve_parent_chain_path(
+        locator: &crate::metadata::ParentLocator<'_>, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<std::path::PathBuf> {
+        let Ok(parent_path_buf) = locator.resolve_parent_path() else {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "parent_locator",
                     "PARENT_LOCATOR_NO_VALID_PATH",
                     "unresolvable parent path",
                     "MS-VHDX/2.6.2.6.3",
-                ));
-                return Err(Error::ParentNotFound);
-            }
+                ),
+            );
+            return Err(Error::ParentNotFound);
         };
+        Ok(parent_path_buf)
+    }
 
-        // Try to open parent and get its DataWriteGuid
+    #[cfg(test)]
+    fn read_parent_chain_data_write_guid(
+        parent_path_buf: &std::path::PathBuf, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<Guid> {
         use std::io::Read;
-
-        let mut parent_file = match std::fs::File::open(&parent_path_buf) {
-            Ok(f) => f,
-            Err(_) => {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+        let Ok(mut parent_file) = std::fs::File::open(parent_path_buf) else {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "parent_locator",
                     "PARENT_LOCATOR_NO_VALID_PATH",
                     format!("unable to open parent file: {}", parent_path_buf.display()),
                     "MS-VHDX/2.6.2.6.3",
-                ));
-                return Err(Error::ParentNotFound);
-            }
+                ),
+            );
+            return Err(Error::ParentNotFound);
         };
-
-        // Read the parent's first 1 MB header section
         let mut parent_header_buf = vec![0u8; 1024 * 1024];
-        let bytes_read = match parent_file.read(&mut parent_header_buf) {
-            Ok(n) => n,
-            Err(_) => {
-                Self::push_issue(&mut issues, ValidationIssue::new(
+        let Ok(bytes_read) = parent_file.read(&mut parent_header_buf) else {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
                     "parent_locator",
                     "PARENT_LOCATOR_FORMAT_ERROR",
                     format!("failed to read parent file: {}", parent_path_buf.display()),
                     "VALEXT",
-                ));
-                return Err(Error::ParentNotFound);
-            }
-        };
-
-        if bytes_read < 8 {
-            Self::push_issue(&mut issues, ValidationIssue::new(
-                "parent_locator",
-                    "PARENT_LOCATOR_FORMAT_ERROR",
-                    format!("parent file too small ({} bytes): {}", bytes_read, parent_path_buf.display()),
-                    "VALEXT",
-            ));
-            return Err(Error::ParentNotFound);
-        }
-
-        parent_header_buf.truncate(bytes_read);
-
-        // Validate parent's vhdxfile signature
-        let sig = &parent_header_buf[..8];
-        let expected_sig: [u8; 8] = [
-            0x76, 0x68, 0x64, 0x78, 0x66, 0x69, 0x6C, 0x65,
-        ];
-        if sig != expected_sig {
-            Self::push_issue(&mut issues, ValidationIssue::new(
-                "parent_locator",
-                    "PARENT_LOCATOR_FORMAT_ERROR",
-                    format!("parent file is not a valid VHDX: {}", parent_path_buf.display()),
-                    "VALEXT",
-            ));
-            return Err(Error::ParentNotFound);
-        }
-
-        // Parse the parent header to get DataWriteGuid
-        let parent_header = match Header::new(&parent_header_buf) {
-            Ok(h) => h,
-            Err(_) => {
-                Self::push_issue(&mut issues, ValidationIssue::new(
-                    "parent_locator",
-                    "PARENT_LOCATOR_FORMAT_ERROR",
-                    format!("failed to parse parent header: {}", parent_path_buf.display()),
-                    "VALEXT",
-                ));
-                return Err(Error::ParentNotFound);
-            }
-        };
-
-        let parent_current = match parent_header.header(0) {
-            Ok(h) => h,
-            Err(_) => {
-                Self::push_issue(&mut issues, ValidationIssue::new(
-                    "parent_locator",
-                    "PARENT_LOCATOR_FORMAT_ERROR",
-                    format!("failed to get current parent header: {}", parent_path_buf.display()),
-                    "VALEXT",
-                ));
-                return Err(Error::ParentNotFound);
-            }
-        };
-
-        let parent_data_write_guid = parent_current.data_write_guid();
-
-        // Compare with expected linkage
-        let linkage_matched = parent_data_write_guid == expected_linkage;
-
-        if !linkage_matched {
-            Self::push_issue(&mut issues, ValidationIssue::new(
-                "parent_locator",
-                "PARENT_LOCATOR_GUID_MISMATCH",
-                format!(
-                    "DataWriteGuid mismatch: expected {}, actual {}",
-                    expected_linkage, parent_data_write_guid
                 ),
-                "MS-VHDX/2.6.2.6",
-            ));
+            );
+            return Err(Error::ParentNotFound);
+        };
+        if bytes_read < 8 {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "parent_locator",
+                    "PARENT_LOCATOR_FORMAT_ERROR",
+                    format!(
+                        "parent file too small ({} bytes): {}",
+                        bytes_read,
+                        parent_path_buf.display()
+                    ),
+                    "VALEXT",
+                ),
+            );
+            return Err(Error::ParentNotFound);
+        }
+        parent_header_buf.truncate(bytes_read);
+        let expected_sig: [u8; 8] = [0x76, 0x68, 0x64, 0x78, 0x66, 0x69, 0x6C, 0x65];
+        if parent_header_buf[..8] != expected_sig {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "parent_locator",
+                    "PARENT_LOCATOR_FORMAT_ERROR",
+                    format!(
+                        "parent file is not a valid VHDX: {}",
+                        parent_path_buf.display()
+                    ),
+                    "VALEXT",
+                ),
+            );
+            return Err(Error::ParentNotFound);
+        }
+        let Ok(parent_header) = Header::new(&parent_header_buf) else {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "parent_locator",
+                    "PARENT_LOCATOR_FORMAT_ERROR",
+                    format!(
+                        "failed to parse parent header: {}",
+                        parent_path_buf.display()
+                    ),
+                    "VALEXT",
+                ),
+            );
+            return Err(Error::ParentNotFound);
+        };
+        let Ok(parent_current) = parent_header.header(0) else {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "parent_locator",
+                    "PARENT_LOCATOR_FORMAT_ERROR",
+                    format!(
+                        "failed to get current parent header: {}",
+                        parent_path_buf.display()
+                    ),
+                    "VALEXT",
+                ),
+            );
+            return Err(Error::ParentNotFound);
+        };
+        Ok(parent_current.data_write_guid())
+    }
+
+    #[cfg(test)]
+    fn validate_parent_chain_linkage(
+        expected_linkage: Guid, parent_data_write_guid: Guid, issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        if parent_data_write_guid != expected_linkage {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "parent_locator",
+                    "PARENT_LOCATOR_GUID_MISMATCH",
+                    format!(
+                        "DataWriteGuid mismatch: expected {expected_linkage}, actual {parent_data_write_guid}"
+                    ),
+                    "MS-VHDX/2.6.2.6",
+                ),
+            );
             return Err(Error::ParentMismatch {
                 expected: expected_linkage,
                 actual: parent_data_write_guid,
             });
         }
-
-        let child = self.child_path.clone().unwrap_or_else(|| std::path::PathBuf::from("<unknown>"));
-        Ok(crate::file::ParentChainInfo::new(
-            child,
-            parent_path_buf,
-            linkage_matched,
-        ))
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -1793,8 +2185,8 @@ impl<'a> SpecValidator<'a> {
     fn log_region(&self) -> Option<&'a [u8]> {
         let header = self.parse_header().ok()?;
         let current = header.header(0).ok()?;
-        let log_offset = current.log_offset() as usize;
-        let log_length = current.log_length() as usize;
+        let log_offset = usize::try_from(current.log_offset()).ok()?;
+        let log_length = usize::try_from(current.log_length()).ok()?;
 
         if log_offset == 0 && log_length == 0 {
             return None;
@@ -1814,8 +2206,8 @@ impl<'a> SpecValidator<'a> {
         let rt = header.region_table(0).ok()?;
         for entry in rt.entries() {
             if entry.guid() == *guid {
-                let offset = entry.file_offset() as usize;
-                let length = entry.length() as usize;
+                let offset = usize::try_from(entry.file_offset()).ok()?;
+                let length = usize::try_from(entry.length()).ok()?;
                 let end = offset.checked_add(length)?;
                 if end <= self.data.len() {
                     return Some(&self.data[offset..end]);
@@ -1829,8 +2221,8 @@ impl<'a> SpecValidator<'a> {
     fn bat_region(&self) -> Option<&'a [u8]> {
         // BAT region GUID: 2DC27766-F623-4200-9D64-115E9BFD4A08
         const BAT_GUID: Guid = Guid::from_bytes([
-            0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42,
-            0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD, 0x4A, 0x08,
+            0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42, 0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD,
+            0x4A, 0x08,
         ]);
         self.region_for_guid(&BAT_GUID)
     }
@@ -1839,34 +2231,33 @@ impl<'a> SpecValidator<'a> {
     fn metadata_region(&self) -> Option<&'a [u8]> {
         // Metadata region GUID: 8B7CA206-4790-4B9A-B8FE-575F050F886E
         const METADATA_GUID: Guid = Guid::from_bytes([
-            0x06, 0xA2, 0x7C, 0x8B, 0x90, 0x47, 0x9A, 0x4B,
-            0xB8, 0xFE, 0x57, 0x5F, 0x05, 0x0F, 0x88, 0x6E,
+            0x06, 0xA2, 0x7C, 0x8B, 0x90, 0x47, 0x9A, 0x4B, 0xB8, 0xFE, 0x57, 0x5F, 0x05, 0x0F,
+            0x88, 0x6E,
         ]);
         self.region_for_guid(&METADATA_GUID)
     }
 
-    /// Determine whether this is a differencing disk (has_parent flag).
+    /// Determine whether this is a differencing disk (`has_parent` flag).
     fn has_parent(&self) -> bool {
-        if let Some(meta_data) = self.metadata_region() {
-            if let Ok(meta) = crate::metadata::Metadata::new(meta_data) {
-                if let Ok(fp) = meta.items().file_parameters() {
-                    return fp.has_parent();
-                }
-            }
+        if let Some(meta_data) = self.metadata_region()
+            && let Ok(meta) = crate::metadata::Metadata::new(meta_data)
+            && let Ok(fp) = meta.items().file_parameters()
+        {
+            return fp.has_parent();
         }
         false
     }
 
-    /// Extract the current header's LogGuid.
-    fn current_log_guid(&self, header: &Header<'a>) -> Result<Guid> {
+    /// Extract the current header's `LogGuid`.
+    fn current_log_guid(header: &Header<'a>) -> Result<Guid> {
         let current = header.header(0)?;
         Ok(current.log_guid())
     }
 
     /// Compute the chunk ratio for BAT interpretation.
     fn chunk_ratio(&self) -> u64 {
-        let block_size = self.block_size() as u64;
-        let logical_sector_size = self.logical_sector_size() as u64;
+        let block_size = u64::from(self.block_size());
+        let logical_sector_size = u64::from(self.logical_sector_size());
         if block_size == 0 || logical_sector_size == 0 {
             return 0;
         }
@@ -1875,36 +2266,33 @@ impl<'a> SpecValidator<'a> {
 
     /// Get block size from metadata.
     fn block_size(&self) -> u32 {
-        if let Some(meta_data) = self.metadata_region() {
-            if let Ok(meta) = crate::metadata::Metadata::new(meta_data) {
-                if let Ok(fp) = meta.items().file_parameters() {
-                    return fp.block_size();
-                }
-            }
+        if let Some(meta_data) = self.metadata_region()
+            && let Ok(meta) = crate::metadata::Metadata::new(meta_data)
+            && let Ok(fp) = meta.items().file_parameters()
+        {
+            return fp.block_size();
         }
         0
     }
 
     /// Get logical sector size from metadata.
     fn logical_sector_size(&self) -> u32 {
-        if let Some(meta_data) = self.metadata_region() {
-            if let Ok(meta) = crate::metadata::Metadata::new(meta_data) {
-                if let Ok(lss) = meta.items().logical_sector_size() {
-                    return lss;
-                }
-            }
+        if let Some(meta_data) = self.metadata_region()
+            && let Ok(meta) = crate::metadata::Metadata::new(meta_data)
+            && let Ok(lss) = meta.items().logical_sector_size()
+        {
+            return lss;
         }
         0
     }
 
     /// Get virtual disk size from metadata.
     fn virtual_disk_size(&self) -> u64 {
-        if let Some(meta_data) = self.metadata_region() {
-            if let Ok(meta) = crate::metadata::Metadata::new(meta_data) {
-                if let Ok(vds) = meta.items().virtual_disk_size() {
-                    return vds;
-                }
-            }
+        if let Some(meta_data) = self.metadata_region()
+            && let Ok(meta) = crate::metadata::Metadata::new(meta_data)
+            && let Ok(vds) = meta.items().virtual_disk_size()
+        {
+            return vds;
         }
         0
     }
@@ -1940,12 +2328,12 @@ fn is_known_region_guid(guid: &Guid) -> bool {
     // BAT and Metadata are the only required regions per MS-VHDX.
     const KNOWN: &[Guid] = &[
         Guid::from_bytes([
-            0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42,
-            0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD, 0x4A, 0x08,
+            0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42, 0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD,
+            0x4A, 0x08,
         ]), // BAT
         Guid::from_bytes([
-            0x06, 0xA2, 0x7C, 0x8B, 0x90, 0x47, 0x9A, 0x4B,
-            0xB8, 0xFE, 0x57, 0x5F, 0x05, 0x0F, 0x88, 0x6E,
+            0x06, 0xA2, 0x7C, 0x8B, 0x90, 0x47, 0x9A, 0x4B, 0xB8, 0xFE, 0x57, 0x5F, 0x05, 0x0F,
+            0x88, 0x6E,
         ]), // Metadata
     ];
     KNOWN.contains(guid)
@@ -1974,6 +2362,11 @@ mod tests {
     use crate::common::crc32c;
     use bitvec::prelude::*;
 
+    struct Encoded {
+        key: Vec<u8>,
+        val: Vec<u8>,
+    }
+
     // -----------------------------------------------------------------------
     // Test helpers
     // -----------------------------------------------------------------------
@@ -1983,20 +2376,24 @@ mod tests {
 
     /// Build a minimal valid VHDX file in memory for validation testing.
     fn build_test_vhdx() -> Vec<u8> {
-        let virtual_size: u64 = 1 * 1024 * 1024 * 1024; // 1 GB
+        let virtual_size: u64 = 1024 * 1024 * 1024; // 1 GB
         let block_size: u32 = 32 * 1024 * 1024; // 32 MB
         let logical_sector_size: u32 = 4096;
-        let bat_entry_count =
-            (virtual_size + block_size as u64 - 1) / block_size as u64;
-        let chunk_ratio =
-            (1u64 << 23) * logical_sector_size as u64 / block_size as u64;
-        let sector_bitmap_count = (bat_entry_count + chunk_ratio - 1) / chunk_ratio;
-        let total_bat_entries = (bat_entry_count + sector_bitmap_count) as usize;
+        let bat_entry_count = virtual_size.div_ceil(u64::from(block_size));
+        let chunk_ratio = (1u64 << 23) * u64::from(logical_sector_size) / u64::from(block_size);
+        let sector_bitmap_count = bat_entry_count.div_ceil(chunk_ratio);
+        let total_bat_entries = usize::try_from(bat_entry_count + sector_bitmap_count)
+            .expect("BAT entry count fits usize");
         let bat_bytes = total_bat_entries * 8;
         let bat_size = std::cmp::max(
-            ((bat_bytes as u64 + MB as u64 - 1) / MB as u64) as u32,
+            u32::try_from(
+                u64::try_from(bat_bytes)
+                    .expect("bat bytes fit u64")
+                    .div_ceil(u64::try_from(MB).expect("MB fits u64")),
+            )
+            .expect("BAT size in MB units fits u32"),
             1,
-        ) * (MB as u32);
+        ) * u32::try_from(MB).expect("MB fits u32");
 
         let header_size = 4 * KB;
         let region_table_size = 64 * KB;
@@ -2005,42 +2402,57 @@ mod tests {
         let header2_offset = 128 * KB;
         let rt1_offset = 192 * KB;
         let rt2_offset = 256 * KB;
-        let log_offset: u64 = 1 * MB as u64;
-        let log_length: u32 = 1 * MB as u32;
-        let bat_offset: u64 = 2 * MB as u64;
-        let metadata_offset: u64 = bat_offset + bat_size as u64;
-        let metadata_size: u32 = 1 * MB as u32;
+        let log_offset: u64 = u64::try_from(MB).expect("MB fits u64");
+        let log_length: u32 = u32::try_from(MB).expect("MB fits u32");
+        let bat_offset: u64 = 2 * u64::try_from(MB).expect("MB fits u64");
+        let metadata_offset: u64 = bat_offset + u64::from(bat_size);
+        let metadata_size: u32 = u32::try_from(MB).expect("MB fits u32");
 
-        let file_end = metadata_offset + metadata_size as u64;
-        let mut buf = vec![0u8; file_end as usize];
+        let file_end = metadata_offset + u64::from(metadata_size);
+        let mut buf = vec![0u8; usize::try_from(file_end).expect("file size fits usize")];
 
         // File type identifier "vhdxfile"
         buf[0..8].copy_from_slice(b"vhdxfile");
 
         // Write headers
+        let _ = (header_size, region_table_size, log_offset, log_length);
+
         write_header(&mut buf, header1_offset, 5);
         write_header(&mut buf, header2_offset, 3);
 
         // Write region tables
-        write_region_table(&mut buf, rt1_offset, bat_offset, bat_size, metadata_offset, metadata_size);
-        write_region_table(&mut buf, rt2_offset, bat_offset, bat_size, metadata_offset, metadata_size);
+        write_region_table(
+            &mut buf,
+            rt1_offset,
+            bat_offset,
+            bat_size,
+            metadata_offset,
+            metadata_size,
+        );
+        write_region_table(
+            &mut buf,
+            rt2_offset,
+            bat_offset,
+            bat_size,
+            metadata_offset,
+            metadata_size,
+        );
 
         // Write minimal BAT: payload entries = FullyPresent with block-aligned
         // offsets, sector bitmap entries = NotPresent.
-        let bat_start = bat_offset as usize;
-        let block_size_mb = block_size as u64 / (MB as u64);
-        let metadata_end_mb =
-            (metadata_offset + metadata_size as u64 + MB as u64 - 1) / MB as u64;
+        let bat_start = usize::try_from(bat_offset).expect("BAT offset fits usize");
+        let block_size_mb = u64::from(block_size) / u64::try_from(MB).expect("MB fits u64");
+        let metadata_end_mb = (metadata_offset + u64::from(metadata_size))
+            .div_ceil(u64::try_from(MB).expect("MB fits u64"));
         // Align first payload offset to block_size boundary.
-        let first_payload_mb =
-            ((metadata_end_mb + block_size_mb - 1) / block_size_mb) * block_size_mb;
+        let first_payload_mb = metadata_end_mb.div_ceil(block_size_mb) * block_size_mb;
         let mut sb_written: u64 = 0;
         let mut payload_idx: u64 = 0;
         for i in 0..total_bat_entries {
             let entry_offset = bat_start + i * 8;
-            let payloads_before = i as u64 - sb_written;
+            let payloads_before = u64::try_from(i).expect("index fits u64") - sb_written;
             let is_sb = payloads_before > 0
-                && payloads_before % chunk_ratio == 0
+                && payloads_before.is_multiple_of(chunk_ratio)
                 && sb_written < sector_bitmap_count;
             let entry_val: u64 = if is_sb {
                 // Sector bitmap: NotPresent
@@ -2062,7 +2474,12 @@ mod tests {
         }
 
         // Write metadata table + items
-        write_metadata(&mut buf, metadata_offset as usize, block_size, logical_sector_size);
+        write_metadata(
+            &mut buf,
+            usize::try_from(metadata_offset).expect("metadata offset fits usize"),
+            block_size,
+            logical_sector_size,
+        );
 
         buf
     }
@@ -2075,19 +2492,15 @@ mod tests {
         slice[8..16].copy_from_slice(&seq.to_le_bytes());
         slice[64..66].copy_from_slice(&0u16.to_le_bytes()); // log_version
         slice[66..68].copy_from_slice(&1u16.to_le_bytes()); // version
-        slice[68..72].copy_from_slice(&(1u32 * MB as u32).to_le_bytes()); // log_length
-        slice[72..80].copy_from_slice(&(1u64 * MB as u64).to_le_bytes()); // log_offset
+        slice[68..72].copy_from_slice(&u32::try_from(MB).expect("MB fits u32").to_le_bytes()); // log_length
+        slice[72..80].copy_from_slice(&u64::try_from(MB).expect("MB fits u64").to_le_bytes()); // log_offset
 
         let checksum = crc32c(slice);
         slice[4..8].copy_from_slice(&checksum.to_le_bytes());
     }
 
     fn write_region_table(
-        buf: &mut [u8],
-        offset: usize,
-        bat_offset: u64,
-        bat_size: u32,
-        metadata_offset: u64,
+        buf: &mut [u8], offset: usize, bat_offset: u64, bat_size: u32, metadata_offset: u64,
         metadata_size: u32,
     ) {
         let region_table_size = 64 * KB;
@@ -2100,13 +2513,13 @@ mod tests {
 
         // BAT region GUID
         let bat_guid: [u8; 16] = [
-            0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42,
-            0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD, 0x4A, 0x08,
+            0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42, 0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD,
+            0x4A, 0x08,
         ];
         // Metadata region GUID
         let meta_guid: [u8; 16] = [
-            0x06, 0xA2, 0x7C, 0x8B, 0x90, 0x47, 0x9A, 0x4B,
-            0xB8, 0xFE, 0x57, 0x5F, 0x05, 0x0F, 0x88, 0x6E,
+            0x06, 0xA2, 0x7C, 0x8B, 0x90, 0x47, 0x9A, 0x4B, 0xB8, 0xFE, 0x57, 0x5F, 0x05, 0x0F,
+            0x88, 0x6E,
         ];
 
         let mut entry_off = 16;
@@ -2137,14 +2550,14 @@ mod tests {
         // Write 6 table entries. Item offsets are relative to the start of the
         // metadata region (which includes the 64KB table).
         let mut entry_off = offset + 32;
-        let item_base = metadata_table_size as u32; // items start right after the 64KB table
+        let item_base = u32::try_from(metadata_table_size).expect("table size fits u32"); // items start right after the 64KB table
 
         // Entry 0: FileParameters (relative offset = 64KB+0, length=8)
         write_metadata_entry(
             buf,
             &mut entry_off,
             &StandardItems::FILE_PARAMETERS,
-            item_base + 0,
+            item_base,
             8,
             0x0000_0004, // is_required
         );
@@ -2206,7 +2619,7 @@ mod tests {
         buf[items_base + 4..items_base + 8].copy_from_slice(&fp_flags.to_le_bytes());
 
         // VirtualDiskSize: 1 GB
-        let disk_size: u64 = 1 * 1024 * 1024 * 1024;
+        let disk_size: u64 = 1024 * 1024 * 1024;
         buf[items_base + 8..items_base + 16].copy_from_slice(&disk_size.to_le_bytes());
 
         // VirtualDiskId: zeros (already zeroed)
@@ -2217,11 +2630,7 @@ mod tests {
     }
 
     fn write_metadata_entry(
-        buf: &mut [u8],
-        entry_off: &mut usize,
-        guid: &Guid,
-        item_offset: u32,
-        length: u32,
+        buf: &mut [u8], entry_off: &mut usize, guid: &Guid, item_offset: u32, length: u32,
         flags: u32,
     ) {
         buf[*entry_off..*entry_off + 16].copy_from_slice(&guid.to_bytes());
@@ -2341,8 +2750,9 @@ mod tests {
         // Find metadata offset from region table entry 1 (Metadata entry)
         // Region table starts at 192KB. Entry 1 (Metadata) starts at offset 16+32=48.
         // file_offset is at entry_start+16 = 64.
-        let metadata_offset = u64::from_le_bytes(buf[192 * KB + 64..192 * KB + 72].try_into().unwrap());
-        let mo = metadata_offset as usize;
+        let metadata_offset =
+            u64::from_le_bytes(buf[192 * KB + 64..192 * KB + 72].try_into().unwrap());
+        let mo = usize::try_from(metadata_offset).expect("metadata offset fits usize");
         // Zero out the FileParameters entry GUID (first entry after header, at offset 32)
         buf[mo + 32..mo + 48].copy_from_slice(&[0u8; 16]);
         let validator = SpecValidator::new(&buf, true);
@@ -2353,8 +2763,9 @@ mod tests {
     fn test_metadata_item_corrupted_file_parameters() {
         let mut buf = build_test_vhdx();
         // Find metadata offset from region table entry 1 (Metadata entry)
-        let metadata_offset = u64::from_le_bytes(buf[192 * KB + 64..192 * KB + 72].try_into().unwrap());
-        let mo = metadata_offset as usize;
+        let metadata_offset =
+            u64::from_le_bytes(buf[192 * KB + 64..192 * KB + 72].try_into().unwrap());
+        let mo = usize::try_from(metadata_offset).expect("metadata offset fits usize");
         // Modify FileParameters entry (entry 0, at offset 32 from metadata start)
         // length field: bytes 20-23 of the entry → change from 8 to 4
         buf[mo + 32 + 20..mo + 32 + 24].copy_from_slice(&4u32.to_le_bytes());
@@ -2377,25 +2788,24 @@ mod tests {
             .collect();
         assert!(
             corrupted.is_empty(),
-            "expected no METADATA_ITEM_CORRUPTED for valid sizes, got: {:?}",
-            corrupted
+            "expected no METADATA_ITEM_CORRUPTED for valid sizes, got: {corrupted:?}"
         );
     }
 
     #[test]
     fn test_metadata_item_corrupted_preserves_missing() {
         let mut buf = build_test_vhdx();
-        let metadata_offset = u64::from_le_bytes(buf[192 * KB + 64..192 * KB + 72].try_into().unwrap());
-        let mo = metadata_offset as usize;
+        let metadata_offset =
+            u64::from_le_bytes(buf[192 * KB + 64..192 * KB + 72].try_into().unwrap());
+        let mo = usize::try_from(metadata_offset).expect("metadata offset fits usize");
         // Zero out FileParameters entry GUID in metadata table
         buf[mo + 32..mo + 48].copy_from_slice(&[0u8; 16]);
         let validator = SpecValidator::new(&buf, true);
         let result = validator.validate_required_metadata_items();
         assert!(result.is_err(), "expected error for missing FileParameters");
         assert!(
-            format!("{:?}", result).contains("MetadataRequiredMissing"),
-            "expected MetadataRequiredMissing, got: {:?}",
-            result
+            format!("{result:?}").contains("MetadataRequiredMissing"),
+            "expected MetadataRequiredMissing, got: {result:?}"
         );
     }
 
@@ -2431,7 +2841,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Strict mode tests (MS-VHDX-宽松扩展标准 §3)
+    // Strict mode tests (MS-VHDX-`宽松扩展标准` §3)
     // -----------------------------------------------------------------------
 
     /// strict=false, optional unknown region entry → Ok
@@ -2448,15 +2858,15 @@ mod tests {
         // Write entry 2: unknown GUID, required=0, valid offset/length
         let entry_start = rt_offset + 16 + 2 * 32;
         let unknown_guid: [u8; 16] = [
-            0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44,
-            0x55, 0x66, 0x77, 0x88, 0x99, 0x00, 0xAA, 0xBB,
+            0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
+            0xAA, 0xBB,
         ];
         buf[entry_start..entry_start + 16].copy_from_slice(&unknown_guid);
         // file_offset: 4MB (aligned)
         let offset: u64 = 4 * 1024 * 1024;
         buf[entry_start + 16..entry_start + 24].copy_from_slice(&offset.to_le_bytes());
         // length: 1MB (aligned)
-        let length: u32 = 1 * 1024 * 1024;
+        let length: u32 = 1024 * 1024;
         buf[entry_start + 24..entry_start + 28].copy_from_slice(&length.to_le_bytes());
         // required: 0 (optional)
         buf[entry_start + 28..entry_start + 32].copy_from_slice(&0u32.to_le_bytes());
@@ -2469,17 +2879,17 @@ mod tests {
         // Do the same for RT2 at 256KB
         let rt2_offset = 256 * KB;
         buf[rt2_offset + 8..rt2_offset + 12].copy_from_slice(&3u32.to_le_bytes());
-        let entry2_start = rt2_offset + 16 + 2 * 32;
-        buf[entry2_start..entry2_start + 16].copy_from_slice(&unknown_guid);
-        buf[entry2_start + 16..entry2_start + 24].copy_from_slice(&offset.to_le_bytes());
-        buf[entry2_start + 24..entry2_start + 28].copy_from_slice(&length.to_le_bytes());
-        buf[entry2_start + 28..entry2_start + 32].copy_from_slice(&0u32.to_le_bytes());
+        let rt2_entry_start = rt2_offset + 16 + 2 * 32;
+        buf[rt2_entry_start..rt2_entry_start + 16].copy_from_slice(&unknown_guid);
+        buf[rt2_entry_start + 16..rt2_entry_start + 24].copy_from_slice(&offset.to_le_bytes());
+        buf[rt2_entry_start + 24..rt2_entry_start + 28].copy_from_slice(&length.to_le_bytes());
+        buf[rt2_entry_start + 28..rt2_entry_start + 32].copy_from_slice(&0u32.to_le_bytes());
         buf[rt2_offset + 4..rt2_offset + 8].copy_from_slice(&0u32.to_le_bytes());
         let checksum2 = crc32c(&buf[rt2_offset..][..64 * KB]);
         buf[rt2_offset + 4..rt2_offset + 8].copy_from_slice(&checksum2.to_le_bytes());
 
         // Extend buffer to cover the new region offset
-        let needed = (offset + u64::from(length)) as usize;
+        let needed = usize::try_from(offset + u64::from(length)).expect("needed size fits usize");
         if buf.len() < needed {
             buf.resize(needed, 0);
         }
@@ -2500,13 +2910,13 @@ mod tests {
 
         let entry_start = rt_offset + 16 + 2 * 32;
         let unknown_guid: [u8; 16] = [
-            0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44,
-            0x55, 0x66, 0x77, 0x88, 0x99, 0x00, 0xAA, 0xBB,
+            0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
+            0xAA, 0xBB,
         ];
         buf[entry_start..entry_start + 16].copy_from_slice(&unknown_guid);
         let offset: u64 = 4 * 1024 * 1024;
         buf[entry_start + 16..entry_start + 24].copy_from_slice(&offset.to_le_bytes());
-        let length: u32 = 1 * 1024 * 1024;
+        let length: u32 = 1024 * 1024;
         buf[entry_start + 24..entry_start + 28].copy_from_slice(&length.to_le_bytes());
         // required: 1 (required)
         buf[entry_start + 28..entry_start + 32].copy_from_slice(&1u32.to_le_bytes());
@@ -2522,11 +2932,11 @@ mod tests {
         // RT2
         let rt2_offset = 256 * KB;
         buf[rt2_offset + 8..rt2_offset + 12].copy_from_slice(&3u32.to_le_bytes());
-        let entry2_start = rt2_offset + 16 + 2 * 32;
-        buf[entry2_start..entry2_start + 16].copy_from_slice(&unknown_guid);
-        buf[entry2_start + 16..entry2_start + 24].copy_from_slice(&offset.to_le_bytes());
-        buf[entry2_start + 24..entry2_start + 28].copy_from_slice(&length.to_le_bytes());
-        buf[entry2_start + 28..entry2_start + 32].copy_from_slice(&1u32.to_le_bytes());
+        let rt2_entry_start = rt2_offset + 16 + 2 * 32;
+        buf[rt2_entry_start..rt2_entry_start + 16].copy_from_slice(&unknown_guid);
+        buf[rt2_entry_start + 16..rt2_entry_start + 24].copy_from_slice(&offset.to_le_bytes());
+        buf[rt2_entry_start + 24..rt2_entry_start + 28].copy_from_slice(&length.to_le_bytes());
+        buf[rt2_entry_start + 28..rt2_entry_start + 32].copy_from_slice(&1u32.to_le_bytes());
         let checksum2 = crc32c(&{
             let mut slice = vec![0u8; 64 * KB];
             slice.copy_from_slice(&buf[rt2_offset..][..64 * KB]);
@@ -2535,7 +2945,7 @@ mod tests {
         });
         buf[rt2_offset + 4..rt2_offset + 8].copy_from_slice(&checksum2.to_le_bytes());
 
-        let needed = (offset + u64::from(length)) as usize;
+        let needed = usize::try_from(offset + u64::from(length)).expect("needed size fits usize");
         if buf.len() < needed {
             buf.resize(needed, 0);
         }
@@ -2545,7 +2955,10 @@ mod tests {
         let result = validator.validate_region_table();
         assert!(result.is_err());
         let msg = format!("{result:?}");
-        assert!(msg.contains("RegionRequiredUnknown"), "expected RegionRequiredUnknown, got: {msg}");
+        assert!(
+            msg.contains("RegionRequiredUnknown"),
+            "expected RegionRequiredUnknown, got: {msg}"
+        );
     }
 
     /// strict=true, optional unknown region entry → Err
@@ -2559,13 +2972,13 @@ mod tests {
 
         let entry_start = rt_offset + 16 + 2 * 32;
         let unknown_guid: [u8; 16] = [
-            0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44,
-            0x55, 0x66, 0x77, 0x88, 0x99, 0x00, 0xAA, 0xBB,
+            0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
+            0xAA, 0xBB,
         ];
         buf[entry_start..entry_start + 16].copy_from_slice(&unknown_guid);
         let offset: u64 = 4 * 1024 * 1024;
         buf[entry_start + 16..entry_start + 24].copy_from_slice(&offset.to_le_bytes());
-        let length: u32 = 1 * 1024 * 1024;
+        let length: u32 = 1024 * 1024;
         buf[entry_start + 24..entry_start + 28].copy_from_slice(&length.to_le_bytes());
         buf[entry_start + 28..entry_start + 32].copy_from_slice(&0u32.to_le_bytes());
 
@@ -2580,11 +2993,11 @@ mod tests {
         // RT2
         let rt2_offset = 256 * KB;
         buf[rt2_offset + 8..rt2_offset + 12].copy_from_slice(&3u32.to_le_bytes());
-        let entry2_start = rt2_offset + 16 + 2 * 32;
-        buf[entry2_start..entry2_start + 16].copy_from_slice(&unknown_guid);
-        buf[entry2_start + 16..entry2_start + 24].copy_from_slice(&offset.to_le_bytes());
-        buf[entry2_start + 24..entry2_start + 28].copy_from_slice(&length.to_le_bytes());
-        buf[entry2_start + 28..entry2_start + 32].copy_from_slice(&0u32.to_le_bytes());
+        let rt2_entry_start = rt2_offset + 16 + 2 * 32;
+        buf[rt2_entry_start..rt2_entry_start + 16].copy_from_slice(&unknown_guid);
+        buf[rt2_entry_start + 16..rt2_entry_start + 24].copy_from_slice(&offset.to_le_bytes());
+        buf[rt2_entry_start + 24..rt2_entry_start + 28].copy_from_slice(&length.to_le_bytes());
+        buf[rt2_entry_start + 28..rt2_entry_start + 32].copy_from_slice(&0u32.to_le_bytes());
         let checksum2 = crc32c(&{
             let mut slice = vec![0u8; 64 * KB];
             slice.copy_from_slice(&buf[rt2_offset..][..64 * KB]);
@@ -2593,7 +3006,7 @@ mod tests {
         });
         buf[rt2_offset + 4..rt2_offset + 8].copy_from_slice(&checksum2.to_le_bytes());
 
-        let needed = (offset + u64::from(length)) as usize;
+        let needed = usize::try_from(offset + u64::from(length)).expect("needed size fits usize");
         if buf.len() < needed {
             buf.resize(needed, 0);
         }
@@ -2603,7 +3016,10 @@ mod tests {
         let result = validator.validate_region_table();
         assert!(result.is_err());
         let msg = format!("{result:?}");
-        assert!(msg.contains("RegionOptionalUnknown"), "expected RegionOptionalUnknown, got: {msg}");
+        assert!(
+            msg.contains("RegionOptionalUnknown"),
+            "expected RegionOptionalUnknown, got: {msg}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2612,26 +3028,29 @@ mod tests {
 
     /// Build a VHDX buffer whose parent locator contains the given KV pairs.
     ///
-    /// The base VHDX is modified to be a differencing disk (has_parent=1) and
+    /// The base VHDX is modified to be a differencing disk (`has_parent=1`) and
     /// the existing empty parent locator metadata entry is replaced with one
-    /// pointing to actual locator data at items_base + 48.
+    /// pointing to actual locator data at `items_base` + 48.
     fn build_vhdx_with_parent_locator(kvs: &[(&str, &str)]) -> Vec<u8> {
         let mut buf = build_test_vhdx();
 
         // Locate the metadata region from region table 1 (at 192 KB).
         // RT: 16-byte header + 2×32-byte entries. Entry 1 (metadata) starts at offset 48.
         let rt_offset = 192 * KB;
-        let metadata_offset = u64::from_le_bytes(buf[rt_offset + 64..rt_offset + 72].try_into().unwrap());
-        let mo = metadata_offset as usize;
+        let metadata_offset =
+            u64::from_le_bytes(buf[rt_offset + 64..rt_offset + 72].try_into().unwrap());
+        let mo = usize::try_from(metadata_offset).expect("metadata offset fits usize");
         let items_base = mo + 64 * KB; // items start after the 64 KB metadata table
 
         // Mark the disk as differencing: set FileParameters has_parent bit (bit 1).
-        buf[items_base..items_base + 8].view_bits_mut::<Lsb0>().set(1, true);
+        buf[items_base..items_base + 8]
+            .view_bits_mut::<Lsb0>()
+            .set(1, true);
 
         // Existing items occupy bytes 0..44 of the items area.
         // Place parent locator data right after, at offset 48 (4-byte aligned).
         let pl_start = items_base + 48;
-        let pl_region_off = (pl_start - mo) as u32; // offset within metadata region
+        let pl_region_off = u32::try_from(pl_start - mo).expect("parent locator offset fits u32"); // offset within metadata region
 
         // -- Build parent locator data ---------------------------------------
         let loc_hdr_size = 20usize;
@@ -2641,15 +3060,11 @@ mod tests {
         let kv_dat_base = loc_hdr_size + kv_tab_size;
 
         // Encode keys & values to UTF-16LE.
-        struct Encoded {
-            key: Vec<u8>,
-            val: Vec<u8>,
-        }
         let encoded: Vec<Encoded> = kvs
             .iter()
             .map(|(k, v)| Encoded {
-                key: k.encode_utf16().flat_map(|c| c.to_le_bytes()).collect(),
-                val: v.encode_utf16().flat_map(|c| c.to_le_bytes()).collect(),
+                key: k.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+                val: v.encode_utf16().flat_map(u16::to_le_bytes).collect(),
             })
             .collect();
 
@@ -2666,20 +3081,30 @@ mod tests {
         let pl = &mut buf[pl_start..pl_start + pl_size];
         pl[0..16].copy_from_slice(&StandardItems::LOCATOR_TYPE_VHDX.to_bytes());
         pl[16..18].copy_from_slice(&0u16.to_le_bytes()); // reserved
-        pl[18..20].copy_from_slice(&(num as u16).to_le_bytes()); // entry count
+        pl[18..20].copy_from_slice(
+            &u16::try_from(num)
+                .expect("entry count fits u16")
+                .to_le_bytes(),
+        ); // entry count
 
         // Write KV entries and data.
         let mut kv_off = kv_dat_base;
         for (i, e) in encoded.iter().enumerate() {
             let entry_off = loc_hdr_size + i * kv_entry_size;
-            let key_off = kv_off as u32;
-            let val_off = (kv_off + e.key.len()) as u32;
+            let key_off = u32::try_from(kv_off).expect("key offset fits u32");
+            let val_off = u32::try_from(kv_off + e.key.len()).expect("value offset fits u32");
             pl[entry_off..entry_off + 4].copy_from_slice(&key_off.to_le_bytes());
             pl[entry_off + 4..entry_off + 8].copy_from_slice(&val_off.to_le_bytes());
-            pl[entry_off + 8..entry_off + 10]
-                .copy_from_slice(&(e.key.len() as u16).to_le_bytes());
-            pl[entry_off + 10..entry_off + 12]
-                .copy_from_slice(&(e.val.len() as u16).to_le_bytes());
+            pl[entry_off + 8..entry_off + 10].copy_from_slice(
+                &u16::try_from(e.key.len())
+                    .expect("key length fits u16")
+                    .to_le_bytes(),
+            );
+            pl[entry_off + 10..entry_off + 12].copy_from_slice(
+                &u16::try_from(e.val.len())
+                    .expect("value length fits u16")
+                    .to_le_bytes(),
+            );
 
             pl[kv_off..kv_off + e.key.len()].copy_from_slice(&e.key);
             kv_off += e.key.len();
@@ -2690,7 +3115,11 @@ mod tests {
         // Update the ParentLocator metadata table entry (entry index 5).
         let pl_entry = mo + 32 + 5 * 32;
         buf[pl_entry + 16..pl_entry + 20].copy_from_slice(&pl_region_off.to_le_bytes());
-        buf[pl_entry + 20..pl_entry + 24].copy_from_slice(&(pl_size as u32).to_le_bytes());
+        buf[pl_entry + 20..pl_entry + 24].copy_from_slice(
+            &u32::try_from(pl_size)
+                .expect("parent locator size fits u32")
+                .to_le_bytes(),
+        );
 
         buf
     }
@@ -2708,8 +3137,9 @@ mod tests {
         // Locator data is at items_base + 48. KV entry 0 starts at
         // pl_start + 20 (after 20-byte locator header). key_length is at [8..10].
         let rt_offset = 192 * KB;
-        let metadata_offset = u64::from_le_bytes(buf[rt_offset + 64..rt_offset + 72].try_into().unwrap());
-        let mo = metadata_offset as usize;
+        let metadata_offset =
+            u64::from_le_bytes(buf[rt_offset + 64..rt_offset + 72].try_into().unwrap());
+        let mo = usize::try_from(metadata_offset).expect("metadata offset fits usize");
         let kv0_off = mo + 64 * KB + 48 + 20;
         buf[kv0_off + 8..kv0_off + 10].copy_from_slice(&5u16.to_le_bytes()); // odd length
 
@@ -2777,7 +3207,7 @@ mod tests {
         let file = crate::file::File::open(&path).finish()?;
 
         // Construct SpecValidator via from_file.
-        let validator = SpecValidator::from_file(&file)?;
+        let validator = SpecValidator::from_file(&file);
 
         // Verify that sub-validators actually execute (don't silently skip).
         validator.validate_bat()?;
@@ -2792,7 +3222,10 @@ mod tests {
     /// can proceed.
     fn patch_header2_sequence(path: &std::path::Path) -> std::io::Result<()> {
         use std::io::{Read, Seek, SeekFrom, Write};
-        let mut f = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
+        let mut f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)?;
 
         // Read header 2 (4 KB at offset 128 KB).
         let mut h2 = [0u8; 4096];
@@ -2878,13 +3311,13 @@ mod tests {
 
         let entry_start = rt_offset + 16 + 2 * 32;
         let unknown_guid: [u8; 16] = [
-            0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44,
-            0x55, 0x66, 0x77, 0x88, 0x99, 0x00, 0xAA, 0xBB,
+            0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
+            0xAA, 0xBB,
         ];
         buf[entry_start..entry_start + 16].copy_from_slice(&unknown_guid);
         let offset: u64 = 4 * 1024 * 1024;
         buf[entry_start + 16..entry_start + 24].copy_from_slice(&offset.to_le_bytes());
-        let length: u32 = 1 * 1024 * 1024;
+        let length: u32 = 1024 * 1024;
         buf[entry_start + 24..entry_start + 28].copy_from_slice(&length.to_le_bytes());
         buf[entry_start + 28..entry_start + 32].copy_from_slice(&0u32.to_le_bytes());
 
@@ -2896,17 +3329,17 @@ mod tests {
         // Fix CRC for RT2
         let rt2_offset = 256 * KB;
         buf[rt2_offset + 8..rt2_offset + 12].copy_from_slice(&3u32.to_le_bytes());
-        let entry2_start = rt2_offset + 16 + 2 * 32;
-        buf[entry2_start..entry2_start + 16].copy_from_slice(&unknown_guid);
-        buf[entry2_start + 16..entry2_start + 24].copy_from_slice(&offset.to_le_bytes());
-        buf[entry2_start + 24..entry2_start + 28].copy_from_slice(&length.to_le_bytes());
-        buf[entry2_start + 28..entry2_start + 32].copy_from_slice(&0u32.to_le_bytes());
+        let rt2_entry_start = rt2_offset + 16 + 2 * 32;
+        buf[rt2_entry_start..rt2_entry_start + 16].copy_from_slice(&unknown_guid);
+        buf[rt2_entry_start + 16..rt2_entry_start + 24].copy_from_slice(&offset.to_le_bytes());
+        buf[rt2_entry_start + 24..rt2_entry_start + 28].copy_from_slice(&length.to_le_bytes());
+        buf[rt2_entry_start + 28..rt2_entry_start + 32].copy_from_slice(&0u32.to_le_bytes());
         buf[rt2_offset + 4..rt2_offset + 8].copy_from_slice(&0u32.to_le_bytes());
         let checksum2 = crc32c(&buf[rt2_offset..][..64 * KB]);
         buf[rt2_offset + 4..rt2_offset + 8].copy_from_slice(&checksum2.to_le_bytes());
 
         // Extend buffer to cover the new region
-        let needed = (offset + u64::from(length)) as usize;
+        let needed = usize::try_from(offset + u64::from(length)).expect("needed size fits usize");
         if buf.len() < needed {
             buf.resize(needed, 0);
         }
@@ -2914,12 +3347,25 @@ mod tests {
         // strict=false → optional unknown passes but should push an issue
         let validator = SpecValidator::new(&buf, false);
         let issues = validator.validate_region_table().unwrap();
-        assert!(!issues.is_empty(), "expected at least one issue for optional unknown region");
+        assert!(
+            !issues.is_empty(),
+            "expected at least one issue for optional unknown region"
+        );
         let found = issues.iter().any(|i| i.code() == "REGION_OPTIONAL_UNKNOWN");
-        assert!(found, "expected REGION_OPTIONAL_UNKNOWN issue, got: {:?}", issues.iter().map(|i| i.code()).collect::<Vec<_>>());
+        assert!(
+            found,
+            "expected REGION_OPTIONAL_UNKNOWN issue, got: {:?}",
+            issues
+                .iter()
+                .map(super::ValidationIssue::code)
+                .collect::<Vec<_>>()
+        );
 
         // Verify issue fields
-        let issue = issues.iter().find(|i| i.code() == "REGION_OPTIONAL_UNKNOWN").unwrap();
+        let issue = issues
+            .iter()
+            .find(|i| i.code() == "REGION_OPTIONAL_UNKNOWN")
+            .unwrap();
         assert_eq!(issue.section(), "region_table");
         assert_eq!(issue.spec_ref(), "RELAX");
         assert!(issue.message().contains("tolerated"));
@@ -2931,8 +3377,9 @@ mod tests {
 
         // Get metadata offset from region table
         let rt_offset = 192 * KB;
-        let metadata_offset = u64::from_le_bytes(buf[rt_offset + 64..rt_offset + 72].try_into().unwrap());
-        let mo = metadata_offset as usize;
+        let metadata_offset =
+            u64::from_le_bytes(buf[rt_offset + 64..rt_offset + 72].try_into().unwrap());
+        let mo = usize::try_from(metadata_offset).expect("metadata offset fits usize");
 
         // The metadata table has 6 entries. Change entry count to 7 and add an unknown optional one.
         buf[mo + 10..mo + 12].copy_from_slice(&7u16.to_le_bytes());
@@ -2940,8 +3387,8 @@ mod tests {
         // Write a 7th entry at the next slot (entries start at offset 32, each 32 bytes)
         let entry_off = mo + 32 + 6 * 32;
         let unknown_guid: [u8; 16] = [
-            0xDE, 0xAD, 0xBE, 0xEF, 0x11, 0x22, 0x33, 0x44,
-            0x55, 0x66, 0x77, 0x88, 0x99, 0x00, 0xAA, 0xBB,
+            0xDE, 0xAD, 0xBE, 0xEF, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
+            0xAA, 0xBB,
         ];
         buf[entry_off..entry_off + 16].copy_from_slice(&unknown_guid);
         // offset=0, length=0 (empty optional entry)
@@ -2954,10 +3401,22 @@ mod tests {
         // strict=false → optional unknown metadata passes but should push an issue
         let validator = SpecValidator::new(&buf, false);
         let issues = validator.validate_metadata().unwrap();
-        let found = issues.iter().any(|i| i.code() == "METADATA_OPTIONAL_UNKNOWN");
-        assert!(found, "expected METADATA_OPTIONAL_UNKNOWN issue, got: {:?}", issues.iter().map(|i| i.code()).collect::<Vec<_>>());
+        let found = issues
+            .iter()
+            .any(|i| i.code() == "METADATA_OPTIONAL_UNKNOWN");
+        assert!(
+            found,
+            "expected METADATA_OPTIONAL_UNKNOWN issue, got: {:?}",
+            issues
+                .iter()
+                .map(super::ValidationIssue::code)
+                .collect::<Vec<_>>()
+        );
 
-        let issue = issues.iter().find(|i| i.code() == "METADATA_OPTIONAL_UNKNOWN").unwrap();
+        let issue = issues
+            .iter()
+            .find(|i| i.code() == "METADATA_OPTIONAL_UNKNOWN")
+            .unwrap();
         assert_eq!(issue.section(), "metadata");
         assert_eq!(issue.spec_ref(), "RELAX");
     }
@@ -2972,13 +3431,13 @@ mod tests {
 
         let entry_start = rt_offset + 16 + 2 * 32;
         let unknown_guid: [u8; 16] = [
-            0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44,
-            0x55, 0x66, 0x77, 0x88, 0x99, 0x00, 0xAA, 0xBB,
+            0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
+            0xAA, 0xBB,
         ];
         buf[entry_start..entry_start + 16].copy_from_slice(&unknown_guid);
         let offset: u64 = 4 * 1024 * 1024;
         buf[entry_start + 16..entry_start + 24].copy_from_slice(&offset.to_le_bytes());
-        let length: u32 = 1 * 1024 * 1024;
+        let length: u32 = 1024 * 1024;
         buf[entry_start + 24..entry_start + 28].copy_from_slice(&length.to_le_bytes());
         buf[entry_start + 28..entry_start + 32].copy_from_slice(&0u32.to_le_bytes());
 
@@ -2988,16 +3447,16 @@ mod tests {
 
         let rt2_offset = 256 * KB;
         buf[rt2_offset + 8..rt2_offset + 12].copy_from_slice(&3u32.to_le_bytes());
-        let entry2_start = rt2_offset + 16 + 2 * 32;
-        buf[entry2_start..entry2_start + 16].copy_from_slice(&unknown_guid);
-        buf[entry2_start + 16..entry2_start + 24].copy_from_slice(&offset.to_le_bytes());
-        buf[entry2_start + 24..entry2_start + 28].copy_from_slice(&length.to_le_bytes());
-        buf[entry2_start + 28..entry2_start + 32].copy_from_slice(&0u32.to_le_bytes());
+        let rt2_entry_start = rt2_offset + 16 + 2 * 32;
+        buf[rt2_entry_start..rt2_entry_start + 16].copy_from_slice(&unknown_guid);
+        buf[rt2_entry_start + 16..rt2_entry_start + 24].copy_from_slice(&offset.to_le_bytes());
+        buf[rt2_entry_start + 24..rt2_entry_start + 28].copy_from_slice(&length.to_le_bytes());
+        buf[rt2_entry_start + 28..rt2_entry_start + 32].copy_from_slice(&0u32.to_le_bytes());
         buf[rt2_offset + 4..rt2_offset + 8].copy_from_slice(&0u32.to_le_bytes());
         let checksum2 = crc32c(&buf[rt2_offset..][..64 * KB]);
         buf[rt2_offset + 4..rt2_offset + 8].copy_from_slice(&checksum2.to_le_bytes());
 
-        let needed = (offset + u64::from(length)) as usize;
+        let needed = usize::try_from(offset + u64::from(length)).expect("needed size fits usize");
         if buf.len() < needed {
             buf.resize(needed, 0);
         }
@@ -3016,8 +3475,9 @@ mod tests {
 
         // Get metadata offset from region table
         let rt_offset = 192 * KB;
-        let metadata_offset = u64::from_le_bytes(buf[rt_offset + 64..rt_offset + 72].try_into().unwrap());
-        let mo = metadata_offset as usize;
+        let metadata_offset =
+            u64::from_le_bytes(buf[rt_offset + 64..rt_offset + 72].try_into().unwrap());
+        let mo = usize::try_from(metadata_offset).expect("metadata offset fits usize");
 
         // Entry 0 (FileParameters) reserved field is at entry start (offset+32) + 28
         let reserved_off = mo + 32 + 28;
@@ -3039,22 +3499,30 @@ mod tests {
 
         // Get metadata offset from region table
         let rt_offset = 192 * KB;
-        let metadata_offset = u64::from_le_bytes(buf[rt_offset + 64..rt_offset + 72].try_into().unwrap());
-        let mo = metadata_offset as usize;
+        let metadata_offset =
+            u64::from_le_bytes(buf[rt_offset + 64..rt_offset + 72].try_into().unwrap());
+        let mo = usize::try_from(metadata_offset).expect("metadata offset fits usize");
 
         // FileParameters data starts at mo + 64KB (after the 64KB metadata table)
         let fp_data_off = mo + 64 * KB;
         // Set bit 2 of BitFields (bit 34 in the 8-byte Lsb0 view), which falls
         // in reserved bits 2-31. Per MS-VHDX §2.6.2.1 these bits MUST be 0;
         // BitFields is the second u32 (bytes 4-7, bits 32-63).
-        buf[fp_data_off..fp_data_off + 8].view_bits_mut::<Lsb0>().set(34, true);
+        buf[fp_data_off..fp_data_off + 8]
+            .view_bits_mut::<Lsb0>()
+            .set(34, true);
 
         let validator = SpecValidator::new(&buf, true);
         let result = validator.validate_required_metadata_items();
-        assert!(result.is_ok(), "expected Ok despite reserved flags, got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "expected Ok despite reserved flags, got: {result:?}"
+        );
         let issues = result.unwrap();
         assert!(
-            issues.iter().any(|i| i.code() == "METADATA_FILE_PARAMETERS_RESERVED_FLAGS"),
+            issues
+                .iter()
+                .any(|i| i.code() == "METADATA_FILE_PARAMETERS_RESERVED_FLAGS"),
             "expected METADATA_FILE_PARAMETERS_RESERVED_FLAGS issue"
         );
     }

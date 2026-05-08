@@ -1,20 +1,22 @@
-
-use std::path::PathBuf;
+use std::fmt::Write;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use vhdx::{File, LogReplayPolicy};
-use vhdx::section::HeaderStructure;
 use vhdx::Error;
+use vhdx::section::HeaderStructure;
+use vhdx::{File, LogReplayPolicy};
 
 #[derive(Parser)]
-#[command(name = "vhdx-tool", version, about = "VHDX (Virtual Hard Disk v2) tool")]
+#[command(
+    name = "vhdx-tool",
+    version,
+    about = "VHDX (Virtual Hard Disk v2) tool"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
-
-
 
 #[derive(Subcommand)]
 enum Commands {
@@ -151,7 +153,7 @@ fn main() {
             cmd_info(args);
             Ok(())
         }
-        Commands::Create(args) => cmd_create(args),
+        Commands::Create(args) => cmd_create(&args),
         Commands::Check(args) => {
             cmd_check(args);
             Ok(())
@@ -214,19 +216,18 @@ fn parse_size(s: &str) -> Result<u64, String> {
     }
 
     // Plain number = bytes
-    s.parse()
-        .map_err(|_| format!("invalid size: {s} (expected e.g. \"1GB\", \"100MB\", or plain bytes)"))
+    s.parse().map_err(|_| {
+        format!("invalid size: {s} (expected e.g. \"1GB\", \"100MB\", or plain bytes)")
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Create command implementation
 // ---------------------------------------------------------------------------
 
-fn cmd_create(args: CreateArgs) -> vhdx::Result<()> {
+fn cmd_create(args: &CreateArgs) -> vhdx::Result<()> {
     // Parse size string.
-    let size_bytes = parse_size(&args.size).map_err(|e| {
-        vhdx::Error::InvalidParameter(e)
-    })?;
+    let size_bytes = parse_size(&args.size).map_err(vhdx::Error::InvalidParameter)?;
 
     // Validate differencing disk has --parent.
     if matches!(args.disk_type, DiskType::Differencing) && args.parent.is_none() {
@@ -243,9 +244,7 @@ fn cmd_create(args: CreateArgs) -> vhdx::Result<()> {
     // Check file existence.
     if args.path.exists() {
         if args.force {
-            std::fs::remove_file(&args.path).map_err(|e| {
-                vhdx::Error::Io(e)
-            })?;
+            std::fs::remove_file(&args.path).map_err(vhdx::Error::Io)?;
         } else {
             return Err(vhdx::Error::InvalidFile(format!(
                 "file already exists: {} (use --force to overwrite)",
@@ -285,12 +284,9 @@ fn cmd_create(args: CreateArgs) -> vhdx::Result<()> {
 }
 
 fn cmd_check(args: CheckArgs) {
-    let file = match args.file {
-        Some(f) => f,
-        None => {
-            eprintln!("Usage: vhdx-tool check [FILE] --log-replay");
-            process::exit(1);
-        }
+    let Some(file) = args.file else {
+        eprintln!("Usage: vhdx-tool check [FILE] --log-replay");
+        process::exit(1);
     };
 
     // Determine log replay policy based on flags.
@@ -305,7 +301,8 @@ fn cmd_check(args: CheckArgs) {
     let file = match File::open(&file)
         .log_replay(log_policy)
         .strict(args.strict)
-        .finish() {
+        .finish()
+    {
         Ok(f) => f,
         Err(e) => {
             eprintln!("Error opening file: {e}");
@@ -321,7 +318,13 @@ fn cmd_check(args: CheckArgs) {
                 println!("No issues found.");
             } else {
                 for issue in &issues {
-                    println!("[{}] {}: {} ({})", issue.section(), issue.code(), issue.message(), issue.spec_ref());
+                    println!(
+                        "[{}] {}: {} ({})",
+                        issue.section(),
+                        issue.code(),
+                        issue.message(),
+                        issue.spec_ref()
+                    );
                 }
             }
             // Ok means validation passed; issues are advisory findings, not errors.
@@ -339,12 +342,9 @@ fn cmd_check(args: CheckArgs) {
 // ---------------------------------------------------------------------------
 
 fn cmd_info(args: InfoArgs) {
-    let file = match args.file {
-        Some(f) => f,
-        None => {
-            eprintln!("Error: no file specified");
-            process::exit(1);
-        }
+    let Some(file) = args.file else {
+        eprintln!("Error: no file specified");
+        process::exit(1);
     };
     if let Err(e) = run_info(&file, &args.format) {
         eprintln!("Error: {e}");
@@ -380,7 +380,10 @@ fn run_info(path: &PathBuf, format: &str) -> Result<(), Box<dyn std::error::Erro
 
     let block_size;
     let disk_type;
-    if let Some(fp) = metadata.as_ref().and_then(|m| m.items().file_parameters().ok()) {
+    if let Some(fp) = metadata
+        .as_ref()
+        .and_then(|m| m.items().file_parameters().ok())
+    {
         block_size = fp.block_size();
         disk_type = if fp.has_parent() {
             "Differencing"
@@ -396,16 +399,20 @@ fn run_info(path: &PathBuf, format: &str) -> Result<(), Box<dyn std::error::Erro
 
     let creator = decode_utf16le_creator(&ft.creator()[..]);
 
+    let info = InfoOutput {
+        creator: &creator,
+        hdr: &current,
+        block_size,
+        logical_sector: logical_sec,
+        physical_sector: physical_sec,
+        virtual_size,
+        disk_type,
+    };
+
     if format == "json" {
-        print_json(
-            path, &creator, &current, block_size, logical_sec, physical_sec,
-            virtual_size, disk_type,
-        );
+        print_json(path, &info);
     } else {
-        print_text(
-            path, &creator, &current, block_size, logical_sec, physical_sec,
-            virtual_size, disk_type,
-        );
+        print_text(path, &info);
     }
 
     Ok(())
@@ -416,12 +423,9 @@ fn run_info(path: &PathBuf, format: &str) -> Result<(), Box<dyn std::error::Erro
 // ---------------------------------------------------------------------------
 
 fn cmd_sections(args: SectionsArgs) -> vhdx::Result<()> {
-    let file = match args.file {
-        Some(f) => f,
-        None => {
-            eprintln!("Error: no file specified");
-            process::exit(1);
-        }
+    let Some(file) = args.file else {
+        eprintln!("Error: no file specified");
+        process::exit(1);
     };
     let file = File::open(&file)
         .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
@@ -429,10 +433,10 @@ fn cmd_sections(args: SectionsArgs) -> vhdx::Result<()> {
     let sections = file.sections();
 
     match args.command {
-        SectionCommand::Header => show_header(&sections),
-        SectionCommand::Bat => show_bat(&sections),
-        SectionCommand::Metadata => show_metadata(&sections),
-        SectionCommand::Log => show_log(&sections),
+        SectionCommand::Header => show_header(sections),
+        SectionCommand::Bat => show_bat(sections),
+        SectionCommand::Metadata => show_metadata(sections),
+        SectionCommand::Log => show_log(sections),
     }
 }
 
@@ -441,12 +445,9 @@ fn cmd_sections(args: SectionsArgs) -> vhdx::Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_diff(args: DiffArgs) -> vhdx::Result<()> {
-    let file_path = match args.file {
-        Some(f) => f,
-        None => {
-            eprintln!("Error: no file specified");
-            process::exit(1);
-        }
+    let Some(file_path) = args.file else {
+        eprintln!("Error: no file specified");
+        process::exit(1);
     };
 
     // Use the library's File API instead of raw bytes + constructors.
@@ -457,9 +458,10 @@ fn cmd_diff(args: DiffArgs) -> vhdx::Result<()> {
     let sections = file.sections();
     let fp = {
         let metadata = sections.metadata()?;
-        metadata.items().file_parameters().map_err(|_| {
-            vhdx::Error::InvalidFile("No FileParameters metadata item found".into())
-        })?
+        metadata
+            .items()
+            .file_parameters()
+            .map_err(|_| vhdx::Error::InvalidFile("No FileParameters metadata item found".into()))?
     };
 
     if !fp.has_parent() {
@@ -479,42 +481,53 @@ fn cmd_diff(args: DiffArgs) -> vhdx::Result<()> {
 /// Show the resolved parent disk path from the parent locator.
 fn cmd_diff_parent(file: &File) -> vhdx::Result<()> {
     let metadata = file.sections().metadata()?;
-    let locator = metadata.items().parent_locator().map_err(|_| {
-        vhdx::Error::InvalidFile("No parent locator metadata item found".into())
-    })?;
+    let locator = metadata
+        .items()
+        .parent_locator()
+        .map_err(|_| vhdx::Error::InvalidFile("No parent locator metadata item found".into()))?;
 
-    let parent_path = locator.resolve_parent_path().map_err(|e| {
-        vhdx::Error::InvalidFile(format!("Failed to resolve parent path: {e}"))
-    })?;
+    let parent_path = locator
+        .resolve_parent_path()
+        .map_err(|e| vhdx::Error::InvalidFile(format!("Failed to resolve parent path: {e}")))?;
 
     println!("{}", parent_path.display());
     Ok(())
 }
 
 /// Show parent chain information for the differencing disk.
-fn cmd_diff_chain(file: &File, file_path: &PathBuf) -> vhdx::Result<()> {
+fn cmd_diff_chain(file: &File, file_path: &Path) -> vhdx::Result<()> {
     // 1. 执行 parent locator 校验（含 DataWriteGuid 比较）
     let issues = file.validator().validate_parent_locator()?;
 
     // 2. 获取父路径用于显示
     let parent_path = {
         let metadata = file.sections().metadata()?;
-        let locator = metadata.items().parent_locator()
+        let locator = metadata
+            .items()
+            .parent_locator()
             .map_err(|_| vhdx::Error::InvalidFile("no parent locator".into()))?;
-        locator.resolve_parent_path()
+        locator
+            .resolve_parent_path()
             .map_err(|_| vhdx::Error::InvalidFile("unresolvable parent path".into()))?
     };
 
     // 3. 判断 linkage 是否匹配（从校验结果中找 PARENT_LOCATOR_GUID_MISMATCH）
-    let linkage_matched = !issues.iter().any(|i| i.code() == "PARENT_LOCATOR_GUID_MISMATCH");
+    let linkage_matched = !issues
+        .iter()
+        .any(|i| i.code() == "PARENT_LOCATOR_GUID_MISMATCH");
 
     println!("Child path:  {}", file_path.display());
     println!("Parent path: {}", parent_path.display());
-    println!("Linkage matched: {}", linkage_matched);
+    println!("Linkage matched: {linkage_matched}");
 
     // 4. 如果有其他 issues，也打印出来
     for issue in &issues {
-        println!("  [{}] {}: {}", issue.section(), issue.code(), issue.message());
+        println!(
+            "  [{}] {}: {}",
+            issue.section(),
+            issue.code(),
+            issue.message()
+        );
     }
 
     Ok(())
@@ -754,31 +767,32 @@ fn show_log(sections: &vhdx::section::Sections<'_>) -> vhdx::Result<()> {
 // Output helpers – text
 // ---------------------------------------------------------------------------
 
-fn print_text(
-    path: &PathBuf,
-    creator: &str,
-    hdr: &HeaderStructure<'_>,
+struct InfoOutput<'a> {
+    creator: &'a str,
+    hdr: &'a HeaderStructure<'a>,
     block_size: u32,
     logical_sector: u32,
     physical_sector: u32,
     virtual_size: u64,
-    disk_type: &str,
-) {
+    disk_type: &'a str,
+}
+
+fn print_text(path: &Path, info: &InfoOutput<'_>) {
     println!("VHDX File: {}", path.display());
     println!("Signature: vhdxfile");
-    println!("Creator: {creator}");
+    println!("Creator: {}", info.creator);
     println!("Header:");
-    println!("  Sequence Number: {}", hdr.sequence_number());
-    println!("  File Write GUID: {}", hdr.file_write_guid());
-    println!("  Data Write GUID: {}", hdr.data_write_guid());
-    println!("  Version: {}", hdr.version());
+    println!("  Sequence Number: {}", info.hdr.sequence_number());
+    println!("  File Write GUID: {}", info.hdr.file_write_guid());
+    println!("  Data Write GUID: {}", info.hdr.data_write_guid());
+    println!("  Version: {}", info.hdr.version());
     println!("Metadata:");
-    if block_size > 0 {
-        println!("  Block Size: {block_size} bytes");
-        println!("  Logical Sector Size: {logical_sector}");
-        println!("  Physical Sector Size: {physical_sector}");
-        println!("  Virtual Disk Size: {virtual_size}");
-        println!("  Disk Type: {disk_type}");
+    if info.block_size > 0 {
+        println!("  Block Size: {} bytes", info.block_size);
+        println!("  Logical Sector Size: {}", info.logical_sector);
+        println!("  Physical Sector Size: {}", info.physical_sector);
+        println!("  Virtual Disk Size: {}", info.virtual_size);
+        println!("  Disk Type: {}", info.disk_type);
     } else {
         println!("  (no metadata found)");
     }
@@ -788,39 +802,30 @@ fn print_text(
 // Output helpers – JSON
 // ---------------------------------------------------------------------------
 
-fn print_json(
-    path: &PathBuf,
-    creator: &str,
-    hdr: &HeaderStructure<'_>,
-    block_size: u32,
-    logical_sector: u32,
-    physical_sector: u32,
-    virtual_size: u64,
-    disk_type: &str,
-) {
+fn print_json(path: &Path, info: &InfoOutput<'_>) {
     println!("{{");
     println!("  \"file\": {},", json_escape(&path.display().to_string()));
     println!("  \"signature\": \"vhdxfile\",");
-    println!("  \"creator\": {},", json_escape(creator));
+    println!("  \"creator\": {},", json_escape(info.creator));
     println!("  \"header\": {{");
-    println!("    \"sequence_number\": {},", hdr.sequence_number());
+    println!("    \"sequence_number\": {},", info.hdr.sequence_number());
     println!(
         "    \"file_write_guid\": \"{}\",",
-        hdr.file_write_guid()
+        info.hdr.file_write_guid()
     );
     println!(
         "    \"data_write_guid\": \"{}\",",
-        hdr.data_write_guid()
+        info.hdr.data_write_guid()
     );
-    println!("    \"version\": {}", hdr.version());
+    println!("    \"version\": {}", info.hdr.version());
     println!("  }},");
     println!("  \"metadata\": {{");
-    if block_size > 0 {
-        println!("    \"block_size\": {block_size},");
-        println!("    \"logical_sector_size\": {logical_sector},");
-        println!("    \"physical_sector_size\": {physical_sector},");
-        println!("    \"virtual_disk_size\": {virtual_size},");
-        println!("    \"disk_type\": \"{disk_type}\"");
+    if info.block_size > 0 {
+        println!("    \"block_size\": {},", info.block_size);
+        println!("    \"logical_sector_size\": {},", info.logical_sector);
+        println!("    \"physical_sector_size\": {},", info.physical_sector);
+        println!("    \"virtual_disk_size\": {},", info.virtual_size);
+        println!("    \"disk_type\": \"{}\"", info.disk_type);
     }
     println!("  }}");
     println!("}}");
@@ -837,7 +842,9 @@ fn json_escape(s: &str) -> String {
             '\n' => out.push_str(r"\n"),
             '\r' => out.push_str(r"\r"),
             '\t' => out.push_str(r"\t"),
-            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c if c.is_control() => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
             c => out.push(c),
         }
     }
@@ -857,8 +864,7 @@ fn decode_utf16le_creator(data: &[u8]) -> String {
     let end = data
         .chunks_exact(2)
         .position(|c| c[0] == 0 && c[1] == 0)
-        .map(|pos| pos * 2)
-        .unwrap_or(data.len() & !1); // round down to even
+        .map_or(data.len() & !1, |pos| pos * 2); // round down to even
 
     let units: Vec<u16> = data[..end]
         .chunks_exact(2)
@@ -971,12 +977,16 @@ fn report_error(err: &Error) {
         Error::InvalidFile(msg) => {
             eprintln!("INVALID_FILE: {msg}");
         }
-        Error::InvalidSignature { position, expected, found } => {
+        Error::InvalidSignature {
+            position,
+            expected,
+            found,
+        } => {
             eprintln!(
                 "HEADER_SIGNATURE_INVALID: at {position:?}: expected signature {expected:?}, found {found:?}"
             );
         }
-        Error::CorruptedHeader(msg) => {
+        Error::CorruptedHeader(msg) | Error::LogEntryCorrupted(msg) => {
             eprintln!("{msg}");
         }
         Error::InvalidChecksum { expected, actual } => {
@@ -995,12 +1005,7 @@ fn report_error(err: &Error) {
             eprintln!("METADATA_NOT_FOUND: GUID {guid}");
         }
         Error::LogReplayRequired => {
-            eprintln!(
-                "LOG_REPLAY_REQUIRED: pending log entries exist. Use --log-replay."
-            );
-        }
-        Error::LogEntryCorrupted(msg) => {
-            eprintln!("{msg}");
+            eprintln!("LOG_REPLAY_REQUIRED: pending log entries exist. Use --log-replay.");
         }
         Error::BatEntryNotFound { index } => {
             eprintln!("BAT_ENTRY_NOT_FOUND: index {index}");
@@ -1015,9 +1020,7 @@ fn report_error(err: &Error) {
             eprintln!("PARENT_NOT_FOUND: parent disk not found (all candidate paths inaccessible)");
         }
         Error::ParentMismatch { expected, actual } => {
-            eprintln!(
-                "PARENT_GUID_MISMATCH: expected {expected}, actual {actual}"
-            );
+            eprintln!("PARENT_GUID_MISMATCH: expected {expected}, actual {actual}");
         }
         Error::InvalidParameter(msg) => {
             eprintln!("INVALID_PARAMETER: {msg}");
@@ -1028,18 +1031,33 @@ fn report_error(err: &Error) {
         Error::StateMismatch { state, description } => {
             eprintln!("STATE_MISMATCH: state={state:#04x}, {description}");
         }
-        Error::BatFileOffsetUnaligned { offset_mb, block_size } => {
+        e => report_error_misc(e),
+    }
+}
+
+fn report_error_misc(err: &Error) {
+    match err {
+        Error::BatFileOffsetUnaligned {
+            offset_mb,
+            block_size,
+        } => {
             eprintln!("BAT_FILE_OFFSET_UNALIGNED: offset_mb={offset_mb}, block_size={block_size}");
         }
         Error::InvalidParentLocator(msg) => {
             eprintln!("PARENT_LOCATOR_INVALID: {msg}");
         }
-        Error::HeaderLogGuidMismatch { header1_log_guid, header2_log_guid } => {
+        Error::HeaderLogGuidMismatch {
+            header1_log_guid,
+            header2_log_guid,
+        } => {
             eprintln!(
                 "HEADER_LOG_GUID_MISMATCH: header1={header1_log_guid}, header2={header2_log_guid}"
             );
         }
-        Error::HeaderSequenceNumberInvalid { sequence_number_1, sequence_number_2 } => {
+        Error::HeaderSequenceNumberInvalid {
+            sequence_number_1,
+            sequence_number_2,
+        } => {
             eprintln!(
                 "HEADER_SEQUENCE_INVALID: seq1={sequence_number_1}, seq2={sequence_number_2}"
             );
@@ -1054,9 +1072,7 @@ fn report_error(err: &Error) {
             eprintln!("SECTOR_BITMAP_STATE_INVALID: invalid sector bitmap state {state:#04x}");
         }
         Error::BatEntryCountInsufficient { actual, expected } => {
-            eprintln!(
-                "BAT_ENTRY_COUNT_INSUFFICIENT: actual={actual}, expected={expected}"
-            );
+            eprintln!("BAT_ENTRY_COUNT_INSUFFICIENT: actual={actual}, expected={expected}");
         }
         Error::BatFileOffsetDuplicate { offset_mb } => {
             eprintln!("BAT_FILE_OFFSET_DUPLICATE: offset_mb={offset_mb}");
@@ -1085,7 +1101,10 @@ fn report_error(err: &Error) {
         Error::LogSequenceGap { expected, found } => {
             eprintln!("LOG_SEQUENCE_GAP: expected={expected}, found={found}");
         }
-        Error::LogSequenceGuidMismatch { entry_log_guid, header_log_guid } => {
+        Error::LogSequenceGuidMismatch {
+            entry_log_guid,
+            header_log_guid,
+        } => {
             eprintln!(
                 "LOG_SEQUENCE_GUID_MISMATCH: entry={entry_log_guid}, header={header_log_guid}"
             );
@@ -1097,7 +1116,9 @@ fn report_error(err: &Error) {
             eprintln!("PARENT_LOCATOR_MISSING_LINKAGE: parent linkage key missing");
         }
         Error::ParentLocatorLinkage2Conflict => {
-            eprintln!("PARENT_LOCATOR_LINKAGE2_CONFLICT: parent_linkage2 merge transition conflict");
+            eprintln!(
+                "PARENT_LOCATOR_LINKAGE2_CONFLICT: parent_linkage2 merge transition conflict"
+            );
         }
         _ => {
             eprintln!("Error: {err}");

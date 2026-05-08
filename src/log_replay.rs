@@ -9,9 +9,7 @@ use std::collections::HashMap;
 use std::io::{Seek, SeekFrom, Write};
 
 use crate::error::{Error, Result};
-use crate::log::{
-    Descriptor, Entry, Log,
-};
+use crate::log::{Descriptor, Entry, Log};
 use crate::types::Guid;
 
 const SECTOR_SIZE: usize = 4096;
@@ -83,9 +81,9 @@ impl<'a> ActiveSequence<'a> {
 #[derive(Debug)]
 pub struct ReplayOverlay {
     /// Data sectors keyed by file offset (4KB-aligned).
-    _sectors: HashMap<u64, Vec<u8>>,
+    sectors: HashMap<u64, Vec<u8>>,
     /// Zero regions as `(file_offset, zero_length)` pairs.
-    _zeros: Vec<(u64, u64)>,
+    zeros: Vec<(u64, u64)>,
     /// File size after replay (from the head entry's `LastFileOffset`).
     last_file_offset: u64,
 }
@@ -110,38 +108,41 @@ impl ReplayOverlay {
     ///   from the underlying file instead.
     ///
     /// Returns the number of bytes written into `buf`.
-    pub fn read(&self, _file: &std::fs::File, offset: u64, buf: &mut [u8]) -> Result<usize> {
+    pub fn read(&self, _file: &std::fs::File, offset: u64, buf: &mut [u8]) -> usize {
         if buf.is_empty() {
-            return Ok(0);
+            return 0;
         }
 
         // --- Check data sectors first (highest priority) ---
         // Each sector is keyed by its 4 KB-aligned file offset and is
         // exactly 4096 bytes long.
-        for (&sector_offset, sector_data) in &self._sectors {
-            let sector_end = sector_offset + sector_data.len() as u64;
+        for (&sector_offset, sector_data) in &self.sectors {
+            let sector_end = sector_offset
+                + u64::try_from(sector_data.len()).expect("sector data length fits u64");
             if offset >= sector_offset && offset < sector_end {
-                let in_sector = (offset - sector_offset) as usize;
+                let in_sector = usize::try_from(offset - sector_offset)
+                    .expect("sector-relative offset fits usize");
                 let available = sector_data.len() - in_sector;
                 let to_copy = available.min(buf.len());
                 buf[..to_copy].copy_from_slice(&sector_data[in_sector..in_sector + to_copy]);
-                return Ok(to_copy);
+                return to_copy;
             }
         }
 
         // --- Check zero regions ---
-        for &(zero_offset, zero_length) in &self._zeros {
+        for &(zero_offset, zero_length) in &self.zeros {
             let zero_end = zero_offset + zero_length;
             if offset >= zero_offset && offset < zero_end {
-                let remaining = (zero_length - (offset - zero_offset)) as usize;
+                let remaining = usize::try_from(zero_length - (offset - zero_offset))
+                    .expect("remaining zero length fits usize");
                 let to_fill = remaining.min(buf.len());
                 buf[..to_fill].fill(0);
-                return Ok(to_fill);
+                return to_fill;
             }
         }
 
         // --- No overlay data at this offset ---
-        Ok(0)
+        0
     }
 
     /// Apply overlay data and zero regions to an in-memory region buffer.
@@ -157,37 +158,44 @@ impl ReplayOverlay {
     /// This is a pure in-memory patch operation — it does not read or write
     /// the underlying file.
     pub fn apply_to_region(&self, region_data: &mut [u8], region_offset: u64) {
-        let region_end = region_offset + region_data.len() as u64;
+        let region_end =
+            region_offset + u64::try_from(region_data.len()).expect("region length fits u64");
 
         // Track which bytes have been written by data sectors so that zeros
         // don't overwrite them.
         let mut touched = vec![false; region_data.len()];
 
         // Step 1: apply data sectors
-        for (&sector_offset, sector_data) in &self._sectors {
-            let sector_end = sector_offset + sector_data.len() as u64;
+        for (&sector_offset, sector_data) in &self.sectors {
+            let sector_end = sector_offset
+                + u64::try_from(sector_data.len()).expect("sector data length fits u64");
             if sector_end > region_offset && sector_offset < region_end {
                 let overlap_start = sector_offset.max(region_offset);
                 let overlap_end = sector_end.min(region_end);
-                let region_start = (overlap_start - region_offset) as usize;
-                let sector_start = (overlap_start - sector_offset) as usize;
-                let len = (overlap_end - overlap_start) as usize;
+                let region_start = usize::try_from(overlap_start - region_offset)
+                    .expect("region overlap start fits usize");
+                let sector_start = usize::try_from(overlap_start - sector_offset)
+                    .expect("sector overlap start fits usize");
+                let len = usize::try_from(overlap_end - overlap_start)
+                    .expect("overlap length fits usize");
                 region_data[region_start..region_start + len]
                     .copy_from_slice(&sector_data[sector_start..sector_start + len]);
-                for i in region_start..region_start + len {
-                    touched[i] = true;
+                for touched_byte in touched.iter_mut().skip(region_start).take(len) {
+                    *touched_byte = true;
                 }
             }
         }
 
         // Step 2: apply zero regions (skip bytes already touched by data sectors)
-        for &(zero_offset, zero_length) in &self._zeros {
+        for &(zero_offset, zero_length) in &self.zeros {
             let zero_end = zero_offset + zero_length;
             if zero_end > region_offset && zero_offset < region_end {
                 let overlap_start = zero_offset.max(region_offset);
                 let overlap_end = zero_end.min(region_end);
-                let region_start = (overlap_start - region_offset) as usize;
-                let len = (overlap_end - overlap_start) as usize;
+                let region_start = usize::try_from(overlap_start - region_offset)
+                    .expect("region overlap start fits usize");
+                let len = usize::try_from(overlap_end - overlap_start)
+                    .expect("overlap length fits usize");
                 for i in region_start..region_start + len {
                     if !touched[i] {
                         region_data[i] = 0;
@@ -200,27 +208,24 @@ impl ReplayOverlay {
     /// Return a reference to the sector map for testing/inspection.
     #[cfg(test)]
     fn sectors(&self) -> &HashMap<u64, Vec<u8>> {
-        &self._sectors
+        &self.sectors
     }
 
     /// Return a reference to the zero regions for testing/inspection.
     #[cfg(test)]
     fn zeros(&self) -> &[(u64, u64)] {
-        &self._zeros
+        &self.zeros
     }
 
-    /// Construct a ReplayOverlay from raw sector and zero-region data.
+    /// Construct a `ReplayOverlay` from raw sector and zero-region data.
     ///
     /// Intended for unit tests in other modules that need to verify
     /// overlay read-through behaviour without constructing a full log sequence.
     #[cfg(test)]
-    pub(crate) fn from_raw(
-        sectors: HashMap<u64, Vec<u8>>,
-        zeros: Vec<(u64, u64)>,
-    ) -> Self {
+    pub(crate) fn from_raw(sectors: HashMap<u64, Vec<u8>>, zeros: Vec<(u64, u64)>) -> Self {
         Self {
-            _sectors: sectors,
-            _zeros: zeros,
+            sectors,
+            zeros,
             last_file_offset: 0,
         }
     }
@@ -294,20 +299,20 @@ pub fn detect_active_sequence<'a>(log: &'a Log<'a>, log_guid: &Guid) -> Result<A
         }
 
         // Step 4: check if current sequence is valid
-        let is_valid = if !current_entries.is_empty() {
+        let is_valid = if current_entries.is_empty() {
+            false
+        } else {
             // Get the head entry's tail field
             let head_entry_offset = current_entries.last().unwrap().0;
             let head_entry = log.entry_at(head_entry_offset)?;
             let tail = head_entry.header().tail() as usize;
             // Check if tail offset matches any entry in current sequence
             current_entries.iter().any(|(off, _)| *off == tail)
-        } else {
-            false
         };
 
         // Step 5: update candidate
         if is_valid && current_seq > candidate_head_seq {
-            candidate_entries = current_entries.clone();
+            candidate_entries.clone_from(&current_entries);
             candidate_head_seq = current_seq;
         }
 
@@ -428,8 +433,8 @@ pub fn build_replay_overlay(active: &ActiveSequence<'_>) -> Result<ReplayOverlay
     }
 
     Ok(ReplayOverlay {
-        _sectors: sectors,
-        _zeros: zeros,
+        sectors,
+        zeros,
         last_file_offset: active.last_file_offset(),
     })
 }
@@ -471,14 +476,16 @@ pub fn replay_to_file(file: &std::fs::File, active: &ActiveSequence<'_>) -> Resu
                 }
                 Descriptor::Zero(zero_desc) => {
                     let file_offset = zero_desc.file_offset();
-                    let zero_length = zero_desc.zero_length() as usize;
+                    let zero_length = usize::try_from(zero_desc.zero_length())
+                        .expect("zero descriptor length fits usize");
                     let zero_buf = vec![0u8; SECTOR_SIZE.min(zero_length)];
                     let mut written: usize = 0;
                     while written < zero_length {
                         let chunk = zero_buf.len().min(zero_length - written);
                         let f = file;
-                        (&mut &*f)
-                            .seek(SeekFrom::Start(file_offset + written as u64))?;
+                        (&mut &*f).seek(SeekFrom::Start(
+                            file_offset + u64::try_from(written).expect("written count fits u64"),
+                        ))?;
                         (&mut &*f).write_all(&zero_buf[..chunk])?;
                         written += chunk;
                     }
@@ -501,16 +508,14 @@ pub fn replay_to_file(file: &std::fs::File, active: &ActiveSequence<'_>) -> Resu
 ///
 /// Returns `Some((entry, sequence_number))` if:
 /// - The entry parses successfully (valid signature, length)
-/// - The LogGuid matches
+/// - The `LogGuid` matches
 /// - The CRC-32C checksum is correct
 /// - The sequence number is > 0
 ///
 /// Returns `None` if the entry is invalid (silently ignored by the
 /// algorithm — not a hard error for invalid entries during scanning).
 fn try_validate_entry<'a>(
-    log: &'a Log<'a>,
-    offset: usize,
-    log_guid: &Guid,
+    log: &'a Log<'a>, offset: usize, log_guid: &Guid,
 ) -> Option<(Entry<'a>, u64)> {
     let entry = log.entry_at(offset).ok()?;
 
@@ -540,6 +545,7 @@ fn try_validate_entry<'a>(
 mod tests {
     use super::*;
     use crate::common::crc32c;
+    use std::io::Read;
 
     const SIGNATURE_LOGE: [u8; 4] = *b"loge";
     const SIGNATURE_DESC: [u8; 4] = *b"desc";
@@ -555,7 +561,7 @@ mod tests {
         log_guid: &Guid,
     ) -> Vec<u8> {
         let header_size = 64;
-        let desc_count = desc_specs.len() as u32;
+        let desc_count = u32::try_from(desc_specs.len()).expect("descriptor count fits u32");
 
         // Build descriptors
         let mut desc_bytes = Vec::new();
@@ -583,11 +589,19 @@ mod tests {
         for _ in 0..data_desc_count {
             let mut s = [0u8; 4096];
             s[0..4].copy_from_slice(&SIGNATURE_DATA);
-            s[4..8].copy_from_slice(&((seq >> 32) as u32).to_le_bytes());
+            s[4..8].copy_from_slice(
+                &u32::try_from(seq >> 32)
+                    .expect("upper sequence bits fit u32")
+                    .to_le_bytes(),
+            );
             for b in &mut s[8..4092] {
                 *b = fill_byte;
             }
-            s[4092..4096].copy_from_slice(&(seq as u32).to_le_bytes());
+            s[4092..4096].copy_from_slice(
+                &u32::try_from(seq & u64::from(u32::MAX))
+                    .expect("lower sequence bits fit u32")
+                    .to_le_bytes(),
+            );
             data_bytes.extend_from_slice(&s);
         }
 
@@ -596,17 +610,21 @@ mod tests {
             1
         } else {
             let overflow = desc_bytes.len() + header_size - SECTOR_SIZE;
-            1 + (overflow + SECTOR_SIZE - 1) / SECTOR_SIZE
+            1 + overflow.div_ceil(SECTOR_SIZE)
         };
         let desc_sector_bytes = desc_sectors * SECTOR_SIZE;
         let total = desc_sector_bytes + data_bytes.len();
-        let total_aligned = ((total + SECTOR_SIZE - 1) / SECTOR_SIZE) * SECTOR_SIZE;
+        let total_aligned = total.div_ceil(SECTOR_SIZE) * SECTOR_SIZE;
 
         let mut buf = vec![0u8; total_aligned];
 
         // Header
         buf[0..4].copy_from_slice(&SIGNATURE_LOGE);
-        buf[8..12].copy_from_slice(&(total_aligned as u32).to_le_bytes());
+        buf[8..12].copy_from_slice(
+            &u32::try_from(total_aligned)
+                .expect("total_aligned fits u32")
+                .to_le_bytes(),
+        );
         buf[12..16].copy_from_slice(&tail_offset.to_le_bytes());
         buf[16..24].copy_from_slice(&seq.to_le_bytes());
         buf[24..28].copy_from_slice(&desc_count.to_le_bytes());
@@ -632,8 +650,8 @@ mod tests {
 
     fn test_log_guid() -> Guid {
         Guid::from_bytes([
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
-            0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+            0x0F, 0x10,
         ])
     }
 
@@ -720,7 +738,11 @@ mod tests {
         let e10_offset = e1_len + e2_len + e3_len;
         // Rewrite e12's tail to point to e10
         let e12_idx = 5;
-        entries[e12_idx][12..16].copy_from_slice(&(e10_offset as u32).to_le_bytes());
+        entries[e12_idx][12..16].copy_from_slice(
+            &u32::try_from(e10_offset)
+                .expect("offset fits u32")
+                .to_le_bytes(),
+        );
         // Recompute CRC for e12 (zero CRC field before recomputing)
         entries[e12_idx][4..8].copy_from_slice(&0u32.to_le_bytes());
         let e12_crc = crc32c(&entries[e12_idx]);
@@ -753,32 +775,26 @@ mod tests {
 
         // Only entry 1 should be in the sequence (e2 has wrong GUID, breaks chain)
         assert_eq!(active.len(), 1);
-        assert_eq!(
-            active.entries()[0].entry.header().sequence_number(),
-            1
-        );
+        assert_eq!(active.entries()[0].entry.header().sequence_number(), 1);
     }
 
     #[test]
     fn checksum_failure_entry_ignored() {
-            let guid = test_log_guid();
-            let e1 = build_log_entry(1, 0, &[(true, 0x1000, 0)], 0xAA, &guid);
-            let mut e2 = build_log_entry(2, 0, &[(true, 0x2000, 0)], 0xBB, &guid);
-    
-            // Corrupt e2's CRC so it gets ignored during scanning
-            e2[100] ^= 0xFF;
-    
-            let buf = build_log_buffer(vec![e1, e2]);
-            let log = Log::new(&buf).unwrap();
-            let active = detect_active_sequence(&log, &guid).unwrap();
-    
-            // Only e1 should be in the active sequence — e2 is ignored due to CRC failure
-            assert_eq!(active.len(), 1);
-            assert_eq!(
-                active.entries()[0].entry.header().sequence_number(),
-                1
-            );
-        }
+        let guid = test_log_guid();
+        let e1 = build_log_entry(1, 0, &[(true, 0x1000, 0)], 0xAA, &guid);
+        let mut e2 = build_log_entry(2, 0, &[(true, 0x2000, 0)], 0xBB, &guid);
+
+        // Corrupt e2's CRC so it gets ignored during scanning
+        e2[100] ^= 0xFF;
+
+        let buf = build_log_buffer(vec![e1, e2]);
+        let log = Log::new(&buf).unwrap();
+        let active = detect_active_sequence(&log, &guid).unwrap();
+
+        // Only e1 should be in the active sequence — e2 is ignored due to CRC failure
+        assert_eq!(active.len(), 1);
+        assert_eq!(active.entries()[0].entry.header().sequence_number(), 1);
+    }
 
     #[test]
     fn has_pending_log_zero_guid() {
@@ -830,18 +846,12 @@ mod tests {
         // Verify the assembled sector: LeadingBytes(8) + Data(4084) + TrailingBytes(4)
         let sector = &overlay.sectors()[&0x1000];
         // Leading bytes: 0x0102030405060708
-        assert_eq!(
-            &sector[0..8],
-            &0x0102_0304_0506_0708u64.to_le_bytes()
-        );
+        assert_eq!(&sector[0..8], &0x0102_0304_0506_0708u64.to_le_bytes());
         // Middle 4084 bytes: fill_byte 0xAA
         assert_eq!(sector[8], 0xAA);
         assert_eq!(sector[4091], 0xAA);
         // Trailing bytes: 0xDEADBEEF
-        assert_eq!(
-            &sector[4092..4096],
-            &0xDEAD_BEEFu32.to_le_bytes()
-        );
+        assert_eq!(&sector[4092..4096], &0xDEAD_BEEFu32.to_le_bytes());
     }
 
     #[test]
@@ -871,9 +881,9 @@ mod tests {
             1,
             0,
             &[
-                (true, 0x1000, 0),   // data at 0x1000
+                (true, 0x1000, 0),       // data at 0x1000
                 (false, 0x5000, 0x2000), // zero at 0x5000, len 0x2000
-                (true, 0x2000, 0),   // data at 0x2000
+                (true, 0x2000, 0),       // data at 0x2000
             ],
             0xCC,
             &guid,
@@ -940,6 +950,7 @@ mod tests {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(&path)
             .unwrap();
 
@@ -949,17 +960,13 @@ mod tests {
         replay_to_file(&file, &active).unwrap();
 
         // Read back the written sector
-        use std::io::Read;
         let mut read_buf = [0u8; 4096];
         let mut f = std::fs::File::open(&path).unwrap();
         f.seek(SeekFrom::Start(0x1000)).unwrap();
         f.read_exact(&mut read_buf).unwrap();
 
         // Verify assembled sector
-        assert_eq!(
-            &read_buf[0..8],
-            &0x0102_0304_0506_0708u64.to_le_bytes()
-        );
+        assert_eq!(&read_buf[0..8], &0x0102_0304_0506_0708u64.to_le_bytes());
         assert_eq!(read_buf[8], 0xAA);
     }
 
@@ -977,57 +984,59 @@ mod tests {
 
     #[test]
     fn candidate_with_higher_seq_always_wins() {
-            let guid = test_log_guid();
-            // Build three separate 1-entry sequences with different seq numbers
-            let mut e5 = build_log_entry(5, 0, &[(true, 0x1000, 0)], 0xAA, &guid);
-            let mut e10 = build_log_entry(10, 0, &[(true, 0x2000, 0)], 0xBB, &guid);
-            let mut e100 = build_log_entry(100, 0, &[(true, 0x3000, 0)], 0xCC, &guid);
-    
-            // Fix tail offsets so each entry points to itself (self-tail)
-            // e5 is at offset 0, tail=0 is already correct
-            let e5_len = e5.len();
-            let e10_offset = e5_len;
-            let e100_offset = e5_len + e10.len();
-    
-            // Fix e10 tail to point to itself (zero CRC field before recomputing)
-            e10[12..16].copy_from_slice(&(e10_offset as u32).to_le_bytes());
-            e10[4..8].copy_from_slice(&0u32.to_le_bytes());
-            let e10_crc = crc32c(&e10);
-            e10[4..8].copy_from_slice(&e10_crc.to_le_bytes());
-    
-            // Fix e100 tail to point to itself (zero CRC field before recomputing)
-            e100[12..16].copy_from_slice(&(e100_offset as u32).to_le_bytes());
-            e100[4..8].copy_from_slice(&0u32.to_le_bytes());
-            let e100_crc = crc32c(&e100);
-            e100[4..8].copy_from_slice(&e100_crc.to_le_bytes());
-    
-            // Place them in buffer; each with self-tail pointing to its own offset
-            let buf = build_log_buffer(vec![e5, e10, e100]);
-            let log = Log::new(&buf).unwrap();
-            let active = detect_active_sequence(&log, &guid).unwrap();
-    
-            // Should pick the 1-entry sequence with seq=100
-            assert_eq!(active.len(), 1);
-            assert_eq!(
-                active.entries()[0].entry.header().sequence_number(),
-                100
-            );
-        }
+        let guid = test_log_guid();
+        // Build three separate 1-entry sequences with different seq numbers
+        let e5 = build_log_entry(5, 0, &[(true, 0x1000, 0)], 0xAA, &guid);
+        let mut e10 = build_log_entry(10, 0, &[(true, 0x2000, 0)], 0xBB, &guid);
+        let mut e100 = build_log_entry(100, 0, &[(true, 0x3000, 0)], 0xCC, &guid);
+
+        // Fix tail offsets so each entry points to itself (self-tail)
+        // e5 is at offset 0, tail=0 is already correct
+        let e5_len = e5.len();
+        let e10_offset = e5_len;
+        let e100_offset = e5_len + e10.len();
+
+        // Fix e10 tail to point to itself (zero CRC field before recomputing)
+        e10[12..16].copy_from_slice(
+            &u32::try_from(e10_offset)
+                .expect("offset fits u32")
+                .to_le_bytes(),
+        );
+        e10[4..8].copy_from_slice(&0u32.to_le_bytes());
+        let e10_crc = crc32c(&e10);
+        e10[4..8].copy_from_slice(&e10_crc.to_le_bytes());
+
+        // Fix e100 tail to point to itself (zero CRC field before recomputing)
+        e100[12..16].copy_from_slice(
+            &u32::try_from(e100_offset)
+                .expect("offset fits u32")
+                .to_le_bytes(),
+        );
+        e100[4..8].copy_from_slice(&0u32.to_le_bytes());
+        let e100_checksum = crc32c(&e100);
+        e100[4..8].copy_from_slice(&e100_checksum.to_le_bytes());
+
+        // Place them in buffer; each with self-tail pointing to its own offset
+        let buf = build_log_buffer(vec![e5, e10, e100]);
+        let log = Log::new(&buf).unwrap();
+        let active = detect_active_sequence(&log, &guid).unwrap();
+
+        // Should pick the 1-entry sequence with seq=100
+        assert_eq!(active.len(), 1);
+        assert_eq!(active.entries()[0].entry.header().sequence_number(), 100);
+    }
 
     // -----------------------------------------------------------------------
     // ReplayOverlay::read() tests
     // -----------------------------------------------------------------------
 
-    /// Helper: create a dummy `File` for read() calls (the parameter is unused).
+    /// Helper: create a dummy `File` for `read()` calls (the parameter is unused).
     fn dummy_file() -> std::fs::File {
         tempfile::tempfile().unwrap()
     }
 
     /// Helper: build an overlay from a single entry with the given descriptors.
-    fn build_overlay_from_descs(
-        desc_specs: &[(bool, u64, u64)],
-        fill_byte: u8,
-    ) -> ReplayOverlay {
+    fn build_overlay_from_descs(desc_specs: &[(bool, u64, u64)], fill_byte: u8) -> ReplayOverlay {
         let guid = test_log_guid();
         let entry = build_log_entry(1, 0, desc_specs, fill_byte, &guid);
         let buf = build_log_buffer(vec![entry]);
@@ -1043,7 +1052,7 @@ mod tests {
 
         // Read at the exact sector offset
         let mut buf = [0u8; 4096];
-        let n = overlay.read(&file, 0x1000, &mut buf).unwrap();
+        let n = overlay.read(&file, 0x1000, &mut buf);
         assert_eq!(n, 4096);
 
         // Verify assembled sector content: LeadingBytes + fill + TrailingBytes
@@ -1059,7 +1068,7 @@ mod tests {
         let file = dummy_file();
 
         let mut buf = [0u8; 64];
-        let n = overlay.read(&file, 0x9000, &mut buf).unwrap();
+        let n = overlay.read(&file, 0x9000, &mut buf);
         assert_eq!(n, 0, "should return Ok(0) for non-overlaid offset");
     }
 
@@ -1070,7 +1079,7 @@ mod tests {
 
         // Read starting 100 bytes into the sector
         let mut buf = [0u8; 200];
-        let n = overlay.read(&file, 0x1000 + 100, &mut buf).unwrap();
+        let n = overlay.read(&file, 0x1000 + 100, &mut buf);
         assert_eq!(n, 200);
 
         // The assembled sector has fill_byte 0xBB at indices 8..4092,
@@ -1086,7 +1095,7 @@ mod tests {
 
         // Only read 10 bytes
         let mut buf = [0u8; 10];
-        let n = overlay.read(&file, 0x1000, &mut buf).unwrap();
+        let n = overlay.read(&file, 0x1000, &mut buf);
         assert_eq!(n, 10);
 
         // First 8 bytes are leading bytes
@@ -1104,7 +1113,7 @@ mod tests {
         // Read starting 2 bytes before the sector end
         let offset = 0x1000 + 4094;
         let mut buf = [0u8; 64];
-        let n = overlay.read(&file, offset, &mut buf).unwrap();
+        let n = overlay.read(&file, offset, &mut buf);
 
         // Only 2 bytes remain in the sector
         assert_eq!(n, 2);
@@ -1121,7 +1130,7 @@ mod tests {
 
         // Exactly at the sector end — no more data
         let mut buf = [0u8; 64];
-        let n = overlay.read(&file, 0x1000 + 4096, &mut buf).unwrap();
+        let n = overlay.read(&file, 0x1000 + 4096, &mut buf);
         assert_eq!(n, 0);
     }
 
@@ -1131,7 +1140,7 @@ mod tests {
         let file = dummy_file();
 
         let mut buf = [0xFFu8; 256];
-        let n = overlay.read(&file, 0x5000, &mut buf).unwrap();
+        let n = overlay.read(&file, 0x5000, &mut buf);
         assert_eq!(n, 256);
         assert!(buf.iter().all(|&b| b == 0));
     }
@@ -1143,7 +1152,7 @@ mod tests {
 
         // Read 100 bytes starting 1000 bytes into the zero region
         let mut buf = [0xFFu8; 100];
-        let n = overlay.read(&file, 0x5000 + 1000, &mut buf).unwrap();
+        let n = overlay.read(&file, 0x5000 + 1000, &mut buf);
         assert_eq!(n, 100);
         assert!(buf.iter().all(|&b| b == 0));
     }
@@ -1154,7 +1163,7 @@ mod tests {
         let file = dummy_file();
 
         let mut buf = [0u8; 64];
-        let n = overlay.read(&file, 0x5000 + 0x2000, &mut buf).unwrap();
+        let n = overlay.read(&file, 0x5000 + 0x2000, &mut buf);
         assert_eq!(n, 0, "beyond zero region should return Ok(0)");
     }
 
@@ -1164,53 +1173,49 @@ mod tests {
         let file = dummy_file();
 
         let mut buf = [];
-        let n = overlay.read(&file, 0x1000, &mut buf).unwrap();
+        let n = overlay.read(&file, 0x1000, &mut buf);
         assert_eq!(n, 0);
     }
 
     #[test]
     fn read_data_sector_overlaps_zero_region_at_different_offset() {
         // Data sector at 0x1000, zero region at 0x5000 — they don't overlap
-        let overlay =
-            build_overlay_from_descs(&[(true, 0x1000, 0), (false, 0x5000, 0x2000)], 0xAA);
+        let overlay = build_overlay_from_descs(&[(true, 0x1000, 0), (false, 0x5000, 0x2000)], 0xAA);
         let file = dummy_file();
 
         // Read from data sector
         let mut buf = [0u8; 8];
-        let n = overlay.read(&file, 0x1000, &mut buf).unwrap();
+        let n = overlay.read(&file, 0x1000, &mut buf);
         assert_eq!(n, 8);
 
         // Read from zero region
         buf.fill(0xFF);
-        let n = overlay.read(&file, 0x5000, &mut buf).unwrap();
+        let n = overlay.read(&file, 0x5000, &mut buf);
         assert_eq!(n, 8);
         assert!(buf.iter().all(|&b| b == 0));
 
         // Read from neither
         buf.fill(0xFF);
-        let n = overlay.read(&file, 0x3000, &mut buf).unwrap();
+        let n = overlay.read(&file, 0x3000, &mut buf);
         assert_eq!(n, 0);
     }
 
     #[test]
     fn read_with_multiple_sectors() {
-        let overlay = build_overlay_from_descs(
-            &[(true, 0x1000, 0), (true, 0x3000, 0)],
-            0xAA,
-        );
+        let overlay = build_overlay_from_descs(&[(true, 0x1000, 0), (true, 0x3000, 0)], 0xAA);
         let file = dummy_file();
 
         // First sector at 0x1000
         let mut buf = [0u8; 8];
-        let n = overlay.read(&file, 0x1000, &mut buf).unwrap();
+        let n = overlay.read(&file, 0x1000, &mut buf);
         assert_eq!(n, 8);
 
         // Second sector at 0x3000
-        let n = overlay.read(&file, 0x3000, &mut buf).unwrap();
+        let n = overlay.read(&file, 0x3000, &mut buf);
         assert_eq!(n, 8);
 
         // Between sectors (0x2000) — no overlay
-        let n = overlay.read(&file, 0x2000, &mut buf).unwrap();
+        let n = overlay.read(&file, 0x2000, &mut buf);
         assert_eq!(n, 0);
     }
 
@@ -1267,10 +1272,7 @@ mod tests {
     /// Zero region applies zeros to the region.
     #[test]
     fn apply_region_zero_fills_zeros() {
-        let overlay = ReplayOverlay::from_raw(
-            HashMap::new(),
-            vec![(0x2000, 0x1000)],
-        );
+        let overlay = ReplayOverlay::from_raw(HashMap::new(), vec![(0x2000, 0x1000)]);
 
         let mut region = vec![0xFFu8; 0x5000]; // [0, 0x5000)
         overlay.apply_to_region(&mut region, 0);

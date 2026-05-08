@@ -5,6 +5,7 @@ pub fn crc32c(data: &[u8]) -> u32 {
 }
 
 /// Verify that `data` matches the expected CRC-32C checksum.
+#[cfg(test)]
 pub fn verify_crc32c(data: &[u8], expected: u32) -> bool {
     crc32c(data) == expected
 }

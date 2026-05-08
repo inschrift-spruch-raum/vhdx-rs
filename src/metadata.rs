@@ -55,6 +55,7 @@ impl<'a> Metadata<'a> {
     }
 
     /// Access the 64 KB metadata table.
+    #[must_use]
     pub fn table(&self) -> MetadataTable<'a> {
         MetadataTable {
             data: &self.data[..METADATA_TABLE_SIZE],
@@ -62,6 +63,7 @@ impl<'a> Metadata<'a> {
     }
 
     /// Access metadata items (region after the 64 KB table).
+    #[must_use]
     pub fn items(&self) -> MetadataItems<'a> {
         MetadataItems {
             table: self.table(),
@@ -87,6 +89,7 @@ pub struct MetadataTable<'a> {
 
 impl<'a> MetadataTable<'a> {
     /// Access the table header.
+    #[must_use]
     pub fn header(&self) -> TableHeader<'a> {
         TableHeader {
             data: &self.data[..TABLE_HEADER_SIZE],
@@ -96,6 +99,10 @@ impl<'a> MetadataTable<'a> {
     /// Look up a table entry by GUID.
     ///
     /// Returns `Err(Error::MetadataNotFound)` if no entry matches.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::MetadataNotFound`] when the GUID is not present.
     pub fn entry(&self, item_id: &Guid) -> Result<TableEntry<'a>> {
         for e in self.entries() {
             if e.item_id() == *item_id {
@@ -129,23 +136,49 @@ pub struct TableHeader<'a> {
 
 impl<'a> TableHeader<'a> {
     /// Signature: 8 bytes, must be "metadata".
+    ///
+    /// # Panics
+    ///
+    /// Panics if the header slice is shorter than 8 bytes.
+    #[must_use]
     pub fn signature(&self) -> &'a [u8; 8] {
-        self.data[..8].try_into().expect("header has 8 signature bytes")
+        self.data[..8]
+            .try_into()
+            .expect("header has 8 signature bytes")
     }
 
     /// Reserved: 2 bytes (must be 0).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the header slice is shorter than 10 bytes.
+    #[must_use]
     pub fn reserved(&self) -> &'a [u8; 2] {
-        self.data[8..10].try_into().expect("header has 2 reserved bytes")
+        self.data[8..10]
+            .try_into()
+            .expect("header has 2 reserved bytes")
     }
 
     /// Number of table entries (must be <= 2047).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the header slice is shorter than 12 bytes.
+    #[must_use]
     pub fn entry_count(&self) -> u16 {
         u16::from_le_bytes(self.data[10..12].try_into().unwrap())
     }
 
     /// Reserved2: 20 bytes (must be 0).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the header slice is shorter than 32 bytes.
+    #[must_use]
     pub fn reserved2(&self) -> &'a [u8; 20] {
-        self.data[12..32].try_into().expect("header has 20 reserved2 bytes")
+        self.data[12..32]
+            .try_into()
+            .expect("header has 20 reserved2 bytes")
     }
 
     /// Check that the signature matches "metadata".
@@ -171,34 +204,60 @@ pub struct TableEntry<'a> {
     data: &'a [u8],
 }
 
-impl<'a> TableEntry<'a> {
+impl TableEntry<'_> {
     /// Item ID (16-byte GUID).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the entry slice is shorter than 16 bytes.
+    #[must_use]
     pub fn item_id(&self) -> Guid {
         let bytes: [u8; 16] = self.data[..16].try_into().expect("entry has 16 guid bytes");
         Guid::from_bytes(bytes)
     }
 
     /// Byte offset of the metadata item (relative to start of metadata region).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the entry slice is shorter than 20 bytes.
+    #[must_use]
     pub fn offset(&self) -> u32 {
         u32::from_le_bytes(self.data[16..20].try_into().unwrap())
     }
 
     /// Length of the metadata item in bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the entry slice is shorter than 24 bytes.
+    #[must_use]
     pub fn length(&self) -> u32 {
         u32::from_le_bytes(self.data[20..24].try_into().unwrap())
     }
 
     /// Raw flags bits (4 bytes).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the entry slice is shorter than 28 bytes.
+    #[must_use]
     pub fn flags_bits(&self) -> u32 {
         u32::from_le_bytes(self.data[24..28].try_into().unwrap())
     }
 
     /// Reserved field (4 bytes).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the entry slice is shorter than 32 bytes.
+    #[must_use]
     pub fn reserved(&self) -> u32 {
         u32::from_le_bytes(self.data[28..32].try_into().unwrap())
     }
 
     /// Parsed flags.
+    #[must_use]
     pub fn flags(&self) -> EntryFlags {
         EntryFlags(self.flags_bits())
     }
@@ -221,23 +280,26 @@ impl EntryFlags {
         self.0.view_bits::<Lsb0>()
     }
 
-    /// IsUser (bit 0): user metadata vs system metadata.
+    /// `IsUser` (bit 0): user metadata vs system metadata.
+    #[must_use]
     pub fn is_user(&self) -> bool {
         self.bitslice()[0]
     }
 
-    /// IsVirtualDisk (bit 1): virtual disk metadata vs file metadata.
+    /// `IsVirtualDisk` (bit 1): virtual disk metadata vs file metadata.
+    #[must_use]
     pub fn is_virtual_disk(&self) -> bool {
         self.bitslice()[1]
     }
 
-    /// IsRequired (bit 2): implementation must understand this item.
+    /// `IsRequired` (bit 2): implementation must understand this item.
+    #[must_use]
     pub fn is_required(&self) -> bool {
         self.bitslice()[2]
     }
 
     /// Whether any reserved bits (3-31) are set.
-    pub(crate) fn has_reserved_bits(&self) -> bool {
+    pub(crate) fn has_reserved_bits(self) -> bool {
         self.bitslice()[3..=31].any()
     }
 }
@@ -255,9 +317,8 @@ pub struct MetadataItems<'a> {
 impl<'a> MetadataItems<'a> {
     /// Resolve the item data slice for a given GUID.
     fn item_data(&self, guid: &Guid) -> Result<&'a [u8]> {
-        let entry = match self.table.entry(guid) {
-            Ok(e) => e,
-            Err(_) => return Err(Error::MetadataRequiredMissing { guid: *guid }),
+        let Ok(entry) = self.table.entry(guid) else {
+            return Err(Error::MetadataRequiredMissing { guid: *guid });
         };
         let offset = entry.offset() as usize;
         let length = entry.length() as usize;
@@ -265,7 +326,9 @@ impl<'a> MetadataItems<'a> {
             // Present but empty
             return Ok(&[]);
         }
-        let end = offset.checked_add(length).ok_or_else(|| Error::MetadataRequiredMissing { guid: *guid })?;
+        let end = offset
+            .checked_add(length)
+            .ok_or(Error::MetadataRequiredMissing { guid: *guid })?;
         if end > self.items_data.len() {
             return Err(Error::MetadataRequiredMissing { guid: *guid });
         }
@@ -273,6 +336,10 @@ impl<'a> MetadataItems<'a> {
     }
 
     /// File Parameters metadata item.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the item is missing or has an invalid extent.
     pub fn file_parameters(&self) -> Result<FileParameters<'a>> {
         let data = self.item_data(&StandardItems::FILE_PARAMETERS)?;
         // FileParameters is 8 bytes; tolerate shorter (empty) items
@@ -280,43 +347,91 @@ impl<'a> MetadataItems<'a> {
     }
 
     /// Virtual disk size in bytes (8 bytes, little-endian u64).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the item is missing or shorter than 8 bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the internal length check is violated before converting
+    /// the 8-byte slice.
     pub fn virtual_disk_size(&self) -> Result<u64> {
         let data = self.item_data(&StandardItems::VIRTUAL_DISK_SIZE)?;
         if data.len() < 8 {
-            return Err(Error::MetadataRequiredMissing { guid: StandardItems::VIRTUAL_DISK_SIZE });
+            return Err(Error::MetadataRequiredMissing {
+                guid: StandardItems::VIRTUAL_DISK_SIZE,
+            });
         }
         Ok(u64::from_le_bytes(data[..8].try_into().unwrap()))
     }
 
     /// Virtual disk identifier (16-byte GUID).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the item is missing or shorter than 16 bytes.
     pub fn virtual_disk_id(&self) -> Result<Guid> {
         let data = self.item_data(&StandardItems::VIRTUAL_DISK_ID)?;
         if data.len() < 16 {
-            return Err(Error::MetadataRequiredMissing { guid: StandardItems::VIRTUAL_DISK_ID });
+            return Err(Error::MetadataRequiredMissing {
+                guid: StandardItems::VIRTUAL_DISK_ID,
+            });
         }
-        let bytes: [u8; 16] = data[..16].try_into().map_err(|_| Error::MetadataRequiredMissing { guid: StandardItems::VIRTUAL_DISK_ID })?;
+        let bytes: [u8; 16] =
+            data[..16]
+                .try_into()
+                .map_err(|_| Error::MetadataRequiredMissing {
+                    guid: StandardItems::VIRTUAL_DISK_ID,
+                })?;
         Ok(Guid::from_bytes(bytes))
     }
 
     /// Logical sector size in bytes (4 bytes, little-endian u32).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the item is missing or shorter than 4 bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the internal length check is violated before converting
+    /// the 4-byte slice.
     pub fn logical_sector_size(&self) -> Result<u32> {
         let data = self.item_data(&StandardItems::LOGICAL_SECTOR_SIZE)?;
         if data.len() < 4 {
-            return Err(Error::MetadataRequiredMissing { guid: StandardItems::LOGICAL_SECTOR_SIZE });
+            return Err(Error::MetadataRequiredMissing {
+                guid: StandardItems::LOGICAL_SECTOR_SIZE,
+            });
         }
         Ok(u32::from_le_bytes(data[..4].try_into().unwrap()))
     }
 
     /// Physical sector size in bytes (4 bytes, little-endian u32).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the item is missing or shorter than 4 bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the internal length check is violated before converting
+    /// the 4-byte slice.
     pub fn physical_sector_size(&self) -> Result<u32> {
         let data = self.item_data(&StandardItems::PHYSICAL_SECTOR_SIZE)?;
         if data.len() < 4 {
-            return Err(Error::MetadataRequiredMissing { guid: StandardItems::PHYSICAL_SECTOR_SIZE });
+            return Err(Error::MetadataRequiredMissing {
+                guid: StandardItems::PHYSICAL_SECTOR_SIZE,
+            });
         }
         Ok(u32::from_le_bytes(data[..4].try_into().unwrap()))
     }
 
     /// Parent locator (differencing disks).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the item is missing or has an invalid extent.
     pub fn parent_locator(&self) -> Result<ParentLocator<'a>> {
         let data = self.item_data(&StandardItems::PARENT_LOCATOR)?;
         Ok(ParentLocator { data })
@@ -341,20 +456,21 @@ pub struct FileParameters<'a> {
     data: &'a [u8],
 }
 
-/// Bit index offsets within the 8-byte FileParameters view.
+/// Bit index offsets within the 8-byte `FileParameters` view.
 ///
 /// The full `data` is 8 bytes (64 bits) viewed as `Lsb0`:
-/// - `[ 0..32]` → BlockSize          (first u32, bytes 0-3)
-/// - `[32    ]` → LeaveBlockAllocated (bit 0 of BitFields, second u32)
-/// - `[33    ]` → HasParent          (bit 1 of BitFields, second u32)
-/// - `[34..64]` → Reserved           (bits 2-31 of BitFields, second u32)
+/// - `[ 0..32]` → `BlockSize`          (first u32, bytes 0-3)
+/// - `[32    ]` → `LeaveBlockAllocated` (bit 0 of `BitFields`, second u32)
+/// - `[33    ]` → `HasParent`          (bit 1 of `BitFields`, second u32)
+/// - `[34..64]` → Reserved           (bits 2-31 of `BitFields`, second u32)
 const FP_BLOCK_SIZE: std::ops::Range<usize> = 0..32;
 const FP_BITFIELDS: std::ops::Range<usize> = 32..64;
 const FP_LEAVE_BLOCK_ALLOCATED: usize = 32;
 const FP_HAS_PARENT: usize = 33;
 
-impl<'a> FileParameters<'a> {
+impl FileParameters<'_> {
     /// Block size in bytes (second u32 per MS-VHDX §2.6.2.1).
+    #[must_use]
     pub fn block_size(&self) -> u32 {
         if self.data.len() < 8 {
             return 0;
@@ -370,7 +486,8 @@ impl<'a> FileParameters<'a> {
         self.data.view_bits::<Lsb0>()[FP_BITFIELDS].load_le::<u32>()
     }
 
-    /// Whether blocks should remain allocated (fixed disk) — bit 0 of BitFields.
+    /// Whether blocks should remain allocated (fixed disk) — bit 0 of `BitFields`.
+    #[must_use]
     pub fn leave_block_allocated(&self) -> bool {
         if self.data.len() < 8 {
             return false;
@@ -378,7 +495,8 @@ impl<'a> FileParameters<'a> {
         self.data.view_bits::<Lsb0>()[FP_LEAVE_BLOCK_ALLOCATED]
     }
 
-    /// Whether this file has a parent (differencing disk) — bit 1 of BitFields.
+    /// Whether this file has a parent (differencing disk) — bit 1 of `BitFields`.
+    #[must_use]
     pub fn has_parent(&self) -> bool {
         if self.data.len() < 8 {
             return false;
@@ -386,7 +504,7 @@ impl<'a> FileParameters<'a> {
         self.data.view_bits::<Lsb0>()[FP_HAS_PARENT]
     }
 
-    /// Whether any reserved bits (bits 2-31 of BitFields) are set.
+    /// Whether any reserved bits (bits 2-31 of `BitFields`) are set.
     ///
     /// Per MS-VHDX §2.6.2.1, bits 2-31 MUST be 0.
     pub(crate) fn has_reserved_bits_set(&self) -> bool {
@@ -410,6 +528,7 @@ pub struct ParentLocator<'a> {
 
 impl<'a> ParentLocator<'a> {
     /// Access the 20-byte locator header.
+    #[must_use]
     pub fn header(&self) -> LocatorHeader<'a> {
         LocatorHeader {
             data: &self.data[..LOCATOR_HEADER_SIZE.min(self.data.len())],
@@ -417,6 +536,10 @@ impl<'a> ParentLocator<'a> {
     }
 
     /// Get a key-value entry by index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the index is out of range or entry bytes are truncated.
     pub fn entry(&self, index: usize) -> Result<KeyValueEntry<'a>> {
         let count = self.header().key_value_count() as usize;
         if index >= count {
@@ -454,7 +577,8 @@ impl<'a> ParentLocator<'a> {
     }
 
     /// The raw key-value data area (everything after the locator header + entry table).
-    /// Offsets in KeyValueEntry are relative to the start of the parent locator item.
+    /// Offsets in `KeyValueEntry` are relative to the start of the parent locator item.
+    #[must_use]
     pub fn key_value_data(&self) -> &'a [u8] {
         self.data
     }
@@ -465,15 +589,19 @@ impl<'a> ParentLocator<'a> {
     /// 3. `absolute_win32_path`
     ///
     /// Note: UTF-16LE decoding requires allocation, so this returns owned `PathBuf`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no usable locator key is found or no referenced path
+    /// exists.
     pub fn resolve_parent_path(&self) -> Result<PathBuf> {
         let keys = ["relative_path", "volume_path", "absolute_win32_path"];
         let mut attempted = (None::<PathBuf>, None::<PathBuf>, None::<PathBuf>);
 
         for (ki, key_str) in keys.iter().enumerate() {
             for kv in self.entries() {
-                let key = match kv.key(self.data) {
-                    Ok(k) => k,
-                    Err(_) => continue,
+                let Ok(key) = kv.key(self.data) else {
+                    continue;
                 };
                 if key == *key_str {
                     let value = kv.value(self.data)?;
@@ -507,8 +635,13 @@ pub struct LocatorHeader<'a> {
     data: &'a [u8],
 }
 
-impl<'a> LocatorHeader<'a> {
+impl LocatorHeader<'_> {
     /// Locator type GUID (16 bytes).
+    ///
+    /// # Panics
+    ///
+    /// Panics only if an internal 16-byte guard is violated.
+    #[must_use]
     pub fn locator_type(&self) -> Guid {
         let bytes: [u8; 16] = if self.data.len() >= 16 {
             self.data[..16].try_into().expect("16 bytes")
@@ -519,6 +652,11 @@ impl<'a> LocatorHeader<'a> {
     }
 
     /// Reserved (2 bytes, must be 0).
+    ///
+    /// # Panics
+    ///
+    /// Panics only if an internal 2-byte guard is violated.
+    #[must_use]
     pub fn reserved(&self) -> u16 {
         if self.data.len() >= 18 {
             u16::from_le_bytes(self.data[16..18].try_into().unwrap())
@@ -528,6 +666,11 @@ impl<'a> LocatorHeader<'a> {
     }
 
     /// Number of key-value entries.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if an internal 2-byte guard is violated.
+    #[must_use]
     pub fn key_value_count(&self) -> u16 {
         if self.data.len() >= 20 {
             u16::from_le_bytes(self.data[18..20].try_into().unwrap())
@@ -546,50 +689,82 @@ pub struct KeyValueEntry<'a> {
     data: &'a [u8],
 }
 
-impl<'a> KeyValueEntry<'a> {
+impl KeyValueEntry<'_> {
     /// Key offset within the parent locator item.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the entry slice is shorter than 4 bytes.
+    #[must_use]
     pub fn key_offset(&self) -> u32 {
         u32::from_le_bytes(self.data[..4].try_into().unwrap())
     }
 
     /// Value offset within the parent locator item.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the entry slice is shorter than 8 bytes.
+    #[must_use]
     pub fn value_offset(&self) -> u32 {
         u32::from_le_bytes(self.data[4..8].try_into().unwrap())
     }
 
     /// Key length in bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the entry slice is shorter than 10 bytes.
+    #[must_use]
     pub fn key_length(&self) -> u16 {
         u16::from_le_bytes(self.data[8..10].try_into().unwrap())
     }
 
     /// Value length in bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the entry slice is shorter than 12 bytes.
+    #[must_use]
     pub fn value_length(&self) -> u16 {
         u16::from_le_bytes(self.data[10..12].try_into().unwrap())
     }
 
     /// Decode the key string (UTF-16LE) from the locator data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if offset/length are invalid or UTF-16 decoding fails.
     pub fn key(&self, data: &[u8]) -> Result<String> {
         decode_utf16le(data, self.key_offset() as usize, self.key_length() as usize)
     }
 
     /// Decode the value string (UTF-16LE) from the locator data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if offset/length are invalid or UTF-16 decoding fails.
     pub fn value(&self, data: &[u8]) -> Result<String> {
-        decode_utf16le(data, self.value_offset() as usize, self.value_length() as usize)
+        decode_utf16le(
+            data,
+            self.value_offset() as usize,
+            self.value_length() as usize,
+        )
     }
 }
 
 /// Decode a UTF-16LE string from a byte slice at the given offset and byte-length.
 fn decode_utf16le(data: &[u8], offset: usize, byte_len: usize) -> Result<String> {
-    let end = offset.checked_add(byte_len).ok_or_else(|| {
-        Error::InvalidParentLocator("key/value offset+length overflow".into())
-    })?;
+    let end = offset
+        .checked_add(byte_len)
+        .ok_or_else(|| Error::InvalidParentLocator("key/value offset+length overflow".into()))?;
     if end > data.len() {
         return Err(Error::InvalidParentLocator(format!(
             "key/value data out of bounds: offset={offset}, len={byte_len}, data_len={}",
             data.len()
         )));
     }
-    if byte_len % 2 != 0 {
+    if !byte_len.is_multiple_of(2) {
         return Err(Error::InvalidParentLocator(
             "UTF-16LE string has odd byte length".into(),
         ));
@@ -598,9 +773,8 @@ fn decode_utf16le(data: &[u8], offset: usize, byte_len: usize) -> Result<String>
         .chunks_exact(2)
         .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
         .collect();
-    String::from_utf16(&units).map_err(|e| {
-        Error::InvalidParentLocator(format!("invalid UTF-16LE string: {e}"))
-    })
+    String::from_utf16(&units)
+        .map_err(|e| Error::InvalidParentLocator(format!("invalid UTF-16LE string: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -637,7 +811,7 @@ mod tests {
         // Entry 0: File Parameters (at offset 64KB, length 8)
         write_entry(
             &StandardItems::FILE_PARAMETERS,
-            METADATA_TABLE_SIZE as u32,
+            u32::try_from(METADATA_TABLE_SIZE).expect("metadata table size fits u32"),
             8,
             0x0000_0004, // is_virtual_disk=0, is_required=1 (bit 29)
         );
@@ -645,7 +819,7 @@ mod tests {
         // Entry 1: Virtual Disk Size (at 64KB+8, length 8)
         write_entry(
             &StandardItems::VIRTUAL_DISK_SIZE,
-            (METADATA_TABLE_SIZE + 8) as u32,
+            u32::try_from(METADATA_TABLE_SIZE + 8).expect("metadata offset fits u32"),
             8,
             0x0000_0006, // is_virtual_disk + is_required
         );
@@ -653,7 +827,7 @@ mod tests {
         // Entry 2: Virtual Disk ID (at 64KB+24, length 16)
         write_entry(
             &StandardItems::VIRTUAL_DISK_ID,
-            (METADATA_TABLE_SIZE + 24) as u32,
+            u32::try_from(METADATA_TABLE_SIZE + 24).expect("metadata offset fits u32"),
             16,
             0x0000_0006,
         );
@@ -661,7 +835,7 @@ mod tests {
         // Entry 3: Logical Sector Size (at 64KB+40, length 4)
         write_entry(
             &StandardItems::LOGICAL_SECTOR_SIZE,
-            (METADATA_TABLE_SIZE + 40) as u32,
+            u32::try_from(METADATA_TABLE_SIZE + 40).expect("metadata offset fits u32"),
             4,
             0x0000_0006,
         );
@@ -669,18 +843,13 @@ mod tests {
         // Entry 4: Physical Sector Size (at 64KB+48, length 4)
         write_entry(
             &StandardItems::PHYSICAL_SECTOR_SIZE,
-            (METADATA_TABLE_SIZE + 48) as u32,
+            u32::try_from(METADATA_TABLE_SIZE + 48).expect("metadata offset fits u32"),
             4,
             0x0000_0006,
         );
 
         // Entry 5: Parent Locator (empty, offset=0, length=0)
-        write_entry(
-            &StandardItems::PARENT_LOCATOR,
-            0,
-            0,
-            0x0000_0004,
-        );
+        write_entry(&StandardItems::PARENT_LOCATOR, 0, 0, 0x0000_0004);
 
         // -- Metadata Items --
         let items_base = METADATA_TABLE_SIZE;
@@ -735,7 +904,10 @@ mod tests {
         let buf = build_test_metadata();
         let meta = Metadata::new(&buf).unwrap();
         let entry = meta.table().entry(&StandardItems::FILE_PARAMETERS).unwrap();
-        assert_eq!(entry.offset(), METADATA_TABLE_SIZE as u32);
+        assert_eq!(
+            entry.offset(),
+            u32::try_from(METADATA_TABLE_SIZE).expect("metadata table size fits u32")
+        );
         assert_eq!(entry.length(), 8);
     }
 
@@ -821,10 +993,7 @@ mod tests {
     #[test]
     fn utf16le_decoding() {
         // "hello" in UTF-16LE
-        let data: Vec<u8> = "hello"
-            .encode_utf16()
-            .flat_map(|c| c.to_le_bytes())
-            .collect();
+        let data: Vec<u8> = "hello".encode_utf16().flat_map(u16::to_le_bytes).collect();
         let result = decode_utf16le(&data, 0, data.len()).unwrap();
         assert_eq!(result, "hello");
     }
@@ -835,8 +1004,8 @@ mod tests {
         // Use a real file so std::fs::metadata() succeeds in resolve_parent_path()
         let key = "relative_path";
         let value = "Cargo.toml";
-        let key_utf16: Vec<u8> = key.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
-        let value_utf16: Vec<u8> = value.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+        let key_utf16: Vec<u8> = key.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let value_utf16: Vec<u8> = value.encode_utf16().flat_map(u16::to_le_bytes).collect();
 
         // Header (20) + 1 KV entry (12) + key data + value data
         let kv_data_start = LOCATOR_HEADER_SIZE + KV_ENTRY_SIZE;
@@ -851,8 +1020,16 @@ mod tests {
         // Entry 0: Parent Locator
         let entry_off = TABLE_HEADER_SIZE;
         buf[entry_off..entry_off + 16].copy_from_slice(&StandardItems::PARENT_LOCATOR.to_bytes());
-        buf[entry_off + 16..entry_off + 20].copy_from_slice(&(METADATA_TABLE_SIZE as u32).to_le_bytes());
-        buf[entry_off + 20..entry_off + 24].copy_from_slice(&(total_len as u32).to_le_bytes());
+        buf[entry_off + 16..entry_off + 20].copy_from_slice(
+            &u32::try_from(METADATA_TABLE_SIZE)
+                .expect("metadata table size fits u32")
+                .to_le_bytes(),
+        );
+        buf[entry_off + 20..entry_off + 24].copy_from_slice(
+            &u32::try_from(total_len)
+                .expect("total length fits u32")
+                .to_le_bytes(),
+        );
         buf[entry_off + 24..entry_off + 28].copy_from_slice(&0x0000_0004u32.to_le_bytes());
 
         // Locator data
@@ -864,10 +1041,26 @@ mod tests {
 
         // KV entry: key at kv_data_start, value at kv_data_start + key_len
         let kv_entry_off = base + LOCATOR_HEADER_SIZE;
-        buf[kv_entry_off..kv_entry_off + 4].copy_from_slice(&(kv_data_start as u32).to_le_bytes());
-        buf[kv_entry_off + 4..kv_entry_off + 8].copy_from_slice(&((kv_data_start + key_utf16.len()) as u32).to_le_bytes());
-        buf[kv_entry_off + 8..kv_entry_off + 10].copy_from_slice(&(key_utf16.len() as u16).to_le_bytes());
-        buf[kv_entry_off + 10..kv_entry_off + 12].copy_from_slice(&(value_utf16.len() as u16).to_le_bytes());
+        buf[kv_entry_off..kv_entry_off + 4].copy_from_slice(
+            &u32::try_from(kv_data_start)
+                .expect("key/value data start fits u32")
+                .to_le_bytes(),
+        );
+        buf[kv_entry_off + 4..kv_entry_off + 8].copy_from_slice(
+            &u32::try_from(kv_data_start + key_utf16.len())
+                .expect("value offset fits u32")
+                .to_le_bytes(),
+        );
+        buf[kv_entry_off + 8..kv_entry_off + 10].copy_from_slice(
+            &u16::try_from(key_utf16.len())
+                .expect("key length fits u16")
+                .to_le_bytes(),
+        );
+        buf[kv_entry_off + 10..kv_entry_off + 12].copy_from_slice(
+            &u16::try_from(value_utf16.len())
+                .expect("value length fits u16")
+                .to_le_bytes(),
+        );
 
         // Key and value data
         let key_off = base + kv_data_start;
@@ -907,8 +1100,8 @@ mod tests {
         let encoded: Vec<(Vec<u8>, Vec<u8>)> = entries
             .iter()
             .map(|(k, v)| {
-                let ku: Vec<u8> = k.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
-                let vu: Vec<u8> = v.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+                let ku: Vec<u8> = k.encode_utf16().flat_map(u16::to_le_bytes).collect();
+                let vu: Vec<u8> = v.encode_utf16().flat_map(u16::to_le_bytes).collect();
                 (ku, vu)
             })
             .collect();
@@ -925,35 +1118,53 @@ mod tests {
 
         // Entry 0: Parent Locator
         let entry_off = TABLE_HEADER_SIZE;
-        buf[entry_off..entry_off + 16]
-            .copy_from_slice(&StandardItems::PARENT_LOCATOR.to_bytes());
-        buf[entry_off + 16..entry_off + 20]
-            .copy_from_slice(&(METADATA_TABLE_SIZE as u32).to_le_bytes());
-        buf[entry_off + 20..entry_off + 24]
-            .copy_from_slice(&(total_len as u32).to_le_bytes());
-        buf[entry_off + 24..entry_off + 28]
-            .copy_from_slice(&0x0000_0004u32.to_le_bytes());
+        buf[entry_off..entry_off + 16].copy_from_slice(&StandardItems::PARENT_LOCATOR.to_bytes());
+        buf[entry_off + 16..entry_off + 20].copy_from_slice(
+            &u32::try_from(METADATA_TABLE_SIZE)
+                .expect("metadata table size fits u32")
+                .to_le_bytes(),
+        );
+        buf[entry_off + 20..entry_off + 24].copy_from_slice(
+            &u32::try_from(total_len)
+                .expect("total length fits u32")
+                .to_le_bytes(),
+        );
+        buf[entry_off + 24..entry_off + 28].copy_from_slice(&0x0000_0004u32.to_le_bytes());
 
         // Locator header
         let base = METADATA_TABLE_SIZE;
-        buf[base..base + 16]
-            .copy_from_slice(&StandardItems::LOCATOR_TYPE_VHDX.to_bytes());
+        buf[base..base + 16].copy_from_slice(&StandardItems::LOCATOR_TYPE_VHDX.to_bytes());
         buf[base + 16..base + 18].copy_from_slice(&0u16.to_le_bytes()); // reserved
-        buf[base + 18..base + 20]
-            .copy_from_slice(&(count as u16).to_le_bytes());
+        buf[base + 18..base + 20].copy_from_slice(
+            &u16::try_from(count)
+                .expect("entry count fits u16")
+                .to_le_bytes(),
+        );
 
         // Write KV entries and data
         let mut data_offset = kv_data_start;
         for (i, (key_bytes, val_bytes)) in encoded.iter().enumerate() {
             let kv_entry_off = base + LOCATOR_HEADER_SIZE + i * KV_ENTRY_SIZE;
-            buf[kv_entry_off..kv_entry_off + 4]
-                .copy_from_slice(&(data_offset as u32).to_le_bytes());
-            buf[kv_entry_off + 4..kv_entry_off + 8]
-                .copy_from_slice(&((data_offset + key_bytes.len()) as u32).to_le_bytes());
-            buf[kv_entry_off + 8..kv_entry_off + 10]
-                .copy_from_slice(&(key_bytes.len() as u16).to_le_bytes());
-            buf[kv_entry_off + 10..kv_entry_off + 12]
-                .copy_from_slice(&(val_bytes.len() as u16).to_le_bytes());
+            buf[kv_entry_off..kv_entry_off + 4].copy_from_slice(
+                &u32::try_from(data_offset)
+                    .expect("data offset fits u32")
+                    .to_le_bytes(),
+            );
+            buf[kv_entry_off + 4..kv_entry_off + 8].copy_from_slice(
+                &u32::try_from(data_offset + key_bytes.len())
+                    .expect("value offset fits u32")
+                    .to_le_bytes(),
+            );
+            buf[kv_entry_off + 8..kv_entry_off + 10].copy_from_slice(
+                &u16::try_from(key_bytes.len())
+                    .expect("key length fits u16")
+                    .to_le_bytes(),
+            );
+            buf[kv_entry_off + 10..kv_entry_off + 12].copy_from_slice(
+                &u16::try_from(val_bytes.len())
+                    .expect("value length fits u16")
+                    .to_le_bytes(),
+            );
 
             let koff = base + data_offset;
             buf[koff..koff + key_bytes.len()].copy_from_slice(key_bytes);

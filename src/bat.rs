@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 /// Payload block state (MS-VHDX §2.5.1.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PayloadBlockState {
-    /// Block not present; contents undefined. FileOffsetMB reserved.
+    /// Block not present; contents undefined. `FileOffsetMB` reserved.
     NotPresent = 0,
     /// Block contents undefined; may contain arbitrary data.
     Undefined = 1,
@@ -19,7 +19,7 @@ pub enum PayloadBlockState {
     Zero = 2,
     /// Block was unmapped; contents no longer relied upon.
     Unmapped = 3,
-    /// Block fully present at FileOffsetMB.
+    /// Block fully present at `FileOffsetMB`.
     FullyPresent = 6,
     /// Block partially present (differencing only); sector bitmap required.
     PartiallyPresent = 7,
@@ -47,7 +47,7 @@ impl PayloadBlockState {
 pub enum SectorBitmapState {
     /// Block not allocated; contents undefined.
     NotPresent = 0,
-    /// Block present at FileOffsetMB (differencing only).
+    /// Block present at `FileOffsetMB` (differencing only).
     Present = 6,
 }
 
@@ -86,7 +86,7 @@ pub struct BatEntry<'a> {
     is_sector_bitmap: bool,
 }
 
-impl<'a> BatEntry<'a> {
+impl BatEntry<'_> {
     /// Raw 3-bit state value (bits 0-2).
     ///
     /// Use [`payload_state`](Self::payload_state) or
@@ -98,6 +98,7 @@ impl<'a> BatEntry<'a> {
 
     /// File offset in MB (bits 20-63, 44-bit field).
     #[inline]
+    #[must_use]
     pub fn file_offset_mb(&self) -> u64 {
         self.bytes.view_bits::<Lsb0>()[20..64].load::<u64>()
     }
@@ -155,7 +156,7 @@ impl<'a> BatEntry<'a> {
 pub struct Bat<'a> {
     /// Raw BAT region bytes.
     data: &'a [u8],
-    /// Chunk ratio = (2²³ × LogicalSectorSize) / BlockSize.
+    /// Chunk ratio = (2²³ × `LogicalSectorSize`) / `BlockSize`.
     chunk_ratio: u64,
 }
 
@@ -169,18 +170,15 @@ impl<'a> Bat<'a> {
     }
 
     /// Total number of 64-bit entries in the BAT buffer.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.data.len() / 8
     }
 
     /// Whether the BAT buffer is empty.
-    pub(crate) fn is_empty(&self) -> bool {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
         self.data.is_empty()
-    }
-
-    /// The chunk ratio used for payload/sector-bitmap interleaving.
-    pub(crate) fn chunk_ratio(&self) -> u64 {
-        self.chunk_ratio
     }
 
     /// Determine whether the entry at `index` is a sector bitmap block entry.
@@ -190,8 +188,11 @@ impl<'a> Bat<'a> {
         if self.chunk_ratio == 0 {
             return false;
         }
-        let stride = self.chunk_ratio as usize + 1;
-        index % stride == self.chunk_ratio as usize
+        let Ok(chunk_ratio) = usize::try_from(self.chunk_ratio) else {
+            return false;
+        };
+        let stride = chunk_ratio.saturating_add(1);
+        index % stride == chunk_ratio
     }
 
     /// Get a zero-copy entry view by index.
@@ -199,8 +200,13 @@ impl<'a> Bat<'a> {
     /// # Errors
     ///
     /// Returns [`Error::BatEntryNotFound`] if the index is out of bounds.
+    ///
+    /// # Panics
+    ///
+    /// Panics if internal bounds validation is violated before converting the
+    /// 8-byte slice into an array.
     pub fn entry(&self, index: u64) -> Result<BatEntry<'a>> {
-        let idx = index as usize;
+        let idx = usize::try_from(index).map_err(|_| Error::BatEntryNotFound { index })?;
         let offset = idx * 8;
         if offset.saturating_add(8) > self.data.len() {
             return Err(Error::BatEntryNotFound { index });
@@ -269,17 +275,35 @@ mod tests {
         let bat = Bat::new(&buf, 4);
 
         // Payload entries (indices 0-3)
-        assert_eq!(bat.entry(0).unwrap().payload_state(), Some(PayloadBlockState::NotPresent));
-        assert_eq!(bat.entry(1).unwrap().payload_state(), Some(PayloadBlockState::Undefined));
-        assert_eq!(bat.entry(2).unwrap().payload_state(), Some(PayloadBlockState::Zero));
-        assert_eq!(bat.entry(3).unwrap().payload_state(), Some(PayloadBlockState::Unmapped));
+        assert_eq!(
+            bat.entry(0).unwrap().payload_state(),
+            Some(PayloadBlockState::NotPresent)
+        );
+        assert_eq!(
+            bat.entry(1).unwrap().payload_state(),
+            Some(PayloadBlockState::Undefined)
+        );
+        assert_eq!(
+            bat.entry(2).unwrap().payload_state(),
+            Some(PayloadBlockState::Zero)
+        );
+        assert_eq!(
+            bat.entry(3).unwrap().payload_state(),
+            Some(PayloadBlockState::Unmapped)
+        );
 
         // Entry 4 is sector bitmap
         assert!(bat.entry(4).unwrap().is_sector_bitmap());
 
         // Entry 5 = next chunk, payload again
-        assert_eq!(bat.entry(5).unwrap().payload_state(), Some(PayloadBlockState::FullyPresent));
-        assert_eq!(bat.entry(6).unwrap().payload_state(), Some(PayloadBlockState::PartiallyPresent));
+        assert_eq!(
+            bat.entry(5).unwrap().payload_state(),
+            Some(PayloadBlockState::FullyPresent)
+        );
+        assert_eq!(
+            bat.entry(6).unwrap().payload_state(),
+            Some(PayloadBlockState::PartiallyPresent)
+        );
 
         // Reserved values 4, 5 → None
         assert_eq!(bat.entry(7).unwrap().payload_state(), None);
@@ -294,8 +318,14 @@ mod tests {
         // Entry 4 is sector bitmap
         let sb = bat.entry(4).unwrap();
         assert!(sb.is_sector_bitmap());
-        assert_eq!(sb.sector_bitmap_state(), Some(SectorBitmapState::NotPresent));
-        assert_eq!(sb.state().unwrap(), BatState::SectorBitmap(SectorBitmapState::NotPresent));
+        assert_eq!(
+            sb.sector_bitmap_state(),
+            Some(SectorBitmapState::NotPresent)
+        );
+        assert_eq!(
+            sb.state().unwrap(),
+            BatState::SectorBitmap(SectorBitmapState::NotPresent)
+        );
 
         // Entry 8 (index 8) = chunk_stride=5, 8%5=3 → payload, not SB
         // Entry 9 would be SB (9%5=4), but only 9 entries
@@ -329,7 +359,7 @@ mod tests {
     #[test]
     fn file_offset_mb_44bit_max() {
         // Max 44-bit value
-        let max_offset: u64 = 0xFFF_FFFF_FFF;
+        let max_offset: u64 = 0x00FF_FFFF_FFFF;
         let mut raw_bytes = [0u8; 8];
         {
             let bits = raw_bytes.view_bits_mut::<Lsb0>();
@@ -361,7 +391,10 @@ mod tests {
 
         // Verify each entry's raw_state matches the original value
         for (i, entry) in entries.iter().enumerate() {
-            assert_eq!(entry.raw_state(), i as u8);
+            assert_eq!(
+                entry.raw_state(),
+                u8::try_from(i).expect("test index fits u8")
+            );
         }
     }
 

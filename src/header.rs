@@ -77,6 +77,7 @@ impl<'a> Header<'a> {
     }
 
     /// Return the file type identifier.
+    #[must_use]
     pub fn file_type(&self) -> FileTypeIdentifier<'a> {
         FileTypeIdentifier { data: self.data }
     }
@@ -87,6 +88,11 @@ impl<'a> Header<'a> {
     ///   sequence number among the two valid headers).
     /// - `index = 1`: returns Header 1 (physical offset 64 KB).
     /// - `index = 2`: returns Header 2 (physical offset 128 KB).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the index is invalid or the requested header fails
+    /// signature/checksum validation.
     pub fn header(&self, index: usize) -> Result<HeaderStructure<'a>> {
         match index {
             0 => self.current_header(),
@@ -103,6 +109,11 @@ impl<'a> Header<'a> {
     /// - `index = 0`: returns the region table corresponding to the current header.
     /// - `index = 1`: returns Region Table 1 (physical offset 192 KB).
     /// - `index = 2`: returns Region Table 2 (physical offset 256 KB).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the index is invalid or the requested table fails
+    /// signature/checksum validation.
     pub fn region_table(&self, index: usize) -> Result<RegionTable<'a>> {
         match index {
             0 => self.current_region_table(),
@@ -142,7 +153,7 @@ impl<'a> Header<'a> {
         // compute the CRC-32C, then immediately restore the original bytes.
         // crc32c() is a pure read-only computation that cannot panic. The
         // modification is to raw u8 bytes which have no invalid states.
-        let ptr = slice.as_ptr() as *mut u8;
+        let ptr = slice.as_ptr().cast_mut();
         unsafe {
             std::ptr::write_bytes(ptr.add(4), 0, 4);
         }
@@ -239,7 +250,7 @@ impl<'a> Header<'a> {
         let saved_checksum: [u8; 4] = slice[4..8].try_into().unwrap();
         // SAFETY: Same pattern as validate_header_at: temporarily zero
         // bytes 4..8 for CRC computation, then restore immediately.
-        let ptr = slice.as_ptr() as *mut u8;
+        let ptr = slice.as_ptr().cast_mut();
         unsafe {
             std::ptr::write_bytes(ptr.add(4), 0, 4);
         }
@@ -307,11 +318,17 @@ impl<'a> FileTypeIdentifier<'a> {
     /// # Panics
     ///
     /// Cannot panic — the data slice is guaranteed to be at least 320 KB.
+    #[must_use]
     pub fn signature(&self) -> &'a [u8; 8] {
         self.data[..8].try_into().unwrap()
     }
 
     /// Return the 512-byte creator field as raw bytes (UTF-16 LE, possibly null-terminated).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the header buffer is shorter than the required creator field.
+    #[must_use]
     pub fn creator(&self) -> &'a [u8; 512] {
         self.data[8..8 + CREATOR_SIZE].try_into().unwrap()
     }
@@ -330,11 +347,21 @@ pub struct HeaderStructure<'a> {
 
 impl<'a> HeaderStructure<'a> {
     /// Return the 4-byte header signature ("head").
+    ///
+    /// # Panics
+    ///
+    /// Panics if the header slice is shorter than 4 bytes.
+    #[must_use]
     pub fn signature(&self) -> &'a [u8; 4] {
         self.data[..4].try_into().unwrap()
     }
 
     /// Return the stored CRC-32C checksum.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the header slice is shorter than 8 bytes.
+    #[must_use]
     pub fn checksum(&self) -> u32 {
         u32::from_le_bytes(self.data[4..8].try_into().unwrap())
     }
@@ -342,41 +369,81 @@ impl<'a> HeaderStructure<'a> {
     /// Return the sequence number.
     ///
     /// The header with the higher sequence number is considered current.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the header slice is shorter than 16 bytes.
+    #[must_use]
     pub fn sequence_number(&self) -> u64 {
         u64::from_le_bytes(self.data[8..16].try_into().unwrap())
     }
 
     /// Return the file write GUID.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the header slice is shorter than 32 bytes.
+    #[must_use]
     pub fn file_write_guid(&self) -> Guid {
         Guid::from_bytes(self.data[16..32].try_into().unwrap())
     }
 
     /// Return the data write GUID.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the header slice is shorter than 48 bytes.
+    #[must_use]
     pub fn data_write_guid(&self) -> Guid {
         Guid::from_bytes(self.data[32..48].try_into().unwrap())
     }
 
     /// Return the log GUID.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the header slice is shorter than 64 bytes.
+    #[must_use]
     pub fn log_guid(&self) -> Guid {
         Guid::from_bytes(self.data[48..64].try_into().unwrap())
     }
 
     /// Return the log format version (must be 0 per spec).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the header slice is shorter than 66 bytes.
+    #[must_use]
     pub fn log_version(&self) -> u16 {
         u16::from_le_bytes(self.data[64..66].try_into().unwrap())
     }
 
     /// Return the VHDX format version (must be 1 per spec).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the header slice is shorter than 68 bytes.
+    #[must_use]
     pub fn version(&self) -> u16 {
         u16::from_le_bytes(self.data[66..68].try_into().unwrap())
     }
 
     /// Return the log length in bytes (must be a multiple of 1 MB).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the header slice is shorter than 72 bytes.
+    #[must_use]
     pub fn log_length(&self) -> u32 {
         u32::from_le_bytes(self.data[68..72].try_into().unwrap())
     }
 
     /// Return the log offset in the file (must be a multiple of 1 MB).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the header slice is shorter than 80 bytes.
+    #[must_use]
     pub fn log_offset(&self) -> u64 {
         u64::from_le_bytes(self.data[72..80].try_into().unwrap())
     }
@@ -393,11 +460,12 @@ pub struct RegionTable<'a> {
     data: &'a [u8],
 }
 
-/// Region table header is 16 bytes: signature(4) + checksum(4) + entry_count(4) + reserved(4).
+/// Region table header is 16 bytes: signature(4) + checksum(4) + `entry_count(4)` + reserved(4).
 const RT_HEADER_SIZE: usize = 16;
 
 impl<'a> RegionTable<'a> {
     /// Return the region table header.
+    #[must_use]
     pub fn header(&self) -> RegionTableHeader<'a> {
         RegionTableHeader {
             data: &self.data[..RT_HEADER_SIZE],
@@ -427,21 +495,41 @@ pub struct RegionTableHeader<'a> {
 
 impl<'a> RegionTableHeader<'a> {
     /// Return the 4-byte signature ("regi").
+    ///
+    /// # Panics
+    ///
+    /// Panics if the region table header slice is shorter than 4 bytes.
+    #[must_use]
     pub fn signature(&self) -> &'a [u8; 4] {
         self.data[..4].try_into().unwrap()
     }
 
     /// Return the stored CRC-32C checksum.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the region table header slice is shorter than 8 bytes.
+    #[must_use]
     pub fn checksum(&self) -> u32 {
         u32::from_le_bytes(self.data[4..8].try_into().unwrap())
     }
 
     /// Return the number of region table entries.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the region table header slice is shorter than 12 bytes.
+    #[must_use]
     pub fn entry_count(&self) -> u32 {
         u32::from_le_bytes(self.data[8..12].try_into().unwrap())
     }
 
     /// Return the reserved field.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the region table header slice is shorter than 16 bytes.
+    #[must_use]
     pub fn reserved(&self) -> u32 {
         u32::from_le_bytes(self.data[12..16].try_into().unwrap())
     }
@@ -456,23 +544,43 @@ pub struct RegionTableEntry<'a> {
     data: &'a [u8],
 }
 
-impl<'a> RegionTableEntry<'a> {
+impl RegionTableEntry<'_> {
     /// Return the region GUID (16 bytes, mixed-endian RFC 4122 layout).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the entry slice is shorter than 16 bytes.
+    #[must_use]
     pub fn guid(&self) -> Guid {
         Guid::from_bytes(self.data[..16].try_into().unwrap())
     }
 
     /// Return the byte offset of the region within the file.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the entry slice is shorter than 24 bytes.
+    #[must_use]
     pub fn file_offset(&self) -> u64 {
         u64::from_le_bytes(self.data[16..24].try_into().unwrap())
     }
 
     /// Return the byte length of the region.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the entry slice is shorter than 28 bytes.
+    #[must_use]
     pub fn length(&self) -> u32 {
         u32::from_le_bytes(self.data[24..28].try_into().unwrap())
     }
 
     /// Whether this region is required (bit 0 of the Required field per MS-VHDX §2.2.3).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the entry slice is shorter than 32 bytes.
+    #[must_use]
     pub fn required(&self) -> bool {
         self.data[28..32].view_bits::<Lsb0>()[0]
     }
@@ -537,15 +645,19 @@ mod tests {
         for i in 0..entry_count as usize {
             let eoff = entries_start + i * REGION_ENTRY_SIZE;
             // guid (16 bytes of incrementing pattern)
-            buf[eoff..eoff + 16].copy_from_slice(&[i as u8; 16]);
+            buf[eoff..eoff + 16]
+                .copy_from_slice(&[u8::try_from(i).expect("entry index fits u8"); 16]);
             // file_offset
-            buf[eoff + 16..eoff + 24]
-                .copy_from_slice(&((1024 * 1024 * (i as u64 + 2)).to_le_bytes()));
+            buf[eoff + 16..eoff + 24].copy_from_slice(
+                &(1024 * 1024 * (u64::try_from(i).expect("entry index fits u64") + 2))
+                    .to_le_bytes(),
+            );
             // length
-            buf[eoff + 24..eoff + 28]
-                .copy_from_slice(&(1024u32 * 1024).to_le_bytes());
+            buf[eoff + 24..eoff + 28].copy_from_slice(&(1024u32 * 1024).to_le_bytes());
             // required (bit 0 set)
-            buf[eoff + 28..eoff + 32].view_bits_mut::<Lsb0>().set(0, true);
+            buf[eoff + 28..eoff + 32]
+                .view_bits_mut::<Lsb0>()
+                .set(0, true);
         }
 
         // Compute CRC-32C over the full 64 KB with checksum zeroed.

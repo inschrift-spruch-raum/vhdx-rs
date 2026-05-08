@@ -17,9 +17,9 @@ pub enum SignaturePosition {
 /// Used for `InvalidSignature` where the `expected` and `found` fields
 /// must be 8 bytes. 4-byte signatures (e.g. "head", "regi") are padded
 /// by setting the upper 4 bytes to zero.
-pub(crate) fn pad_signature_4to8(sig: &[u8; 4]) -> [u8; 8] {
+pub(crate) fn pad_signature_4to8(sig: [u8; 4]) -> [u8; 8] {
     let mut out = [0u8; 8];
-    out[..4].copy_from_slice(sig);
+    out[..4].copy_from_slice(&sig);
     out
 }
 
@@ -73,18 +73,18 @@ pub enum Error {
     /// BAT block state is valid but incompatible with the disk type
     /// (e.g. Unmapped on non-differencing disk, or sector bitmap Present on non-differencing).
     ///
-    /// Standard: MS-VHDX-校验扩展标准 §4.3 — BAT_ENTRY_STATE_MISMATCH
+    /// Standard: MS-VHDX-校验扩展标准 §4.3 — `BAT_ENTRY_STATE_MISMATCH`
     #[error("BAT state mismatch: state={state:#04x}, {description}")]
     StateMismatch {
         /// The raw 3-bit state value.
         state: u8,
-        /// Human-readable description of the mismatch (e.g. "sector bitmap state not NotPresent on non-differencing disk").
+        /// Human-readable description of the mismatch (e.g. "sector bitmap state not `NotPresent` on non-differencing disk").
         description: String,
     },
 
     /// BAT entry file offset is not aligned to the block size boundary.
     ///
-    /// Standard: MS-VHDX-校验扩展标准 §4.3 — BAT_ENTRY_FILE_OFFSET_UNALIGNED
+    /// Standard: MS-VHDX-校验扩展标准 §4.3 — `BAT_ENTRY_FILE_OFFSET_UNALIGNED`
     #[error("BAT entry file offset not aligned: offset_mb={offset_mb}, block_size={block_size}")]
     BatFileOffsetUnaligned {
         /// The file offset in MB from the BAT entry.
@@ -229,9 +229,7 @@ impl From<Error> for std::io::Error {
             Error::MetadataNotFound { .. }
             | Error::BatEntryNotFound { .. }
             | Error::BlockNotPresent { .. }
-            | Error::ParentNotFound { .. } => {
-                Self::new(std::io::ErrorKind::NotFound, e.to_string())
-            }
+            | Error::ParentNotFound => Self::new(std::io::ErrorKind::NotFound, e.to_string()),
 
             // Permission
             Error::ReadOnly | Error::LogReplayRequired => {

@@ -17,4 +17,3 @@ pub use error::{Error, Result, SignaturePosition};
 pub use file::{CreateOptions, File, LogReplayPolicy, OpenOptions, ReadSemanticsPolicy};
 pub use io::{IO, Sector};
 pub use types::Guid;
-
