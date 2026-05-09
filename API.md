@@ -84,12 +84,11 @@ vhdx::
 │   │           ├── guid(&self) -> Guid
 │   │           ├── file_offset(&self) -> u64
 │   │           ├── length(&self) -> u32
-│   │           └── required(&self) -> u32
+│   │           └── required(&self) -> bool
 │   │
 │   ├── Bat<'a>                             # BAT Section
 │   │   ├── entry(&self, index: u64) -> Result<BatEntry>
-│   │   ├── entries(&self) -> impl Iterator<Item = BatEntry<'_>> + '_  # 强制：零拷贝视图迭代
-│   │   └── len(&self) -> usize
+│   │   └── entries(&self) -> impl Iterator<Item = BatEntry<'_>> + '_  # 强制：零拷贝视图迭代
 │   │
 │   │   └── BatEntry<'a>                    # BAT Entry 结构体
 │   │       ├── state(&self) -> Result<BatState>
@@ -610,7 +609,7 @@ pub mod validation {
         /// - parent_linkage 必须存在
         /// - 若存在 parent_linkage2 则返回错误（见 struct 文档的已知限制说明）
         /// - relative_path / volume_path / absolute_win32_path 至少存在一个
-        /// - 若父磁盘可访问，校验子盘 DataWriteGuid 与父盘预期的一致性
+        /// - 若父磁盘可访问，校验子盘 parent_linkage 与父盘 DataWriteGuid 的一致性
         ///
         /// 返回 `Vec<ValidationIssue>` 列出所有发现的 Parent Locator / 差分链校验问题。
         pub fn validate_parent_locator(&self) -> Result<Vec<ValidationIssue>>;
@@ -733,7 +732,7 @@ pub struct RegionTableEntry<'a> {
     pub fn guid(&self) -> Guid,
     pub fn file_offset(&self) -> u64,
     pub fn length(&self) -> u32,
-    pub fn required(&self) -> u32,
+    pub fn required(&self) -> bool,
 }
 ```
 
@@ -756,9 +755,6 @@ impl<'a> Bat<'a> {
     ///
     /// 零拷贝约束：返回项必须借用 BAT 原始缓冲区，不得复制 Entry 原始字节。
     pub fn entries(&self) -> impl Iterator<Item = BatEntry<'_>> + '_;
-    
-    /// BAT Entry数量
-    pub fn len(&self) -> usize;
 }
 
 /// BAT Entry 结构体（零拷贝视图）
@@ -1088,7 +1084,7 @@ impl<'a> Entry<'a> {
     ///
     /// 失败条件：
     /// - 索引越界 -> Error::InvalidParameter
-    /// - 签名非法 -> Error::LogEntryCorrupted
+    /// - 签名非法 -> Error::InvalidSignature { position: SignaturePosition::Descriptor, ... }
     pub fn descriptor(&self, index: usize) -> Result<Descriptor<'_>>;
     
     /// 获取所有Descriptors（按原始顺序，按需解析）
@@ -1108,11 +1104,12 @@ impl<'a> Entry<'a> {
 /// 解析规则（签名判定）：
 /// - 4 字节签名 == `"desc"` -> `Data` 变体
 /// - 4 字节签名 == `"zero"` -> `Zero` 变体
-/// - 其他签名 -> always `Error::LogEntryCorrupted`
+/// - 其他签名 -> `Error::InvalidSignature { position: SignaturePosition::Descriptor, ... }`
 ///
 /// 注意：Descriptor 属于日志结构的内核组成部分，出现未知签名
 /// 等价于数据损坏，不受 strict 模式影响——无论 strict=true 还是
-/// strict=false，未知签名均返回 LogEntryCorrupted。
+/// strict=false，未知签名均返回 InvalidSignature。
+/// 对应 CODE：LOG_DESCRIPTOR_SIGNATURE_INVALID（MS-VHDX/2.3.1）
 pub enum Descriptor<'a> {
     Data(DataDescriptor<'a>),
     Zero(ZeroDescriptor<'a>),
@@ -1217,6 +1214,12 @@ impl<'a> IO<'a> {
     /// - 扇区范围超出虚拟磁盘范围            -> Error::SectorOutOfBounds
     /// - 文件状态异常（如父链不可用）         -> 对应具体错误
     pub fn sector(&self, start: u64, count: u64) -> Result<Sector<'_>>;
+
+    /// The size of one logical sector in bytes.
+    pub fn logical_sector_size(&self) -> u32;
+
+    /// The payload block size in bytes.
+    pub fn block_size(&self) -> u32;
 }
 
 /// Sector —— 扇区级定位与操作（游标式 IO）
@@ -1383,6 +1386,18 @@ pub enum Error {
         version: u16,
     },
 
+    /// Header LogLength/LogOffset 未按 1MB 对齐
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.1
+    /// 对应 CODE（由 field 区分）：
+    /// - LogLength 非 1MB 整数倍 → HEADER_LOG_LENGTH_NOT_ALIGNED（MS-VHDX/2.2.2）
+    /// - LogOffset 非 1MB 整数倍 → HEADER_LOG_OFFSET_NOT_ALIGNED（MS-VHDX/2.2.2）
+    /// 规范要求 LogLength 和 LogOffset MUST 为 1MB 的整数倍。
+    HeaderLogNotAligned {
+        field: String,
+        value: u64,
+    },
+
     /// CRC32C 校验和不匹配
     ///
     /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.1/§4.2/§4.5
@@ -1452,11 +1467,12 @@ pub enum Error {
     /// 区域表格式错误
     ///
     /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.2
-    /// 涵盖：entry 对齐/偏移最小值/区间重叠/格式异常
+    /// 涵盖：entry 对齐/偏移最小值/区间重叠/entry 数量上限/格式异常
     /// 对应 CODE（由 message 区分）：
     /// - 对齐错误 → REGION_ENTRY_ALIGNMENT（MS-VHDX/2.2.3.2）
     /// - 偏移 < 1MB → REGION_ENTRY_OFFSET_MINIMUM（MS-VHDX/2.2.3.2）
     /// - 区间重叠 → REGION_ENTRY_OVERLAP（MS-VHDX/2.1）
+    /// - entry 数量 > 2047 → REGION_ENTRY_COUNT_EXCEEDS_MAXIMUM（MS-VHDX/2.2.3.1）
     InvalidRegionTable(String),
 
     /// 未知的 required region
@@ -1494,6 +1510,10 @@ pub enum Error {
     /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.4
     /// 对应 CODE：METADATA_GUID_UNKNOWN（MS-VHDX/2.6.2）
     /// Metadata Table 中存在实现无法识别的 Item GUID。
+    ///
+    /// 消歧规则：当 TableEntry 的 IsRequired flag 可判定时，应优先使用
+    /// MetadataRequiredUnknown（IsRequired=1）或 MetadataOptionalUnknown（IsRequired=0）。
+    /// MetadataGuidUnknown 仅在 required/optional 属性不可判定时使用（如 TableEntry 结构损坏）。
     MetadataGuidUnknown {
         guid: Guid,
     },
@@ -1526,12 +1546,32 @@ pub enum Error {
         guid: Guid,
     },
 
-    /// Metadata Entry 保留标志位被设置
+    /// Metadata Table Entry 保留标志位被设置
     ///
     /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.4
     /// 对应 CODE：METADATA_RESERVED_FLAGS_SET（MS-VHDX/2.6.1.2）
     /// Metadata Table Entry 中的保留位（bits 3-31）被置 1。
     MetadataReservedFlagsSet {
+        flags: u32,
+    },
+
+    /// Metadata Table Entry Reserved 字段不为 0
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.4
+    /// 对应 CODE：METADATA_ENTRY_RESERVED_NONZERO（MS-VHDX/2.6.1.2）
+    /// Metadata Table Entry 的 4 字节 Reserved 字段 MUST 为 0，不为 0 时触发。
+    MetadataEntryReservedNonzero {
+        reserved: u32,
+    },
+
+    /// FileParameters 保留标志位被设置
+    ///
+    /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.4
+    /// 对应 CODE：METADATA_FILE_PARAMETERS_RESERVED_FLAGS（MS-VHDX/2.6.2.1）
+    /// FileParameters 中的保留位（bits 2-31）被置 1。
+    /// 与 MetadataReservedFlagsSet 的区别：后者针对 Metadata Table Entry 的 flag bits，
+    /// 本变体针对 FileParameters Item 数据内部的保留位。
+    FileParametersReservedFlags {
         flags: u32,
     },
 
@@ -1568,11 +1608,12 @@ pub enum Error {
     /// 日志条目损坏
     ///
     /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.5
-    /// 涵盖：EntryLength 非法 / Tail 非法 / DescriptorCount 不匹配等
+    /// 涵盖：EntryLength 非法 / Tail 非法 / DescriptorCount 不匹配 / Descriptor SequenceNumber 不匹配等
     /// 对应 CODE（由 message 区分）：
     /// - EntryLength 非法 → LOG_ENTRY_LENGTH_INVALID（MS-VHDX/2.3.1.1）
     /// - Tail 非法 → LOG_ENTRY_TAIL_INVALID（MS-VHDX/2.3.1.1）
     /// - 描述符数量不匹配 → LOG_DESCRIPTOR_COUNT_MISMATCH（MS-VHDX/2.3.1）
+    /// - 描述符 SequenceNumber 与 Entry 不匹配 → LOG_DESCRIPTOR_SEQUENCE_MISMATCH（MS-VHDX/2.3.1）
     LogEntryCorrupted(String),
 
     /// 日志 sequence 不连续

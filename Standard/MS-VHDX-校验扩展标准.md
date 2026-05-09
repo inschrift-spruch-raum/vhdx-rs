@@ -57,12 +57,12 @@ MS-VHDX/{chapter}.{section}[.{subsection}[.{sub}]]
    - `BAT` — validate_bat
    - `METADATA` — validate_metadata
    - `METADATA_REQUIRED` — validate_required_metadata_items
-   - `LOG` — validate_log
-   - `LOG_SEQUENCE` — 日志 sequence 层级错误
+   - `LOG` — validate_log（LOG 阶段内部的 code 可在 SECTION 后附加子分类前缀，如 `LOG_ENTRY_*`、`LOG_DESCRIPTOR_*`、`LOG_DATA_*`、`LOG_SEQUENCE_*`、`LOG_ACTIVE_*`、`LOG_REPLAY_*`）
    - `PARENT_LOCATOR` — validate_parent_locator
-    - `GENERAL` — 跨阶段的通用约束
+   - `GENERAL` — 跨阶段的通用约束
 2. `ISSUE` 为具体问题描述，以 `_` 分隔，全大写。
 3. 同一校验阶段内的 code 必须唯一。
+4. 对于校验阶段内存在多个子结构的场景（如 Log 阶段的 Entry/Descriptor/DataSector），code 命名可使用 `{SECTION}_{SUBJECT}_{ISSUE}` 三段式以保持可读性，但 `SECTION` 仍必须对应 §3.3 中的校验阶段。
 
 ### 3.3 `section` 命名
 
@@ -128,7 +128,7 @@ MS-VHDX/{chapter}.{section}[.{subsection}[.{sub}]]
 |---|---|---|
 | `METADATA_ENTRY_INVALID` | `MS-VHDX/2.6.1.2` | Table Entry 格式异常（offset/length 越界） |
 | `METADATA_ENTRY_OFFSET_MINIMUM` | `MS-VHDX/2.6.1.2` | metadata entry offset 必须 >= 64KB |
-| `METADATA_GUID_UNKNOWN` | `MS-VHDX/2.6.2` | 未知 Metadata Item GUID |
+| `METADATA_GUID_UNKNOWN` | `MS-VHDX/2.6.2` | 未知 Metadata Item GUID（仅在实现无法确定 required/optional 属性时使用） |
 | `METADATA_ITEMS_OVERLAP` | `MS-VHDX/2.6.2` | metadata items 区间相互重叠 |
 | `METADATA_ITEM_CORRUPTED` | `MS-VHDX/2.6.2` | Metadata Item 数据损坏 |
 | `METADATA_OPTIONAL_UNKNOWN` | `RELAX` | optional unknown metadata item 在严格模式下被拒绝（非严格模式下 MUST 忽略，不产生此 code） |
@@ -138,6 +138,16 @@ MS-VHDX/{chapter}.{section}[.{subsection}[.{sub}]]
 | `METADATA_TABLE_SIGNATURE_INVALID` | `MS-VHDX/2.6.1.1` | Metadata Table Header 签名非 `metadata` |
 | `METADATA_ENTRY_RESERVED_NONZERO` | `MS-VHDX/2.6.1.2` | Metadata entry reserved 字段不为 0 |
 | `METADATA_FILE_PARAMETERS_RESERVED_FLAGS` | `MS-VHDX/2.6.2.1` | FileParameters 保留标志位（bits 2-31）被设置 |
+
+> **消歧规则（未知 Metadata Item GUID）**：
+>
+> 当 Metadata Table 中存在实现无法识别的 Item GUID 时，按以下优先级选择 code：
+>
+> 1. 若 TableEntry 的 `IsRequired` flag 为 1 → 使用 `METADATA_REQUIRED_UNKNOWN`（required unknown）。
+> 2. 若 TableEntry 的 `IsRequired` flag 为 0 → 使用 `METADATA_OPTIONAL_UNKNOWN`（optional unknown）。
+> 3. 若实现无法读取 `IsRequired` flag（如 TableEntry 结构损坏导致 flag 不可解析）→ 使用 `METADATA_GUID_UNKNOWN`（兜底）。
+>
+> 即：`METADATA_GUID_UNKNOWN` 仅在 required/optional 属性不可判定时使用，不应与 `METADATA_REQUIRED_UNKNOWN` 或 `METADATA_OPTIONAL_UNKNOWN` 同时触发。
 
 ### 4.5 Log 校验
 
