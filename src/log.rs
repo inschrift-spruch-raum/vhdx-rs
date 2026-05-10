@@ -45,6 +45,11 @@ impl<'a> Log<'a> {
     ///
     /// The buffer length must be a multiple of 4 KB (MB-aligned on disk,
     /// but we just need 4 KB alignment for entry parsing).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::LogEntryCorrupted` if the buffer size is not a
+    /// multiple of 4 KB.
     pub(crate) fn new(data: &'a [u8]) -> Result<Self> {
         if !data.len().is_multiple_of(SECTOR_SIZE) {
             return Err(Error::LogEntryCorrupted(
@@ -106,6 +111,13 @@ impl<'a> Log<'a> {
     ///
     /// The offset must be 4KB-aligned and the entry must be fully contained
     /// within the buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns errors from [`parse_entry_at`](Self::parse_entry_at):
+    /// `Error::InvalidSignature` if the entry signature is not `"loge"`,
+    /// `Error::LogEntryCorrupted` if the entry length is invalid or the
+    /// entry extends beyond the buffer.
     pub(crate) fn entry_at(&self, offset: usize) -> Result<Entry<'_>> {
         self.parse_entry_at(offset)
     }
@@ -113,7 +125,7 @@ impl<'a> Log<'a> {
     /// Iterate over all valid log entries in the buffer.
     ///
     /// Scans entries sequentially from the beginning. Stops when the buffer
-    /// is exhausted or an invalid entry signature is encountered.
+    /// is exhausted or an invalid entry is encountered.
     pub fn entries(&self) -> impl Iterator<Item = Entry<'_>> + '_ {
         LogEntryIter {
             log: self,
@@ -328,6 +340,11 @@ impl<'a> Entry<'a> {
     ///
     /// This method avoids allocation by zeroing the checksum field in place
     /// (previously used `self.data.to_vec()`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidChecksum` if the computed CRC-32C does not
+    /// match the stored checksum.
     pub(crate) fn verify_checksum(&self) -> Result<()> {
         let stored = self.header().checksum();
 
@@ -374,12 +391,7 @@ impl<'a> Entry<'a> {
         Ok(())
     }
 
-    /// Return the raw entry data.
-    #[allow(dead_code)]
-    #[must_use]
-    pub(crate) fn as_bytes(&self) -> &'a [u8] {
-        self.data
-    }
+
 
     /// Get the raw bytes for descriptor at the given index.
     ///

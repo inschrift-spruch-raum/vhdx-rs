@@ -253,14 +253,14 @@ impl File {
     ///
     /// # Errors
     ///
-    /// Returns an error if the `IO` handle cannot be created (e.g. missing
-    /// metadata or invalid BAT state).
+    /// Returns an error if metadata is missing, malformed, or contains invalid
+    /// parameters (e.g. zero block size, missing `FileParameters`, missing
+    /// `VirtualDiskSize`, zero sector size).
     pub fn io(&self) -> Result<crate::io::IO<'_>> {
         crate::io::IO::new(self)
     }
 
     /// Access the buffered header data (first 1 MB).
-    #[allow(dead_code)]
     pub(crate) fn header_buf(&self) -> &[u8] {
         &self.header_buf
     }
@@ -269,6 +269,11 @@ impl File {
     ///
     /// Reads the BAT region using the offset and length stored in the
     /// header's region table. Subsequent calls return the cached buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `OnceLock::set` operation fails (should not occur in
+    /// single-threaded usage).
     pub(crate) fn bat_buf(&self) -> Result<&[u8]> {
         if let Some(buf) = self.bat_buf.get() {
             return Ok(&buf[..]);
@@ -296,6 +301,11 @@ impl File {
     ///
     /// Reads the metadata region using the offset and length stored in the
     /// header's region table. Subsequent calls return the cached buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `OnceLock::set` operation fails (should not occur in
+    /// single-threaded usage).
     pub(crate) fn metadata_buf(&self) -> Result<&[u8]> {
         if let Some(buf) = self.metadata_buf.get() {
             return Ok(&buf[..]);
@@ -322,6 +332,11 @@ impl File {
     ///
     /// Reads the log region using the offset and length stored in the
     /// VHDX header structure. Subsequent calls return the cached buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `OnceLock::set` operation fails (should not occur in
+    /// single-threaded usage).
     pub(crate) fn log_buf(&self) -> Result<&[u8]> {
         if let Some(buf) = self.log_buf.get() {
             return Ok(&buf[..]);
@@ -355,6 +370,11 @@ impl File {
     /// cached region buffer (header, log, BAT, metadata) and copies it into a
     /// contiguous zero-filled buffer at its absolute file offset. Regions that
     /// cannot be loaded are silently omitted.
+    ///
+    /// # Panics
+    ///
+    /// Panics if internal offset conversions from validated on-disk structures
+    /// overflow `usize`. This should not happen with well-formed VHDX files.
     fn build_validator_buf(&self) -> Vec<u8> {
         // Parse header to find region offsets
         let Ok(header) = Header::new(&self.header_buf) else {
@@ -665,6 +685,10 @@ impl OpenOptions {
         Ok(log_data)
     }
 
+    /// # Panics
+    ///
+    /// Panics if header offset conversions overflow `usize`.
+    /// This should not happen with well-formed VHDX files.
     fn apply_writable_header_update(
         &self, file: &mut std::fs::File, header_buf: &mut Vec<u8>,
     ) -> Result<()> {
@@ -1499,6 +1523,12 @@ impl CreateOptions {
     /// `parent_data_write_guid` is the `DataWriteGuid` read from the parent file's
     /// header. Per MS-VHDX §2.6.2.6.3, the `parent_linkage` value MUST be the
     /// parent's `DataWriteGuid`, formatted as a lowercase GUID string with braces.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any of the 8 `u32::try_from` / `u16::try_from` offset or length
+    /// conversions overflow. This should not happen with valid UTF-16 key/value
+    /// data within reasonable size limits.
     fn build_parent_locator(&self, parent_data_write_guid: Guid) -> Vec<u8> {
         // Format parent_linkage as the parent's DataWriteGuid with braces:
         // "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}"

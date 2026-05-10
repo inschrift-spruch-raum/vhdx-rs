@@ -10,7 +10,7 @@ pub struct Guid {
 }
 
 impl Guid {
-    /// Create a `Guid` from raw little-endian bytes as stored on disk.
+    /// Create a `Guid` from raw mixed-endian bytes as stored on disk.
     #[must_use]
     pub const fn from_bytes(bytes: [u8; 16]) -> Self {
         Self { bytes }

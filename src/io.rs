@@ -37,7 +37,7 @@ use crate::metadata::Metadata;
 
 /// Virtual disk sector-level I/O.
 ///
-/// Created via [`IO::new`] by passing a file reference.
+/// Constructed internally from a file reference.
 /// The IO struct resolves BAT entries, manages block offsets, and provides
 /// the only path to sector-level reads and writes.
 ///
@@ -49,11 +49,7 @@ pub struct IO<'a> {
     file: &'a File,
     block_size: u32,
     logical_sector_size: u32,
-    #[allow(dead_code)]
-    has_parent: bool,
     chunk_ratio: u64,
-    #[allow(dead_code)]
-    sectors_per_block: u64,
     max_sector: u64,
     /// In-memory replay overlay for serving post-replay data through the read path.
     overlay: Option<Arc<ReplayOverlay>>,
@@ -80,7 +76,6 @@ impl<'a> IO<'a> {
         if block_size == 0 {
             return Err(Error::InvalidMetadata("block size must be non-zero".into()));
         }
-        let has_parent = fp.has_parent();
 
         let logical_sector_size = items.logical_sector_size().ok().unwrap_or(512);
         if logical_sector_size == 0 {
@@ -93,7 +88,6 @@ impl<'a> IO<'a> {
             Error::InvalidMetadata("VirtualDiskSize metadata item not found".into())
         })?;
 
-        let sectors_per_block = u64::from(block_size) / u64::from(logical_sector_size);
         let max_sector = virtual_size / u64::from(logical_sector_size);
 
         // chunk_ratio = (2^23 * LogicalSectorSize) / BlockSize
@@ -103,9 +97,7 @@ impl<'a> IO<'a> {
             file,
             block_size,
             logical_sector_size,
-            has_parent,
             chunk_ratio,
-            sectors_per_block,
             max_sector: max_sector.saturating_sub(1),
             overlay: file.replay_overlay_arc().cloned(),
             parent_file: RefCell::new(None),
@@ -128,7 +120,8 @@ impl<'a> IO<'a> {
     ///
     /// # Errors
     ///
-    /// - [`Error::InvalidParameter`] if `count == 0` or `start + count` overflows.
+    /// - [`Error::InvalidParameter`] if `count == 0`, `start + count` overflows,
+    ///   or `count * logical_sector_size` overflows.
     /// - [`Error::SectorOutOfBounds`] if the range exceeds the virtual disk.
     pub fn sector(&self, start: u64, count: u64) -> Result<Sector<'_>> {
         if count == 0 {
@@ -204,6 +197,11 @@ impl Sector<'_> {
     /// fit within `sector_count * logical_sector_size`.
     ///
     /// Respects the sector's semantics policy.
+    ///
+    /// # Panics
+    ///
+    /// Panics if arithmetic overflow occurs during sector/offset conversion.
+    /// This should not happen with well-formed VHDX files.
     fn read_at(&self, buf: &mut [u8], byte_offset: u64) -> Result<()> {
         let lss = self.logical_sector_size as usize;
         let range_bytes = self.count * lss as u64;
@@ -257,6 +255,11 @@ impl Sector<'_> {
     /// Read `sector_count` full sectors starting at absolute `start_sector` into `buf`.
     /// `buf.len()` must equal `sector_count * logical_sector_size`.
     /// Respects semantics policy for Unmapped blocks.
+    ///
+    /// # Panics
+    ///
+    /// Panics if arithmetic overflow occurs during sector/offset conversion.
+    /// This should not happen with well-formed VHDX files.
     fn read_full_sectors(
         &self, buf: &mut [u8], start_sector: u64, sector_count: u64,
     ) -> Result<()> {
@@ -341,6 +344,11 @@ impl Sector<'_> {
     /// The resulting byte range `[byte_offset, byte_offset + data.len())` must
     /// fit within `sector_count * logical_sector_size`. Each affected block must
     /// already be allocated (`FullyPresent` or `PartiallyPresent`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if arithmetic overflow occurs during sector/offset conversion.
+    /// This should not happen with well-formed VHDX files.
     fn write_at(&self, data: &[u8], byte_offset: u64) -> Result<()> {
         if !self.file.is_write() {
             return Err(Error::ReadOnly);
@@ -409,6 +417,11 @@ impl Sector<'_> {
 
     /// Write `sector_count` full sectors starting at absolute `start_sector`.
     /// `data.len()` must equal `sector_count * logical_sector_size`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if arithmetic overflow occurs during sector/offset conversion.
+    /// This should not happen with well-formed VHDX files.
     fn write_full_sectors(&self, data: &[u8], start_sector: u64, sector_count: u64) -> Result<()> {
         let lss = self.logical_sector_size as usize;
         let spb = self.sectors_per_block();
@@ -486,7 +499,8 @@ impl Sector<'_> {
     /// Read a contiguous range of sectors from a payload block in the file.
     ///
     /// `sector_in_block` is the offset of the first sector within the block,
-    /// `sector_count` is how many sectors to read, and `buf` receives the data.
+    /// `buf` determines the amount of data to read (its length sets the read size),
+    /// and `_sector_count` is currently unused.
     fn read_block_range_from_file(
         &self, entry: &crate::bat::BatEntry<'_>, sector_in_block: u64, _sector_count: u64,
         buf: &mut [u8],
@@ -523,6 +537,11 @@ impl Sector<'_> {
     ///
     /// Each sector is checked against the sector bitmap: if the bit is set
     /// the sector is read from the child file, otherwise from the parent.
+    ///
+    /// # Panics
+    ///
+    /// Panics if arithmetic overflow occurs during sector/offset conversion.
+    /// This should not happen with well-formed VHDX files.
     fn read_partially_present_range(
         &self, entry: &crate::bat::BatEntry<'_>, block_idx: u64, start_sector_in_block: u64,
         sector_count: u64, buf: &mut [u8],
@@ -589,6 +608,11 @@ impl Sector<'_> {
     ///
     /// Opens and caches the parent file on first access. Falls back to zeros
     /// if the sector is not available in the parent.
+    ///
+    /// # Panics
+    ///
+    /// Panics if arithmetic overflow occurs during sector/offset conversion.
+    /// This should not happen with well-formed VHDX files.
     fn read_from_parent_sector(&self, global_sector: u64, buf: &mut [u8]) -> Result<()> {
         let parent_path = self.resolve_parent_path()?;
         self.ensure_parent_open(&parent_path)?;
@@ -835,7 +859,6 @@ mod tests {
         assert_eq!(io.block_size, 32 * 1024 * 1024);
         assert!(io.logical_sector_size > 0);
         assert_eq!(io.logical_sector_size, 4096);
-        assert!(!io.has_parent);
     }
 
     #[test]

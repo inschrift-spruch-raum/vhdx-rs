@@ -66,15 +66,19 @@ fn check_command_on_temp_valid_vhdx() {
         .stdout(predicate::str::contains("No issues found"));
 }
 
+/// test-fs.vhdx has a known BAT entry alignment issue (offset 4 MB not aligned
+/// to 32 MB block size). The `check` command now correctly detects this and exits
+/// with a non-zero exit code.
 #[test]
-fn check_command_on_test_fs_exit_zero() {
+fn check_command_on_test_fs_detects_alignment_issue() {
     init();
     // test-fs.vhdx has pending log entries; use --log-replay to replay them.
-    // The file has advisory issues (LOG_REPLAY_REQUIRED, reserved flags) that
-    // are reported but do not cause a non-zero exit code.
+    // The file has a BAT offset alignment violation that causes a non-zero exit code.
     let mut cmd = Command::cargo_bin("vhdx-tool").unwrap();
     cmd.arg("check").arg(TEST_FS).arg("--log-replay");
-    cmd.assert().success();
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("BAT_FILE_OFFSET_UNALIGNED"));
 }
 
 /// check --log-replay on a valid file (policy should be Auto, still succeeds).

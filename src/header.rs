@@ -408,7 +408,11 @@ impl<'a> HeaderStructure<'a> {
         Guid::from_bytes(self.data[48..64].try_into().unwrap())
     }
 
-    /// Return the log format version (must be 0 per spec).
+    /// Return the log format version.
+    ///
+    /// Per MS-VHDX §2.2.2, this field MUST be 0. The library enforces this
+    /// requirement when a log is active (non-zero [`LogGuid`](Self::log_guid));
+    /// see [`validate_header`](crate::validation::SpecValidator::validate_header).
     ///
     /// # Panics
     ///
@@ -847,7 +851,7 @@ mod tests {
     }
 
     #[test]
-    fn current_header_picks_first_when_equal_sequence() {
+    fn current_header_rejects_equal_sequence() {
         let mut buf = build_test_header_section();
         // Both headers have seq=5: header 1 already has seq=5, set header 2 to seq=5
         let h2_offset = HEADER2_OFFSET;

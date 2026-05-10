@@ -88,9 +88,6 @@ pub struct BatEntry<'a> {
 
 impl BatEntry<'_> {
     /// Raw 3-bit state value (bits 0-2).
-    ///
-    /// Use [`payload_state`](Self::payload_state) or
-    /// [`sector_bitmap_state`](Self::sector_bitmap_state) for typed interpretation.
     #[inline]
     pub(crate) fn raw_state(&self) -> u8 {
         self.bytes.view_bits::<Lsb0>()[0..3].load::<u8>()
@@ -120,8 +117,7 @@ impl BatEntry<'_> {
     /// Typed state, resolved using the entry type determined by chunk-ratio interleaving.
     ///
     /// Returns an error for reserved/invalid raw state values (4, 5 for payload;
-    /// 1-5, 7 for sector bitmap). Use [`payload_state`](Self::payload_state) or
-    /// [`sector_bitmap_state`](Self::sector_bitmap_state) if you need a non-fallible check.
+    /// 1-5, 7 for sector bitmap).
     ///
     /// # Errors
     ///
@@ -171,13 +167,14 @@ impl<'a> Bat<'a> {
 
     /// Total number of 64-bit entries in the BAT buffer.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.data.len() / 8
     }
 
-    /// Whether the BAT buffer is empty.
+    /// Whether the BAT buffer contains no entries.
+    #[cfg(test)]
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 
@@ -234,7 +231,8 @@ impl<'a> Bat<'a> {
 
     /// Iterate all entries as zero-copy views.
     ///
-    /// The returned iterator borrows this BAT and yields exactly [`len`](Self::len) items.
+    /// The returned iterator borrows this BAT and yields exactly as many items
+    /// as there are 64-bit entries in the buffer.
     pub fn entries(&self) -> impl Iterator<Item = BatEntry<'a>> + '_ {
         (0..self.len()).map(move |i| self.entry_unchecked(i))
     }
@@ -264,7 +262,6 @@ mod tests {
     #[test]
     fn empty_bat() {
         let bat = Bat::new(&[], 4);
-        assert_eq!(bat.len(), 0);
         assert!(bat.is_empty());
     }
 
@@ -359,7 +356,7 @@ mod tests {
     #[test]
     fn file_offset_mb_44bit_max() {
         // Max 44-bit value
-        let max_offset: u64 = 0x00FF_FFFF_FFFF;
+        let max_offset: u64 = 0x0FFF_FFFF_FFFF;
         let mut raw_bytes = [0u8; 8];
         {
             let bits = raw_bytes.view_bits_mut::<Lsb0>();

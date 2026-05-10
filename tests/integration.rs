@@ -125,7 +125,7 @@ fn open_void_vhdx_validate_sections() {
     // BAT section (may fail if block_size=0, as in test-void)
     match sections.bat() {
         Ok(bat) => {
-            assert!(!bat.is_empty(), "BAT should have entries");
+            assert!(bat.entries().count() > 0, "BAT should have entries");
         }
         Err(_) => {
             // test-void may have block_size=0 in FileParameters,
@@ -245,8 +245,8 @@ fn create_fixed_verify_size_and_bat() {
     let f = patch_header2_seq_and_reopen(&path);
 
     // BAT: all payload entries must be FullyPresent, sector-bitmap entries NotPresent.
-    // Only check the entries that were actually written (bat.len() returns
-    // buffer-size/8 which is larger than the logical entry count).
+    // Only check the entries that were actually written (entries().count()
+    // reflects buffer-size/8 which is larger than the logical entry count).
     let virtual_size: u64 = 256 * 1024 * 1024;
     let block_size: u64 = 32 * 1024 * 1024;
     let logical_sector_size: u64 = 4096;
@@ -304,10 +304,8 @@ fn zero_copy_bat_iteration_entries_count_matches() {
     let (f, _dir) = create_test_vhdx(256 * 1024 * 1024, 32 * 1024 * 1024, false);
     let sections = f.sections();
     let bat = sections.bat().expect("BAT");
-    let len = bat.len();
     let count: usize = bat.entries().count();
-    assert_eq!(count, len, "BAT entries() count should equal len()");
-    assert!(len > 0, "BAT should have at least one entry");
+    assert!(count > 0, "BAT should have entries");
 }
 
 #[test]
@@ -357,18 +355,29 @@ fn validator_on_void_vhdx_passes() {
         .expect("test-void.vhdx should pass validation");
 }
 
-/// test-fs.vhdx had the same pre-existing metadata issue (reserved flags)
-/// that has been fixed. Now it should pass validation.
+/// test-fs.vhdx has a known BAT entry file offset alignment issue
+/// (offset 4 MB is not aligned to the 32 MB block size). The validation
+/// now correctly detects this as `BAT_ENTRY_FILE_OFFSET_UNALIGNED`.
 #[test]
-fn validator_on_fs_vhdx_passes() {
+fn validator_on_fs_vhdx_detects_bat_alignment_issue() {
     let (_dir, path) = ref_to_tmp("test-fs.vhdx");
     let f = File::open(&path)
         .log_replay(LogReplayPolicy::Auto)
         .finish()
         .unwrap();
-    f.validator()
-        .validate_file()
-        .expect("test-fs should pass validation after reserved flags fix");
+    let result = f.validator().validate_file();
+    // The file has a BAT entry at offset 4 MB that is not aligned to 32 MB block size.
+    // This should return a BatFileOffsetUnaligned error (blocking).
+    assert!(
+        result.is_err(),
+        "test-fs should fail validation due to BAT offset alignment: {result:?}"
+    );
+    let err = result.unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("offset") && msg.contains("align"),
+        "expected BAT alignment error, got: {msg}"
+    );
 }
 
 #[test]
@@ -499,7 +508,7 @@ fn overlay_inmemory_read_sections_test_fs() {
     // the important thing is that the overlay doesn't crash.
     match sections.bat() {
         Ok(bat) => {
-            assert!(!bat.is_empty(), "BAT should have entries via overlay");
+            assert!(bat.entries().count() > 0, "BAT should have entries via overlay");
         }
         Err(_) => {
             eprintln!("BAT loading skipped (block_size may be 0 in test-fs.vhdx)");
@@ -576,7 +585,7 @@ fn overlay_inmemory_clean_vhdx_no_pending_log() {
     );
 
     let bat = sections.bat().expect("BAT on clean vhdx");
-    assert!(!bat.is_empty(), "BAT should have entries on clean vhdx");
+    assert!(bat.entries().count() > 0, "BAT should have entries on clean vhdx");
 
     let metadata = sections.metadata().expect("metadata on clean vhdx");
     assert!(
@@ -616,7 +625,7 @@ fn overlay_readonly_noreplay_structure_reads() {
     match sections.bat() {
         Ok(bat) => {
             assert!(
-                !bat.is_empty(),
+                bat.entries().count() > 0,
                 "BAT should have entries with ReadOnlyNoReplay"
             );
         }

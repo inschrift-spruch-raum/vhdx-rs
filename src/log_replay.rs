@@ -62,7 +62,7 @@ impl<'a> ActiveSequence<'a> {
     }
 
     /// Number of entries in the active sequence.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -104,10 +104,15 @@ impl ReplayOverlay {
     ///   4 KB sector, the corresponding bytes are copied into `buf`.
     /// - Zero regions: if `offset` falls within a zero descriptor range,
     ///   `buf` is filled with zeroes.
-    /// - Otherwise returns `Ok(0)` to signal that the caller should read
+    /// - Otherwise returns `0` to signal that the caller should read
     ///   from the underlying file instead.
     ///
     /// Returns the number of bytes written into `buf`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if arithmetic overflow occurs during sector/offset conversion.
+    /// This should not happen with well-formed VHDX files.
     pub fn read(&self, _file: &std::fs::File, offset: u64, buf: &mut [u8]) -> usize {
         if buf.is_empty() {
             return 0;
@@ -157,6 +162,11 @@ impl ReplayOverlay {
     ///
     /// This is a pure in-memory patch operation — it does not read or write
     /// the underlying file.
+    ///
+    /// # Panics
+    ///
+    /// Panics if arithmetic overflow occurs during sector/offset conversion.
+    /// This should not happen with well-formed VHDX files.
     pub fn apply_to_region(&self, region_data: &mut [u8], region_offset: u64) {
         let region_end =
             region_offset + u64::try_from(region_data.len()).expect("region length fits u64");
@@ -254,6 +264,18 @@ impl ReplayOverlay {
 ///    to head (wrap).
 /// 7. If tail < old tail (wrapped), done. Otherwise go to step 2.
 /// 8. If candidate empty → corrupt. Return the candidate.
+///
+/// # Errors
+///
+/// Returns [`Error::LogEntryCorrupted`] if the log buffer is empty or no
+/// valid active sequence is found. Also propagates errors from
+/// [`Log::entry_at`].
+///
+/// # Panics
+///
+/// Panics if `current_entries` is unexpectedly empty when accessing the
+/// last element. The algorithm guarantees non-emptiness at the three
+/// `.unwrap()` call sites, so this should not occur with well-formed data.
 pub fn detect_active_sequence<'a>(log: &'a Log<'a>, log_guid: &Guid) -> Result<ActiveSequence<'a>> {
     let log_size = log.len();
     if log_size == 0 {
@@ -395,6 +417,11 @@ pub fn has_pending_log(log: &Log<'_>, log_guid: &Guid) -> bool {
 ///
 /// Used by [`LogReplayPolicy::InMemoryOnReadOnly`] and
 /// [`LogReplayPolicy::Auto`] on read-only opens.
+///
+/// # Errors
+///
+/// Returns [`Error::LogEntryCorrupted`] if a data descriptor has no
+/// matching data sector. Also propagates errors from [`Entry::descriptor`].
 pub fn build_replay_overlay(active: &ActiveSequence<'_>) -> Result<ReplayOverlay> {
     let mut sectors: HashMap<u64, Vec<u8>> = HashMap::new();
     let mut zeros: Vec<(u64, u64)> = Vec::new();
@@ -446,6 +473,17 @@ pub fn build_replay_overlay(active: &ActiveSequence<'_>) -> Result<ReplayOverlay
 /// least `LastFileOffset`.
 ///
 /// Used by [`LogReplayPolicy::Auto`] on writable opens.
+///
+/// # Errors
+///
+/// Returns I/O errors from [`Seek`], [`Write`], and [`std::fs::File::set_len`].
+/// Returns [`Error::LogEntryCorrupted`] if a data descriptor has no matching
+/// data sector. Also propagates errors from [`Entry::descriptor`].
+///
+/// # Panics
+///
+/// Panics if arithmetic overflow occurs during sector/offset conversion.
+/// This should not happen with well-formed VHDX files.
 pub fn replay_to_file(file: &std::fs::File, active: &ActiveSequence<'_>) -> Result<()> {
     // Replay each entry in tail-to-head order
     for located in active.entries() {

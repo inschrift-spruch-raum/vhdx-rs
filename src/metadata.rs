@@ -44,6 +44,10 @@ impl<'a> Metadata<'a> {
     /// Create a new `Metadata` view over the metadata region bytes.
     ///
     /// The buffer must be at least 64 KB (the fixed table size).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidMetadata`] if the buffer is smaller than 64 KB.
     pub(crate) fn new(data: &'a [u8]) -> Result<Self> {
         if data.len() < METADATA_TABLE_SIZE {
             return Err(Error::InvalidMetadata(format!(
@@ -71,11 +75,7 @@ impl<'a> Metadata<'a> {
         }
     }
 
-    /// Return the raw underlying buffer.
-    #[allow(dead_code)]
-    pub(crate) fn as_bytes(&self) -> &'a [u8] {
-        self.data
-    }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +182,10 @@ impl<'a> TableHeader<'a> {
     }
 
     /// Check that the signature matches "metadata".
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidSignature`] if the signature does not match.
     pub(crate) fn validate_signature(&self) -> Result<()> {
         let signature = *self.signature();
         if signature != *SIGNATURE {
@@ -316,6 +320,12 @@ pub struct MetadataItems<'a> {
 
 impl<'a> MetadataItems<'a> {
     /// Resolve the item data slice for a given GUID.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::MetadataRequiredMissing`] if the GUID is not found in
+    /// the table or if the offset + length overflows or exceeds the metadata
+    /// region bounds.
     fn item_data(&self, guid: &Guid) -> Result<&'a [u8]> {
         let Ok(entry) = self.table.entry(guid) else {
             return Err(Error::MetadataRequiredMissing { guid: *guid });
@@ -469,7 +479,7 @@ const FP_LEAVE_BLOCK_ALLOCATED: usize = 32;
 const FP_HAS_PARENT: usize = 33;
 
 impl FileParameters<'_> {
-    /// Block size in bytes (second u32 per MS-VHDX §2.6.2.1).
+    /// Block size in bytes (first u32 per MS-VHDX §2.6.2.1).
     #[must_use]
     pub fn block_size(&self) -> u32 {
         if self.data.len() < 8 {
@@ -478,7 +488,7 @@ impl FileParameters<'_> {
         self.data.view_bits::<Lsb0>()[FP_BLOCK_SIZE].load_le::<u32>()
     }
 
-    /// Raw bitfields word (first u32 per MS-VHDX §2.6.2.1).
+    /// Raw bitfields word (second u32 per MS-VHDX §2.6.2.1).
     pub(crate) fn flags(&self) -> u32 {
         if self.data.len() < 8 {
             return 0;
@@ -576,8 +586,9 @@ impl<'a> ParentLocator<'a> {
         })
     }
 
-    /// The raw key-value data area (everything after the locator header + entry table).
-    /// Offsets in `KeyValueEntry` are relative to the start of the parent locator item.
+    /// The raw parent locator item data (including the 20-byte header and entry table).
+    ///
+    /// Offsets in [`KeyValueEntry`] are relative to the start of this data.
     #[must_use]
     pub fn key_value_data(&self) -> &'a [u8] {
         self.data
@@ -594,6 +605,9 @@ impl<'a> ParentLocator<'a> {
     ///
     /// Returns an error if no usable locator key is found or no referenced path
     /// exists.
+    ///
+    /// May also return [`Error::InvalidParentLocator`] if key-value decoding
+    /// fails, or [`Error::ParentNotFound`] if no accessible parent path is found.
     pub fn resolve_parent_path(&self) -> Result<PathBuf> {
         let keys = ["relative_path", "volume_path", "absolute_win32_path"];
         let mut attempted = (None::<PathBuf>, None::<PathBuf>, None::<PathBuf>);
@@ -813,7 +827,7 @@ mod tests {
             &StandardItems::FILE_PARAMETERS,
             u32::try_from(METADATA_TABLE_SIZE).expect("metadata table size fits u32"),
             8,
-            0x0000_0004, // is_virtual_disk=0, is_required=1 (bit 29)
+            0x0000_0004, // is_virtual_disk=0, is_required=1 (bit 2)
         );
 
         // Entry 1: Virtual Disk Size (at 64KB+8, length 8)

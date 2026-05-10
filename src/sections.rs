@@ -21,7 +21,6 @@ pub struct Sections<'a> {
 
 impl<'a> Sections<'a> {
     /// Create a new Sections bound to a file reference.
-    #[allow(dead_code)]
     pub(crate) fn new(file: &'a File) -> Self {
         Self {
             file: Some(file),

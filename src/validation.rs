@@ -226,14 +226,14 @@ impl<'a> SpecValidator<'a> {
     /// - Sequence number comparison (both headers valid)
     /// - `LogGuid` consistency between headers
     ///
+    /// # Errors
+    ///
+    /// Returns an error when required header invariants fail.
+    ///
     /// # Panics
     ///
     /// Panics on internal invariant violations where code unwraps a known error
     /// branch after `is_ok()` checks.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when required header invariants fail.
     pub fn validate_header(&self) -> Result<Vec<ValidationIssue>> {
         let mut issues = Vec::new();
         let header = self.parse_header()?;
@@ -351,9 +351,10 @@ impl<'a> SpecValidator<'a> {
                     "MS-VHDX/2.2.2",
                 ),
             );
-            return Err(Error::CorruptedHeader(format!(
-                "LOG_LENGTH_NOT_ALIGNED: log_length {log_length} is not a multiple of 1MB"
-            )));
+            return Err(Error::HeaderLogNotAligned {
+                field: "log_length".to_string(),
+                value: u64::from(log_length),
+            });
         }
         if log_offset > 0 && log_offset % mb != 0 {
             Self::push_issue(
@@ -365,9 +366,10 @@ impl<'a> SpecValidator<'a> {
                     "MS-VHDX/2.2.2",
                 ),
             );
-            return Err(Error::CorruptedHeader(format!(
-                "LOG_OFFSET_NOT_ALIGNED: log_offset {log_offset} is not a multiple of 1MB"
-            )));
+            return Err(Error::HeaderLogNotAligned {
+                field: "log_offset".to_string(),
+                value: log_offset,
+            });
         }
         Ok(())
     }
@@ -432,14 +434,14 @@ impl<'a> SpecValidator<'a> {
     /// - Entry count <= 2047
     /// - Required unknown region handling (strict mode)
     ///
+    /// # Errors
+    ///
+    /// Returns an error when region table integrity checks fail.
+    ///
     /// # Panics
     ///
     /// Panics on internal invariant violations where code unwraps region tables
     /// after prior successful checks.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when region table integrity checks fail.
     pub fn validate_region_table(&self) -> Result<Vec<ValidationIssue>> {
         let mut issues = Vec::new();
         let header = self.parse_header()?;
@@ -681,14 +683,14 @@ impl<'a> SpecValidator<'a> {
     /// - Sector bitmap entries in non-differencing disks are `NotPresent`
     /// - File offsets are aligned
     ///
-    /// # Panics
-    ///
-    /// Panics on internal invariant violations where code unwraps previously
-    /// validated BAT states.
-    ///
     /// # Errors
     ///
     /// Returns an error when BAT structure or state rules are violated.
+    ///
+    /// # Panics
+    ///
+    /// Panics if integer conversion for minimum BAT entry count overflows `usize`
+    /// (should not occur with valid metadata).
     pub fn validate_bat(&self) -> Result<Vec<ValidationIssue>> {
         let mut issues = Vec::new();
         let Some(bat_data) = self.bat_region() else {
@@ -707,7 +709,7 @@ impl<'a> SpecValidator<'a> {
         self.validate_bat_entry_count(&bat, block_size, &mut issues)?;
         let mut seen_offsets = std::collections::HashSet::new();
         for entry in bat.entries() {
-            Self::validate_bat_entry(entry, has_parent, &mut seen_offsets, &mut issues)?;
+            Self::validate_bat_entry(entry, has_parent, block_size, &mut seen_offsets, &mut issues)?;
         }
         Self::validate_bat_sector_bitmap_consistency(&bat, has_parent, chunk_ratio, &mut issues);
 
@@ -744,14 +746,14 @@ impl<'a> SpecValidator<'a> {
     }
 
     fn validate_bat_entry(
-        entry: crate::bat::BatEntry<'_>, has_parent: bool,
+        entry: crate::bat::BatEntry<'_>, has_parent: bool, block_size: u64,
         seen_offsets: &mut std::collections::HashSet<u64>, issues: &mut Vec<ValidationIssue>,
     ) -> Result<()> {
         let raw_state = entry.raw_state();
         if entry.is_sector_bitmap() {
             return Self::validate_bat_sector_bitmap_entry(raw_state, entry, has_parent, issues);
         }
-        Self::validate_bat_payload_entry(raw_state, entry, has_parent, seen_offsets, issues)
+        Self::validate_bat_payload_entry(raw_state, entry, has_parent, block_size, seen_offsets, issues)
     }
 
     fn validate_bat_sector_bitmap_entry(
@@ -789,7 +791,7 @@ impl<'a> SpecValidator<'a> {
     }
 
     fn validate_bat_payload_entry(
-        raw_state: u8, entry: crate::bat::BatEntry<'_>, has_parent: bool,
+        raw_state: u8, entry: crate::bat::BatEntry<'_>, has_parent: bool, block_size: u64,
         seen_offsets: &mut std::collections::HashSet<u64>, issues: &mut Vec<ValidationIssue>,
     ) -> Result<()> {
         let Some(p_state) = entry.payload_state() else {
@@ -805,7 +807,41 @@ impl<'a> SpecValidator<'a> {
             return Err(Error::InvalidBlockState(raw_state));
         };
         Self::validate_bat_payload_state_for_disk_type(raw_state, p_state, has_parent, issues)?;
+        Self::validate_bat_payload_offset_alignment(entry, p_state, block_size, issues)?;
         Self::validate_bat_payload_offset_uniqueness(entry, p_state, seen_offsets, issues)
+    }
+
+    fn validate_bat_payload_offset_alignment(
+        entry: crate::bat::BatEntry<'_>, p_state: PayloadBlockState, block_size: u64,
+        issues: &mut Vec<ValidationIssue>,
+    ) -> Result<()> {
+        match p_state {
+            PayloadBlockState::FullyPresent | PayloadBlockState::PartiallyPresent => {
+                let offset_mb = entry.file_offset_mb();
+                if block_size > 0 && offset_mb != 0 {
+                    let offset_bytes = offset_mb * 1024 * 1024;
+                    if offset_bytes % block_size != 0 {
+                        Self::push_issue(
+                            issues,
+                            ValidationIssue::new(
+                                "bat",
+                                "BAT_ENTRY_FILE_OFFSET_UNALIGNED",
+                                format!(
+                                    "payload block file offset {offset_mb} MB ({offset_bytes} bytes) not aligned to block size {block_size}"
+                                ),
+                                "MS-VHDX/2.5",
+                            ),
+                        );
+                        return Err(Error::BatFileOffsetUnaligned {
+                            offset_mb,
+                            block_size: block_size as u32,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn validate_bat_payload_state_for_disk_type(
@@ -1127,11 +1163,9 @@ impl<'a> SpecValidator<'a> {
                     "MS-VHDX/2.6.1.2",
                 ),
             );
-            return Err(Error::InvalidMetadata(format!(
-                "METADATA_ENTRY_RESERVED_NONZERO: metadata entry GUID {} has reserved field set to {:#010x}",
-                entry.item_id(),
-                entry.reserved()
-            )));
+            return Err(Error::MetadataEntryReservedNonzero {
+                reserved: entry.reserved(),
+            });
         }
         Ok(())
     }
@@ -1375,6 +1409,7 @@ impl<'a> SpecValidator<'a> {
                     "MS-VHDX/2.6.2.1",
                 ),
             );
+            return Err(Error::FileParametersReservedFlags { flags: fp_flags });
         }
         Ok(())
     }
@@ -1449,13 +1484,13 @@ impl<'a> SpecValidator<'a> {
     /// - `LogGuid` matching header `LogGuid`
     /// - Active sequence non-empty
     ///
-    /// # Panics
-    ///
-    /// Panics if raw log entry pre-scan indexing invariants are violated.
-    ///
     /// # Errors
     ///
     /// Returns an error when log entry integrity or sequencing checks fail.
+    ///
+    /// # Panics
+    ///
+    /// Panics if raw log entry pre-scan indexing invariants are violated.
     pub fn validate_log(&self) -> Result<Vec<ValidationIssue>> {
         let mut issues = Vec::new();
         let Some(log_data) = self.log_region() else {
@@ -1469,6 +1504,20 @@ impl<'a> SpecValidator<'a> {
         Self::prescan_log_signatures(log_data, &mut issues);
         let entries: Vec<_> = log.entries().collect();
         if entries.is_empty() {
+            // If the header indicates a log should exist (LogGuid != 0) but the
+            // log region contains no parseable entries, the active sequence is empty.
+            if header_log_guid != Guid::zero() {
+                Self::push_issue(
+                    &mut issues,
+                    ValidationIssue::new(
+                        "log",
+                        "LOG_ACTIVE_SEQUENCE_EMPTY",
+                        "header LogGuid is non-zero but no valid log entries found".to_string(),
+                        "MS-VHDX/2.3.3",
+                    ),
+                );
+                return Err(Error::LogActiveSequenceEmpty);
+            }
             return Ok(issues);
         }
         Self::validate_log_entries(&entries, header_log_guid, &mut issues)?;
@@ -3486,11 +3535,13 @@ mod tests {
         let validator = SpecValidator::new(&buf, true);
         let result = validator.validate_metadata();
         assert!(result.is_err());
-        let msg = format!("{result:?}");
-        assert!(
-            msg.contains("METADATA_ENTRY_RESERVED_NONZERO"),
-            "expected METADATA_ENTRY_RESERVED_NONZERO, got: {msg}"
-        );
+        let err = result.unwrap_err();
+        match &err {
+            Error::MetadataEntryReservedNonzero { reserved } => {
+                assert_eq!(*reserved, 0xDEAD_BEEF);
+            }
+            other => panic!("expected MetadataEntryReservedNonzero error, got: {other:?}"),
+        }
     }
 
     #[test]
@@ -3514,17 +3565,15 @@ mod tests {
 
         let validator = SpecValidator::new(&buf, true);
         let result = validator.validate_required_metadata_items();
-        assert!(
-            result.is_ok(),
-            "expected Ok despite reserved flags, got: {result:?}"
-        );
-        let issues = result.unwrap();
-        assert!(
-            issues
-                .iter()
-                .any(|i| i.code() == "METADATA_FILE_PARAMETERS_RESERVED_FLAGS"),
-            "expected METADATA_FILE_PARAMETERS_RESERVED_FLAGS issue"
-        );
+        // Reserved flags in FileParameters is now a blocking error per API.md
+        assert!(result.is_err(), "expected Err for reserved flags, got: {result:?}");
+        let err = result.unwrap_err();
+        match &err {
+            Error::FileParametersReservedFlags { flags } => {
+                assert_ne!(*flags, 0, "flags should be non-zero");
+            }
+            other => panic!("expected FileParametersReservedFlags error, got: {other:?}"),
+        }
     }
 
     #[test]

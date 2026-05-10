@@ -636,25 +636,31 @@ fn show_bat(sections: &vhdx::section::Sections<'_>) -> vhdx::Result<()> {
     let bat = sections.bat()?;
 
     println!("=== Block Allocation Table (BAT) ===");
-    println!("  Total Entries: {}", bat.len());
-    println!();
 
-    let display_count = bat.len().min(20);
-    println!("  First {display_count} entries:");
-    for i in 0..display_count {
-        let entry = bat.entry(i as u64)?;
-        let state_str = match entry.state()? {
-            BatState::Payload(s) => format!("Payload({s:?})"),
-            BatState::SectorBitmap(s) => format!("SectorBitmap({s:?})"),
-        };
-        println!(
-            "  [{i:>4}] state={state_str}, offset_mb={}",
-            entry.file_offset_mb()
-        );
+    let mut total = 0u64;
+    let mut displayed = 0u64;
+    for (i, entry) in bat.entries().enumerate() {
+        total = i as u64 + 1;
+        if displayed < 20 {
+            if displayed == 0 {
+                println!();
+                println!("  First 20 entries:");
+            }
+            let state_str = match entry.state()? {
+                BatState::Payload(s) => format!("Payload({s:?})"),
+                BatState::SectorBitmap(s) => format!("SectorBitmap({s:?})"),
+            };
+            println!(
+                "  [{i:>4}] state={state_str}, offset_mb={}",
+                entry.file_offset_mb()
+            );
+            displayed += 1;
+        }
     }
 
-    if bat.len() > 20 {
-        println!("  ... ({} entries omitted)", bat.len() - 20);
+    println!("  Total Entries: {total}");
+    if total > 20 {
+        println!("  ... ({} entries omitted)", total - 20);
     }
 
     Ok(())

@@ -61,6 +61,17 @@ pub enum Error {
     #[error("unsupported log version: {version}")]
     UnsupportedLogVersion { version: u16 },
 
+    /// Header LogLength or LogOffset is not aligned to 1 MB.
+    ///
+    /// Standard: MS-VHDX-校验扩展标准 §4.1 — `HEADER_LOG_LENGTH_NOT_ALIGNED` / `HEADER_LOG_OFFSET_NOT_ALIGNED`
+    #[error("header log field not 1MB-aligned: {field}={value}")]
+    HeaderLogNotAligned {
+        /// Which field is misaligned ("log_length" or "log_offset").
+        field: String,
+        /// The value of the misaligned field.
+        value: u64,
+    },
+
     #[error("checksum mismatch: expected {expected:#010x}, actual {actual:#010x}")]
     InvalidChecksum { expected: u32, actual: u32 },
 
@@ -125,6 +136,18 @@ pub enum Error {
 
     #[error("metadata reserved flags set: {flags:#010x}")]
     MetadataReservedFlagsSet { flags: u32 },
+
+    /// Metadata Table Entry Reserved field is not zero.
+    ///
+    /// Standard: MS-VHDX-校验扩展标准 §4.4 — `METADATA_ENTRY_RESERVED_NONZERO`
+    #[error("metadata entry reserved field non-zero: {reserved:#010x}")]
+    MetadataEntryReservedNonzero { reserved: u32 },
+
+    /// FileParameters item reserved flags (bits 2-31) are set.
+    ///
+    /// Standard: MS-VHDX-校验扩展标准 §4.4 — `METADATA_FILE_PARAMETERS_RESERVED_FLAGS`
+    #[error("FileParameters reserved flags set: {flags:#010x}")]
+    FileParametersReservedFlags { flags: u32 },
 
     #[error("invalid parent locator: {0}")]
     InvalidParentLocator(String),
@@ -198,6 +221,7 @@ impl From<Error> for std::io::Error {
             | Error::HeaderSequenceNumberInvalid { .. }
             | Error::UnsupportedVersion { .. }
             | Error::UnsupportedLogVersion { .. }
+            | Error::HeaderLogNotAligned { .. }
             | Error::InvalidChecksum { .. }
             | Error::InvalidBlockState(..)
             | Error::InvalidSectorBitmapState(..)
@@ -211,6 +235,8 @@ impl From<Error> for std::io::Error {
             | Error::MetadataRequiredUnknown { .. }
             | Error::MetadataOptionalUnknown { .. }
             | Error::MetadataReservedFlagsSet { .. }
+            | Error::MetadataEntryReservedNonzero { .. }
+            | Error::FileParametersReservedFlags { .. }
             | Error::InvalidParentLocator(..)
             | Error::BatFileOffsetUnaligned { .. }
             | Error::BatEntryCountInsufficient { .. }
