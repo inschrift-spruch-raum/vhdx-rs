@@ -709,7 +709,13 @@ impl<'a> SpecValidator<'a> {
         self.validate_bat_entry_count(&bat, block_size, &mut issues)?;
         let mut seen_offsets = std::collections::HashSet::new();
         for entry in bat.entries() {
-            Self::validate_bat_entry(entry, has_parent, block_size, &mut seen_offsets, &mut issues)?;
+            Self::validate_bat_entry(
+                entry,
+                has_parent,
+                block_size,
+                &mut seen_offsets,
+                &mut issues,
+            )?;
         }
         Self::validate_bat_sector_bitmap_consistency(&bat, has_parent, chunk_ratio, &mut issues);
 
@@ -753,7 +759,14 @@ impl<'a> SpecValidator<'a> {
         if entry.is_sector_bitmap() {
             return Self::validate_bat_sector_bitmap_entry(raw_state, entry, has_parent, issues);
         }
-        Self::validate_bat_payload_entry(raw_state, entry, has_parent, block_size, seen_offsets, issues)
+        Self::validate_bat_payload_entry(
+            raw_state,
+            entry,
+            has_parent,
+            block_size,
+            seen_offsets,
+            issues,
+        )
     }
 
     fn validate_bat_sector_bitmap_entry(
@@ -820,7 +833,7 @@ impl<'a> SpecValidator<'a> {
                 let offset_mb = entry.file_offset_mb();
                 if block_size > 0 && offset_mb != 0 {
                     let offset_bytes = offset_mb * 1024 * 1024;
-                    if offset_bytes % block_size != 0 {
+                    if !offset_bytes.is_multiple_of(block_size) {
                         Self::push_issue(
                             issues,
                             ValidationIssue::new(
@@ -834,7 +847,7 @@ impl<'a> SpecValidator<'a> {
                         );
                         return Err(Error::BatFileOffsetUnaligned {
                             offset_mb,
-                            block_size: block_size as u32,
+                            block_size: u32::try_from(block_size).unwrap_or(u32::MAX),
                         });
                     }
                 }
@@ -3566,7 +3579,10 @@ mod tests {
         let validator = SpecValidator::new(&buf, true);
         let result = validator.validate_required_metadata_items();
         // Reserved flags in FileParameters is now a blocking error per API.md
-        assert!(result.is_err(), "expected Err for reserved flags, got: {result:?}");
+        assert!(
+            result.is_err(),
+            "expected Err for reserved flags, got: {result:?}"
+        );
         let err = result.unwrap_err();
         match &err {
             Error::FileParametersReservedFlags { flags } => {

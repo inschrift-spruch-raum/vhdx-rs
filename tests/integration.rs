@@ -508,7 +508,10 @@ fn overlay_inmemory_read_sections_test_fs() {
     // the important thing is that the overlay doesn't crash.
     match sections.bat() {
         Ok(bat) => {
-            assert!(bat.entries().count() > 0, "BAT should have entries via overlay");
+            assert!(
+                bat.entries().count() > 0,
+                "BAT should have entries via overlay"
+            );
         }
         Err(_) => {
             eprintln!("BAT loading skipped (block_size may be 0 in test-fs.vhdx)");
@@ -585,7 +588,10 @@ fn overlay_inmemory_clean_vhdx_no_pending_log() {
     );
 
     let bat = sections.bat().expect("BAT on clean vhdx");
-    assert!(bat.entries().count() > 0, "BAT should have entries on clean vhdx");
+    assert!(
+        bat.entries().count() > 0,
+        "BAT should have entries on clean vhdx"
+    );
 
     let metadata = sections.metadata().expect("metadata on clean vhdx");
     assert!(

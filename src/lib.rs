@@ -1,5 +1,8 @@
 pub mod section;
 
+#[cfg(feature = "gpt")]
+pub mod gpt;
+
 mod bat;
 pub(crate) mod common;
 mod error;

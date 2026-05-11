@@ -391,8 +391,6 @@ impl<'a> Entry<'a> {
         Ok(())
     }
 
-
-
     /// Get the raw bytes for descriptor at the given index.
     ///
     /// Descriptors are laid out starting at byte 64 (after the header).
