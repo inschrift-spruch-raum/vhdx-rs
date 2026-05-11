@@ -237,6 +237,26 @@ vhdx::
 │       └── impl Seek   → fn seek(&mut self, pos: SeekFrom) -> io::Result<u64>
 │
 ├── Guid                                    # GUID 类型
+│
+├── gpt::                                   # gpt_disk_io 兼容层（可选，需启用 `gpt` feature）
+│   ├── VhdxBlockDevice                     # VHDX → BlockIo 适配器
+│   │   ├── new(File) -> Result<Self, Error>  # 从已打开的 VHDX 文件构造
+│   │   ├── file(&self) -> &File            # 访问底层 VHDX File（只读）
+│   │   ├── file_mut(&mut self) -> &mut File # 访问底层 VHDX File（可变）
+│   │   └── into_file(self) -> File         # 解包为底层 VHDX File
+│   │
+│   └── VhdxBlockIoError                    # BlockIo 的 Error 适配类型
+│       └── VhdxBlockIoError(pub Error)    # 透明包装 crate::Error
+│
+│   # VhdxBlockDevice 实现的 trait:
+│   impl gpt_disk_io::BlockIo for VhdxBlockDevice
+│       type Error = VhdxBlockIoError
+│       fn block_size(&self) -> BlockSize             # 返回 VHDX 逻辑扇区大小
+│       fn num_blocks(&mut self) -> Result<u64>       # 虚拟磁盘大小 / 扇区大小
+│       fn read_blocks(&mut self, Lba, &mut [u8]) -> Result<()>   # 通过 Sector 管道读取
+│       fn write_blocks(&mut self, Lba, &[u8]) -> Result<()>      # 通过 Sector 管道写入
+│       fn flush(&mut self) -> Result<()>              # sync_all 刷盘
+│
 ├── LogReplayPolicy                         # 日志回放策略
 │   ├── Require                             # 若存在日志则返回 LogReplayRequired
 │   ├── Auto                                # 打开阶段自动回放日志
@@ -1706,12 +1726,108 @@ pub enum Error {
 
 ---
 
+### 11. gpt — `gpt_disk_io` 兼容层（可选）
+
+> **Feature gate**: `gpt`。需要在 `Cargo.toml` 中启用：
+> ```toml
+> [dependencies]
+> vhdx = { version = "0.1.0", features = ["gpt"] }
+> ```
+
+```rust
+pub mod gpt {
+    use crate::{File, error::Error};
+    use gpt_disk_io::BlockIo;
+    use gpt_disk_types::{BlockSize, Lba};
+
+    /// Error 适配类型，包装 [`crate::Error`] 以满足 `BlockIo` 的
+    /// `Debug + Display + Send + Sync + 'static` 约束。
+    #[derive(Debug)]
+    pub struct VhdxBlockIoError(pub Error);
+
+    impl std::fmt::Display for VhdxBlockIoError;
+    impl std::error::Error for VhdxBlockIoError;
+
+    /// VHDX → `gpt_disk_io::BlockIo` 块设备适配器。
+    ///
+    /// 将 VHDX 虚拟磁盘适配为 GPT 分区工具可直接操作的标准块设备接口。
+    ///
+    /// # 块大小映射
+    ///
+    /// 报告给 GPT 的块大小为 VHDX **逻辑扇区大小**（512 或 4096 字节），
+    /// 而非 VHDX payload block/chunk 大小（通常 32MB）。
+    /// 这与 GPT 的 LBA 扇区寻址模型一致。
+    ///
+    /// # 数据面
+    ///
+    /// 所有读写通过 VHDX 库的扇区级 IO 管道（`File::io()` → `IO::sector()`），
+    /// 自动处理 BAT 解析、块分配、差分盘父盘回退、扇区位图处理和日志回放。
+    ///
+    /// # 构造
+    ///
+    /// 通过 [`VhdxBlockDevice::new`] 从已打开的 `File` 构造。
+    /// 构造时从 VHDX 元数据中提取并缓存逻辑扇区大小和虚拟磁盘大小，
+    /// 后续 `block_size()` 和 `num_blocks()` 调用无额外 IO 开销。
+    pub struct VhdxBlockDevice {
+        // 内部字段已缓存，对外不透明
+    }
+
+    impl VhdxBlockDevice {
+        /// 从已打开的 VHDX 文件构造块设备适配器。
+        ///
+        /// 从 VHDX 元数据中提取逻辑扇区大小和虚拟磁盘大小并缓存。
+        ///
+        /// # Errors
+        ///
+        /// - 逻辑扇区大小 < 512 → `Error::InvalidMetadata`
+        /// - 元数据不可读 → 向上传播底层错误
+        pub fn new(file: File) -> Result<Self, Error>;
+
+        /// 访问底层 VHDX [`File`]（只读引用）。
+        ///
+        /// 用于 VHDX 特有操作（校验、section 检查等），
+        /// 这些操作不通过 `BlockIo` trait 暴露。
+        #[must_use]
+        pub fn file(&self) -> &File;
+
+        /// 访问底层 VHDX [`File`]（可变引用）。
+        pub fn file_mut(&mut self) -> &mut File;
+
+        /// 解包为底层 VHDX [`File`]，消费适配器。
+        #[must_use]
+        pub fn into_file(self) -> File;
+    }
+
+    /// 实现 `gpt_disk_io::BlockIo` trait。
+    ///
+    /// - `block_size()` — 返回缓存的 VHDX 逻辑扇区大小（`BlockSize`）
+    /// - `num_blocks()` — 返回 `虚拟磁盘大小 / 逻辑扇区大小`
+    /// - `read_blocks(start_lba, dst)` — 通过 `IO::sector()` 读取，dst 长度必须是扇区大小的整数倍
+    /// - `write_blocks(start_lba, src)` — 通过 `IO::sector()` 写入，src 长度必须是扇区大小的整数倍
+    /// - `flush()` — 调用 `File::inner().sync_all()` 将数据刷到磁盘
+    impl BlockIo for VhdxBlockDevice {
+        type Error = VhdxBlockIoError;
+
+        fn block_size(&self) -> BlockSize;
+        fn num_blocks(&mut self) -> Result<u64, Self::Error>;
+        fn read_blocks(&mut self, start_lba: Lba, dst: &mut [u8]) -> Result<(), Self::Error>;
+        fn write_blocks(&mut self, start_lba: Lba, src: &[u8]) -> Result<(), Self::Error>;
+        fn flush(&mut self) -> Result<(), Self::Error>;
+    }
+}
+```
+
+---
+
 ## 模块结构
 
 ```rust
 // lib.rs - 公共 API 导出
 
 pub mod section;
+
+#[cfg(feature = "gpt")]
+pub mod gpt;
 
 mod bat;
 pub(crate) mod common;
@@ -1738,6 +1854,12 @@ pub mod section {
     pub use bat::{Bat, BatEntry, BatState, PayloadBlockState, SectorBitmapState};
     pub use metadata::{Metadata, MetadataTable, TableHeader, TableEntry, EntryFlags, MetadataItems, FileParameters, ParentLocator, LocatorHeader, KeyValueEntry, StandardItems};
     pub use log::{Log, Entry, LogEntryHeader, Descriptor, DataDescriptor, ZeroDescriptor, DataSector};
+}
+
+// gpt_disk_io 兼容层（可选，需启用 `gpt` feature）
+#[cfg(feature = "gpt")]
+pub mod gpt {
+    pub use gpt::{VhdxBlockDevice, VhdxBlockIoError};
 }
 
 ```
@@ -1989,10 +2111,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### 6. GPT 分区操作（通过 `gpt_disk_io`）
+
+> 需启用 `gpt` feature：`vhdx = { features = ["gpt"] }`
+
+```rust
+use vhdx::{File, LogReplayPolicy};
+use vhdx::gpt::VhdxBlockDevice;
+use gpt_disk_io::{BlockIo, Disk};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 打开 VHDX 文件（自动回放日志以保证数据一致性）
+    let file = File::open("disk.vhdx")
+        .log_replay(LogReplayPolicy::Auto)
+        .finish()?;
+
+    // 适配为 gpt_disk_io 的 BlockIo 块设备
+    let mut block_dev = VhdxBlockDevice::new(file)?;
+
+    // 查询块几何
+    println!("Block size: {:?}", block_dev.block_size());
+    println!("Num blocks: {}", block_dev.num_blocks()?);
+
+    // 通过 gpt_disk_io 的 Disk 类型读取 GPT 分区表
+    let mut disk = Disk::new(block_dev)?;
+    let primary_header = disk.read_primary_gpt_header()?;
+    println!("Disk GUID: {:?}", primary_header.disk_guid);
+
+    // 读取第一个扇区（原始访问）
+    let mut buf = vec![0u8; block_dev.block_size().to_usize().unwrap()];
+    block_dev.read_blocks(gpt_disk_types::Lba(0), &mut buf)?;
+    println!("First sector bytes: {:?}", &buf[..16]);
+
+    // 写回底层文件后刷盘
+    block_dev.flush()?;
+
+    // 需要时可解包回 VHDX File
+    let _file = block_dev.into_file();
+
+    Ok(())
+}
+```
+
 ---
 
 ## 文档版本
 
 - **规范**: MS-VHDX v20240423
-- **版本**: 3.0
+- **版本**: 3.1
 - **更新日期**: 2026
