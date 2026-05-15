@@ -9,7 +9,7 @@ use crate::error::{Error, Result, SignaturePosition};
 use crate::header::Header;
 use crate::log::Log;
 use crate::log_replay::{self, ReplayOverlay};
-use crate::sections::Sections;
+use crate::section::Sections;
 use crate::types::{self, Guid};
 use crc32c::crc32c;
 

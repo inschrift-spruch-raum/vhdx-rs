@@ -219,7 +219,7 @@ fn cli_no_subcommand_shows_error() {
 // 7. --strict flag variants (uses a temp-created valid VHDX)
 // ---------------------------------------------------------------------------
 
-/// Create a temporary valid VHDX and return its path (caller keeps TempDir).
+/// Create a temporary valid VHDX and return its path (caller keeps `TempDir`).
 fn create_temp_valid_vhdx() -> (std::path::PathBuf, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("valid.vhdx");

@@ -12,7 +12,6 @@ mod io;
 mod log;
 pub(crate) mod log_replay;
 mod metadata;
-mod sections;
 mod types;
 pub mod validation;
 
