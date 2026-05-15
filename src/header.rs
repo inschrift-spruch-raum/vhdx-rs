@@ -9,9 +9,11 @@
 
 use bitvec::prelude::*;
 
-use crate::common::crc32c;
 use crate::error::{Error, Result, SignaturePosition};
-use crate::types::Guid;
+use crate::types::{Crc32c, Guid};
+
+#[cfg(test)]
+use crc32c::crc32c;
 
 // ---------------------------------------------------------------------------
 // Layout constants
@@ -144,23 +146,8 @@ impl<'a> Header<'a> {
             });
         }
 
-        // Verify CRC-32C: checksum is over the full 4 KB with the checksum
-        // field (bytes 4..8) zeroed out. Compute in-place on the original
-        // slice to avoid a 4 KB stack allocation.
         let stored_crc = u32::from_le_bytes(slice[4..8].try_into().unwrap());
-        let saved_checksum: [u8; 4] = slice[4..8].try_into().unwrap();
-        // SAFETY: We temporarily zero the checksum field (bytes 4..8) to
-        // compute the CRC-32C, then immediately restore the original bytes.
-        // crc32c() is a pure read-only computation that cannot panic. The
-        // modification is to raw u8 bytes which have no invalid states.
-        let ptr = slice.as_ptr().cast_mut();
-        unsafe {
-            std::ptr::write_bytes(ptr.add(4), 0, 4);
-        }
-        let computed_crc = crc32c(slice);
-        unsafe {
-            std::ptr::copy_nonoverlapping(saved_checksum.as_ptr(), ptr.add(4), 4);
-        }
+        let computed_crc = crate::common::crc32c_zeroed_checksum(slice);
 
         if computed_crc != stored_crc {
             return Err(Error::InvalidChecksum {
@@ -243,21 +230,8 @@ impl<'a> Header<'a> {
             });
         }
 
-        // Verify CRC-32C: checksum is over the full 64 KB with the checksum
-        // field (bytes 4..8) zeroed out. Compute in-place on the original
-        // slice to avoid a 64 KB stack allocation.
         let stored_crc = u32::from_le_bytes(slice[4..8].try_into().unwrap());
-        let saved_checksum: [u8; 4] = slice[4..8].try_into().unwrap();
-        // SAFETY: Same pattern as validate_header_at: temporarily zero
-        // bytes 4..8 for CRC computation, then restore immediately.
-        let ptr = slice.as_ptr().cast_mut();
-        unsafe {
-            std::ptr::write_bytes(ptr.add(4), 0, 4);
-        }
-        let computed_crc = crc32c(slice);
-        unsafe {
-            std::ptr::copy_nonoverlapping(saved_checksum.as_ptr(), ptr.add(4), 4);
-        }
+        let computed_crc = crate::common::crc32c_zeroed_checksum(slice);
 
         if computed_crc != stored_crc {
             return Err(Error::InvalidChecksum {
@@ -362,8 +336,8 @@ impl<'a> HeaderStructure<'a> {
     ///
     /// Panics if the header slice is shorter than 8 bytes.
     #[must_use]
-    pub fn checksum(&self) -> u32 {
-        u32::from_le_bytes(self.data[4..8].try_into().unwrap())
+    pub fn checksum(&self) -> Crc32c {
+        Crc32c::from_raw(u32::from_le_bytes(self.data[4..8].try_into().unwrap()))
     }
 
     /// Return the sequence number.
@@ -514,8 +488,8 @@ impl<'a> RegionTableHeader<'a> {
     ///
     /// Panics if the region table header slice is shorter than 8 bytes.
     #[must_use]
-    pub fn checksum(&self) -> u32 {
-        u32::from_le_bytes(self.data[4..8].try_into().unwrap())
+    pub fn checksum(&self) -> Crc32c {
+        Crc32c::from_raw(u32::from_le_bytes(self.data[4..8].try_into().unwrap()))
     }
 
     /// Return the number of region table entries.
@@ -847,7 +821,7 @@ mod tests {
         let slice = &buf[REGION_TABLE1_OFFSET..][..REGION_TABLE_SIZE];
         let mut tmp = slice.to_vec();
         tmp[4..8].copy_from_slice(&0u32.to_le_bytes());
-        assert_eq!(stored, crc32c(&tmp));
+        assert_eq!(stored, Crc32c::from_raw(crc32c(&tmp)));
     }
 
     #[test]

@@ -6,13 +6,13 @@ description = "VHDX (Virtual Hard Disk v2) CLI tool"
 
 [dependencies]
 vhdx-rs = { path = ".." }
-clap = { version = "4.6", features = ["derive"] }
-byte-unit = { version = "5.2", features = ["byte"] }
+clap = { version = "4.6.1", features = ["derive"] }
+byte-unit = { version = "5.2.0", features = ["byte"] }
 
 [dev-dependencies]
-assert_cmd = "2"
-tempfile = "3"
-predicates = "3"
+assert_cmd = "2.2.2"
+tempfile = "3.27.0"
+predicates = "3.1.4"
 
 [lints]
 workspace = true

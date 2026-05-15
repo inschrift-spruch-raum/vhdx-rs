@@ -582,7 +582,7 @@ fn try_validate_entry<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::crc32c;
+    use crc32c::crc32c;
     use std::io::Read;
 
     const SIGNATURE_LOGE: [u8; 4] = *b"loge";

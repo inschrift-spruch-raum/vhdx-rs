@@ -559,7 +559,7 @@ fn show_header(sections: &vhdx::section::Sections<'_>) -> vhdx::Result<()> {
                 std::str::from_utf8(h.signature()).unwrap_or("<binary>")
             );
             println!("  Sequence Number: {}", h.sequence_number());
-            println!("  CRC-32C:         {:#010x}", h.checksum());
+            println!("  CRC-32C:         {}", h.checksum());
             println!("  Version:         {} (expected 1)", h.version());
             println!("  Log Version:     {} (expected 0)", h.log_version());
             println!("  Log Offset:      {}", h.log_offset());
@@ -602,7 +602,7 @@ fn print_header_summary(header: &vhdx::section::Header<'_>, index: usize) {
                 std::str::from_utf8(h.signature()).unwrap_or("<binary>")
             );
             println!("  Sequence Number: {}", h.sequence_number());
-            println!("  CRC-32C:         {:#010x}", h.checksum());
+            println!("  CRC-32C:         {}", h.checksum());
         }
         Err(ref e) => println!("  [Error: {e}]"),
     }
@@ -617,7 +617,7 @@ fn print_region_table(header: &vhdx::section::Header<'_>, index: usize) {
                 std::str::from_utf8(hdr.signature()).unwrap_or("<binary>")
             );
             println!("  Entry Count:  {}", hdr.entry_count());
-            println!("  CRC-32C:      {:#010x}", hdr.checksum());
+            println!("  CRC-32C:      {}", hdr.checksum());
             for (i, entry) in rt.entries().enumerate() {
                 println!("  Entry [{i}]:");
                 println!("    GUID:     {}", entry.guid());
@@ -760,7 +760,7 @@ fn show_log(sections: &vhdx::section::Sections<'_>) -> vhdx::Result<()> {
         println!("    Descriptor Count: {}", hdr.descriptor_count());
         println!("    Entry Length:     {} bytes", hdr.entry_length());
         println!("    Tail:             {}", hdr.tail());
-        println!("    CRC-32C:          {:#010x}", hdr.checksum());
+        println!("    CRC-32C:          {}", hdr.checksum());
     }
     if entries.len() > 10 {
         println!("  ... ({} entries omitted)", entries.len() - 10);

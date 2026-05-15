@@ -21,10 +21,10 @@ description = "VHDX (Virtual Hard Disk v2) library"
 name = "vhdx"
 
 [dependencies]
-uuid = { version = "1.22", features = ["v4"] }
+uuid = { version = "1.23.1", features = ["v4"] }
 thiserror = "2.0.18"
-bitvec = "1"
-crc32c = "0.6"
+bitvec = "1.0.1"
+crc32c = "0.6.8"
 gpt_disk_io = { version = "0.16.2", optional = true }
 gpt_disk_types = { version = "0.16.1", optional = true }
 
@@ -33,7 +33,7 @@ default = []
 gpt = ["gpt_disk_io", "gpt_disk_types"]
 
 [dev-dependencies]
-tempfile = "3.27"
+tempfile = "3.27.0"
 
 [lints]
 workspace = true

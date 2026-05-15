@@ -5,7 +5,7 @@ use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use crate::common::crc32c;
+use crc32c::crc32c;
 use crate::error::{Error, Result, SignaturePosition};
 use crate::header::Header;
 use crate::log::Log;

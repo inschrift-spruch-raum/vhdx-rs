@@ -2421,7 +2421,7 @@ fn is_known_metadata_guid(guid: &Guid) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::crc32c;
+    use crc32c::crc32c;
     use bitvec::prelude::*;
 
     struct Encoded {

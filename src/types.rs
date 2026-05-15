@@ -1,5 +1,37 @@
 use std::fmt;
 
+/// A CRC-32C (Castagnoli) checksum value.
+///
+/// Wraps a raw `u32` and displays as `0x`-prefixed hex (e.g. `0xe3069283`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Crc32c(u32);
+
+impl Crc32c {
+    /// Create a `Crc32c` from a raw `u32` checksum value.
+    #[must_use]
+    pub const fn from_raw(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// Return the raw `u32` checksum value.
+    #[must_use]
+    pub const fn value(&self) -> u32 {
+        self.0
+    }
+}
+
+impl fmt::Debug for Crc32c {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Crc32c({:#010x})", self.0)
+    }
+}
+
+impl fmt::Display for Crc32c {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:#010x}", self.0)
+    }
+}
+
 /// A GUID stored as raw 16 bytes (RFC 4122 / mixed-endian layout as on disk).
 ///
 /// Internally uses `uuid::Uuid` for display and parsing, but stores `[u8; 16]`

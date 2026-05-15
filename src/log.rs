@@ -8,9 +8,11 @@ use std::borrow::Cow;
 use std::fmt;
 use std::sync::OnceLock;
 
-use crate::common::crc32c;
 use crate::error::{Error, Result, SignaturePosition};
-use crate::types::Guid;
+use crate::types::{Crc32c, Guid};
+
+#[cfg(test)]
+use crc32c::crc32c;
 
 // ---------------------------------------------------------------------------
 // Signature constants
@@ -347,45 +349,12 @@ impl<'a> Entry<'a> {
     /// match the stored checksum.
     pub(crate) fn verify_checksum(&self) -> Result<()> {
         let stored = self.header().checksum();
-
-        // Save bytes [4..8], zero them in-place to compute CRC, then restore.
-        //
-        // SAFETY: The entry data is always at least ENTRY_HEADER_SIZE (64)
-        // bytes, so bytes 4..8 are in-bounds. We save before mutating and
-        // restore immediately after CRC computation, so the net effect on
-        // the backing data is zero. The log buffer is not shared mutably
-        // elsewhere — Entry has no interior mutability and Log provides
-        // only shared access.
-        let saved = unsafe {
-            let ptr = self.data.as_ptr().add(4).cast_mut();
-            let bytes = [
-                ptr.read(),
-                ptr.add(1).read(),
-                ptr.add(2).read(),
-                ptr.add(3).read(),
-            ];
-            ptr.write(0);
-            ptr.add(1).write(0);
-            ptr.add(2).write(0);
-            ptr.add(3).write(0);
-            bytes
-        };
-
-        let computed = crc32c(self.data);
-
-        // Restore original bytes
-        unsafe {
-            let ptr = self.data.as_ptr().add(4).cast_mut();
-            ptr.write(saved[0]);
-            ptr.add(1).write(saved[1]);
-            ptr.add(2).write(saved[2]);
-            ptr.add(3).write(saved[3]);
-        }
+        let computed = Crc32c::from_raw(crate::common::crc32c_zeroed_checksum(self.data));
 
         if computed != stored {
             return Err(Error::InvalidChecksum {
-                expected: stored,
-                actual: computed,
+                expected: stored.value(),
+                actual: computed.value(),
             });
         }
         Ok(())
@@ -452,8 +421,8 @@ impl<'a> LogEntryHeader<'a> {
 
     /// CRC-32C checksum computed over the entire entry (checksum field zeroed).
     #[must_use]
-    pub fn checksum(&self) -> u32 {
-        u32_at(&self.data[4..8]).unwrap_or(0)
+    pub fn checksum(&self) -> Crc32c {
+        Crc32c::from_raw(u32_at(&self.data[4..8]).unwrap_or(0))
     }
 
     /// Total length of the entry in bytes. MUST be a multiple of 4KB.
