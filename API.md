@@ -11,7 +11,7 @@ vhdx::
 ├── File                                    # 核心 API
 │   ├── open(path) -> File::OpenOptions     # 链式打开
 │   ├── create(path) -> File::CreateOptions # 链式创建
-│   ├── sections(&self) -> &Sections<'_>    # 获取所有sections
+│   ├── sections(&self) -> Sections<'_>    # 获取所有sections
 │   ├── io(&self) -> Result<IO<'_>>         # 获取IO模块
 │   ├── validator(&self) -> validation::SpecValidator<'_>  # 获取规范校验器
 │   └── inner(&self) -> &std::fs::File
@@ -405,7 +405,7 @@ impl File {
     pub fn create(path: impl AsRef<Path>) -> File::CreateOptions;
     
     /// 获取所有Section的容器（懒加载）
-    pub fn sections(&self) -> &Sections<'_>;
+    pub fn sections(&self) -> Sections<'_>;
     
     /// 获取IO模块（用于扇区级读写）
     /// 懒加载：内部Sector缓存按需从文件读取
@@ -662,9 +662,7 @@ pub mod validation {
 ```rust
 /// VHDX文件中的所有Section的容器
 /// 
-/// 采用懒加载策略：访问具体Section时才从文件读取。
-/// 内部使用 `OnceLock` 缓存已加载的 section 缓冲区，
-/// 多次调用同一方法仅产生一次 I/O。
+/// 采用懒加载策略：访问具体Section时才从文件读取（I/O 在 File 层缓存）。
 pub struct Sections<'a> {
     // 内部字段：缓存已加载的sections
 }
@@ -1030,7 +1028,7 @@ impl<'a> KeyValueEntry<'a> {
 
 /// 标准Metadata Item GUID常量
 ///
-/// 路径：`vhdx::section::StandardItems`
+/// 路径：`vhdx::types::StandardItems`
 pub mod StandardItems {
     pub const FILE_PARAMETERS: Guid = Guid::from_bytes([
         0x37, 0x67, 0xA1, 0xCA, 0x36, 0xFA, 0x43, 0x4D,
