@@ -61,7 +61,7 @@ vhdx::
 │   │
 │   │   └── HeaderStructure<'a>             # VHDX Header 视图
 │   │       ├── signature(&self) -> &'a [u8; 4]
-│   │       ├── checksum(&self) -> u32
+│   │       ├── checksum(&self) -> Crc32c
 │   │       ├── sequence_number(&self) -> u64
 │   │       ├── file_write_guid(&self) -> Guid
 │   │       ├── data_write_guid(&self) -> Guid
@@ -77,7 +77,7 @@ vhdx::
 │   │       │
 │   │       └── RegionTableHeader<'a>       # Region Table Header 视图
 │   │           ├── signature(&self) -> &'a [u8; 4]
-│   │           ├── checksum(&self) -> u32
+│   │           ├── checksum(&self) -> Crc32c
 │   │           ├── entry_count(&self) -> u32
 │   │           └── reserved(&self) -> u32
 │   │       └── RegionTableEntry<'a>        # Region Table Entry 视图
@@ -211,7 +211,7 @@ vhdx::
 │    
 │           └── LogEntryHeader<'a>          # Log Entry Header
 │               ├── signature(&self) -> &'a [u8; 4]
-│               ├── checksum(&self) -> u32
+│               ├── checksum(&self) -> Crc32c
 │               ├── entry_length(&self) -> u32
 │               ├── tail(&self) -> u32
 │               ├── sequence_number(&self) -> u64
@@ -235,6 +235,8 @@ vhdx::
 │       ├── impl Write  → fn write(&mut self, buf: &[u8]) -> io::Result<usize>
 │       │               + fn flush(&mut self) -> io::Result<()>
 │       └── impl Seek   → fn seek(&mut self, pos: SeekFrom) -> io::Result<u64>
+│
+├── Crc32c                                  # CRC-32C 校验和类型
 │
 ├── Guid                                    # GUID 类型
 │
@@ -722,7 +724,7 @@ pub struct FileTypeIdentifier<'a> {
 /// VHDX Header 视图（4KB）
 pub struct HeaderStructure<'a> {
     pub fn signature(&self) -> &'a [u8; 4],
-    pub fn checksum(&self) -> u32,
+    pub fn checksum(&self) -> Crc32c,
     pub fn sequence_number(&self) -> u64,
     pub fn file_write_guid(&self) -> Guid,
     pub fn data_write_guid(&self) -> Guid,
@@ -743,7 +745,7 @@ pub struct RegionTable<'a> {
 
 pub struct RegionTableHeader<'a> {
     pub fn signature(&self) -> &'a [u8; 4],
-    pub fn checksum(&self) -> u32,
+    pub fn checksum(&self) -> Crc32c,
     pub fn entry_count(&self) -> u32,
     pub fn reserved(&self) -> u32,
 }
@@ -1156,7 +1158,7 @@ pub struct ZeroDescriptor<'a> {
 /// Log Entry Header (64字节)
 pub struct LogEntryHeader<'a> {
     pub fn signature(&self) -> &'a [u8; 4],
-    pub fn checksum(&self) -> u32,
+    pub fn checksum(&self) -> Crc32c,
     pub fn entry_length(&self) -> u32,
     /// 活跃序列起始偏移量（MS-VHDX §2.3.1.1）
     ///
