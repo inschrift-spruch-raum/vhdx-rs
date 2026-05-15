@@ -2421,8 +2421,8 @@ fn is_known_metadata_guid(guid: &Guid) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crc32c::crc32c;
     use bitvec::prelude::*;
+    use crc32c::crc32c;
 
     struct Encoded {
         key: Vec<u8>,

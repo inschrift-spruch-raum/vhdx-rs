@@ -50,7 +50,7 @@ mod tests {
     #[test]
     fn crc32c_zeroed_checksum_does_not_mutate_original() {
         let mut data = vec![0xFFu8; 16];
-        data[4..8].copy_from_slice(&0x12345678u32.to_le_bytes());
+        data[4..8].copy_from_slice(&0x1234_5678_u32.to_le_bytes());
         let original = data.clone();
 
         let _ = crc32c_zeroed_checksum(&data);
@@ -84,6 +84,9 @@ mod tests {
         // Large blocks reduce chunk ratio
         let small = compute_chunk_ratio(256 * 1024 * 1024, 512);
         let large = compute_chunk_ratio(1024 * 1024, 512);
-        assert!(small < large, "larger blocks should produce smaller chunk ratio");
+        assert!(
+            small < large,
+            "larger blocks should produce smaller chunk ratio"
+        );
     }
 }

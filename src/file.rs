@@ -5,13 +5,13 @@ use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use crc32c::crc32c;
 use crate::error::{Error, Result, SignaturePosition};
 use crate::header::Header;
 use crate::log::Log;
 use crate::log_replay::{self, ReplayOverlay};
 use crate::sections::Sections;
 use crate::types::{self, Guid};
+use crc32c::crc32c;
 
 // ---------------------------------------------------------------------------
 // Layout constants
@@ -132,8 +132,6 @@ pub struct File {
     replay_overlay: Option<Arc<ReplayOverlay>>,
     /// Cached validator buffer: assembled region data at correct file offsets.
     validator_buf: OnceLock<Vec<u8>>,
-    /// Cached `Sections` container, enabling zero-copy `&Sections<'_>` return.
-    sections_cache: OnceLock<Sections<'static>>,
 }
 
 impl std::fmt::Debug for File {
@@ -189,17 +187,9 @@ impl File {
         &self.path
     }
 
-    /// Return a cached `Sections` container for this file.
-    ///
-    /// The container is lazily initialized on first access and cached for the
-    /// lifetime of the `File`, providing a zero-copy view of all sections.
-    pub fn sections(&self) -> &Sections<'_> {
-        self.sections_cache.get_or_init(|| {
-            // SAFETY: `Sections` is stored inside `File` via `OnceLock`, so the
-            // `'static` lifetime is a contained fiction. The returned `&Sections<'_>`
-            // borrows from `&self`, ensuring it never outlives the `File`.
-            unsafe { std::mem::transmute::<Sections<'_>, Sections<'static>>(Sections::new(self)) }
-        })
+    /// Return a `Sections` container for this file.
+    pub fn sections(&self) -> Sections<'_> {
+        Sections::new(self)
     }
 
     /// Return the underlying OS file handle.
@@ -270,30 +260,37 @@ impl File {
     /// Reads the BAT region using the offset and length stored in the
     /// header's region table. Subsequent calls return the cached buffer.
     ///
-    /// # Panics
-    ///
-    /// Panics if the `OnceLock::set` operation fails (should not occur in
-    /// single-threaded usage).
+    /// Thread-safe: under concurrent access, both threads may load from disk
+    /// but only one result is cached; the other is silently discarded. The
+    /// returned buffer is always valid regardless of which thread wins.
     pub(crate) fn bat_buf(&self) -> Result<&[u8]> {
+        // Fast path: already cached
         if let Some(buf) = self.bat_buf.get() {
             return Ok(&buf[..]);
         }
-        let mut data = self.read_bat_region()?;
-        // Apply replay overlay if present
-        if self.replay_overlay.is_some() {
-            let header = Header::new(&self.header_buf)?;
-            let rt = header.region_table(0)?;
-            for entry in rt.entries() {
-                if entry.guid() == BAT_REGION_GUID {
-                    self.apply_replay_overlay(&mut data, entry.file_offset());
-                    break;
+
+        // Load data (internal IO + replay overlay)
+        let data = match self.read_bat_region() {
+            Ok(mut d) => {
+                if self.replay_overlay.is_some() {
+                    let header = Header::new(&self.header_buf)?;
+                    let rt = header.region_table(0)?;
+                    for entry in rt.entries() {
+                        if entry.guid() == BAT_REGION_GUID {
+                            self.apply_replay_overlay(&mut d, entry.file_offset());
+                            break;
+                        }
+                    }
                 }
+                d
             }
-        }
-        self.bat_buf.set(data).unwrap_or_else(|_| {
-            // Safe: single-threaded, we checked get() above
-            unreachable!("bat_buf already initialized")
-        });
+            Err(e) => return Err(e),
+        };
+
+        // Thread-safe set: if another thread already set it, silently drop ours
+        let _ = self.bat_buf.set(data);
+
+        // Return cached value (either from us or from the racing thread)
         Ok(self.bat_buf.get().unwrap().as_slice())
     }
 
@@ -302,29 +299,37 @@ impl File {
     /// Reads the metadata region using the offset and length stored in the
     /// header's region table. Subsequent calls return the cached buffer.
     ///
-    /// # Panics
-    ///
-    /// Panics if the `OnceLock::set` operation fails (should not occur in
-    /// single-threaded usage).
+    /// Thread-safe: under concurrent access, both threads may load from disk
+    /// but only one result is cached; the other is silently discarded. The
+    /// returned buffer is always valid regardless of which thread wins.
     pub(crate) fn metadata_buf(&self) -> Result<&[u8]> {
+        // Fast path: already cached
         if let Some(buf) = self.metadata_buf.get() {
             return Ok(&buf[..]);
         }
-        let mut data = self.read_metadata_region()?;
-        // Apply replay overlay if present
-        if self.replay_overlay.is_some() {
-            let header = Header::new(&self.header_buf)?;
-            let rt = header.region_table(0)?;
-            for entry in rt.entries() {
-                if entry.guid() == METADATA_REGION_GUID {
-                    self.apply_replay_overlay(&mut data, entry.file_offset());
-                    break;
+
+        // Load data (internal IO + replay overlay)
+        let data = match self.read_metadata_region() {
+            Ok(mut d) => {
+                if self.replay_overlay.is_some() {
+                    let header = Header::new(&self.header_buf)?;
+                    let rt = header.region_table(0)?;
+                    for entry in rt.entries() {
+                        if entry.guid() == METADATA_REGION_GUID {
+                            self.apply_replay_overlay(&mut d, entry.file_offset());
+                            break;
+                        }
+                    }
                 }
+                d
             }
-        }
-        self.metadata_buf
-            .set(data)
-            .unwrap_or_else(|_| unreachable!("metadata_buf already initialized"));
+            Err(e) => return Err(e),
+        };
+
+        // Thread-safe set: if another thread already set it, silently drop ours
+        let _ = self.metadata_buf.set(data);
+
+        // Return cached value (either from us or from the racing thread)
         Ok(self.metadata_buf.get().unwrap().as_slice())
     }
 
@@ -907,7 +912,6 @@ impl OpenOptions {
             log_replay_policy: self.log_replay_policy,
             replay_overlay,
             validator_buf: OnceLock::new(),
-            sections_cache: OnceLock::new(),
         })
     }
 }
@@ -1225,7 +1229,6 @@ impl CreateOptions {
             log_replay_policy: LogReplayPolicy::Require,
             replay_overlay: None,
             validator_buf: OnceLock::new(),
-            sections_cache: OnceLock::new(),
         })
     }
 

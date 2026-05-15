@@ -1,5 +1,3 @@
-use std::sync::OnceLock;
-
 use crate::bat::Bat;
 use crate::error::{Error, Result};
 use crate::file::File;
@@ -7,28 +5,18 @@ use crate::header::Header;
 use crate::log::Log;
 use crate::metadata::Metadata;
 
-/// Container for all VHDX sections (lazy-loaded).
+/// Container for all VHDX sections.
 ///
-/// This struct holds a reference to a [`File`] and provides lazy access
-/// to parsed section views: header, BAT, metadata, and log.
+/// This struct holds a reference to a [`File`] and provides parsed views
+/// of the header, BAT, metadata, and log sections on every call.
 pub struct Sections<'a> {
-    file: Option<&'a File>,
-    header_cache: OnceLock<Header<'static>>,
-    bat_cache: OnceLock<Bat<'static>>,
-    metadata_cache: OnceLock<Metadata<'static>>,
-    log_cache: OnceLock<Log<'static>>,
+    file: &'a File,
 }
 
 impl<'a> Sections<'a> {
     /// Create a new Sections bound to a file reference.
     pub(crate) fn new(file: &'a File) -> Self {
-        Self {
-            file: Some(file),
-            header_cache: OnceLock::new(),
-            bat_cache: OnceLock::new(),
-            metadata_cache: OnceLock::new(),
-            log_cache: OnceLock::new(),
-        }
+        Self { file }
     }
 
     // ------------------------------------------------------------------
@@ -43,21 +31,8 @@ impl<'a> Sections<'a> {
     /// # Errors
     ///
     /// Returns an error if sections are uninitialized or header parsing fails.
-    pub fn header(&self) -> Result<Header<'_>> {
-        let file = self
-            .file
-            .ok_or_else(|| Error::InvalidFile("Sections not initialized".into()))?;
-        if let Some(cached) = self.header_cache.get() {
-            return Ok(*cached);
-        }
-        let parsed = Header::new(file.header_buf())?;
-        // SAFETY: `Sections` is stored inside `File` via `OnceLock`, so the
-        // parsed header's underlying data lives as long as the `File`. The
-        // `'static` is a contained fiction, just like the `Sections` transmute
-        // in `File::sections()`.
-        let static_parsed: Header<'static> = unsafe { std::mem::transmute(parsed) };
-        let _ = self.header_cache.set(static_parsed);
-        Ok(static_parsed)
+    pub fn header(&self) -> Result<Header<'a>> {
+        Header::new(self.file.header_buf())
     }
 
     /// Parse and return the BAT (Block Allocation Table) section view.
@@ -69,20 +44,10 @@ impl<'a> Sections<'a> {
     ///
     /// Returns an error if sections are uninitialized, BAT loading fails,
     /// or metadata needed for chunk ratio is invalid.
-    pub fn bat(&self) -> Result<Bat<'_>> {
-        let file = self
-            .file
-            .ok_or_else(|| Error::InvalidFile("Sections not initialized".into()))?;
-        if let Some(cached) = self.bat_cache.get() {
-            return Ok(*cached);
-        }
-        let bat_buf = file.bat_buf()?;
-        let chunk_ratio = Self::compute_chunk_ratio(file)?;
-        let parsed = Bat::new(bat_buf, chunk_ratio);
-        // SAFETY: same justification as `header()` above.
-        let static_parsed: Bat<'static> = unsafe { std::mem::transmute(parsed) };
-        let _ = self.bat_cache.set(static_parsed);
-        Ok(static_parsed)
+    pub fn bat(&self) -> Result<Bat<'a>> {
+        let bat_buf = self.file.bat_buf()?;
+        let chunk_ratio = Self::compute_chunk_ratio(self.file)?;
+        Ok(Bat::new(bat_buf, chunk_ratio))
     }
 
     /// Parse and return the Metadata section view.
@@ -92,19 +57,8 @@ impl<'a> Sections<'a> {
     /// # Errors
     ///
     /// Returns an error if sections are uninitialized or metadata parsing fails.
-    pub fn metadata(&self) -> Result<Metadata<'_>> {
-        let file = self
-            .file
-            .ok_or_else(|| Error::InvalidFile("Sections not initialized".into()))?;
-        if let Some(cached) = self.metadata_cache.get() {
-            return Ok(*cached);
-        }
-        let meta_buf = file.metadata_buf()?;
-        let parsed = Metadata::new(meta_buf)?;
-        // SAFETY: same justification as `header()` above.
-        let static_parsed: Metadata<'static> = unsafe { std::mem::transmute(parsed) };
-        let _ = self.metadata_cache.set(static_parsed);
-        Ok(static_parsed)
+    pub fn metadata(&self) -> Result<Metadata<'a>> {
+        Metadata::new(self.file.metadata_buf()?)
     }
 
     /// Parse and return the Log section view.
@@ -114,19 +68,8 @@ impl<'a> Sections<'a> {
     /// # Errors
     ///
     /// Returns an error if sections are uninitialized or log parsing fails.
-    pub fn log(&self) -> Result<Log<'_>> {
-        let file = self
-            .file
-            .ok_or_else(|| Error::InvalidFile("Sections not initialized".into()))?;
-        if let Some(cached) = self.log_cache.get() {
-            return Ok(*cached);
-        }
-        let log_buf = file.log_buf()?;
-        let parsed = Log::new(log_buf)?;
-        // SAFETY: same justification as `header()` above.
-        let static_parsed: Log<'static> = unsafe { std::mem::transmute(parsed) };
-        let _ = self.log_cache.set(static_parsed);
-        Ok(static_parsed)
+    pub fn log(&self) -> Result<Log<'a>> {
+        Log::new(self.file.log_buf()?)
     }
 
     // ------------------------------------------------------------------
