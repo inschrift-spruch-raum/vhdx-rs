@@ -5,6 +5,7 @@ pub mod gpt;
 
 mod bat;
 pub(crate) mod common;
+pub(crate) mod constants;
 mod error;
 mod file;
 mod header;

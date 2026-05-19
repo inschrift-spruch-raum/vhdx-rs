@@ -2,6 +2,9 @@ use std::path::PathBuf;
 
 use bitvec::prelude::*;
 
+use crate::constants::{
+    KV_ENTRY_SIZE, LOCATOR_HEADER_SIZE, METADATA_TABLE_SIZE, TABLE_ENTRY_SIZE, TABLE_HEADER_SIZE,
+};
 use crate::error::{Error, Result, SignaturePosition};
 use crate::types::Guid;
 pub use crate::types::StandardItems;
@@ -9,21 +12,6 @@ pub use crate::types::StandardItems;
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/// Metadata table fixed size: 64 KB.
-const METADATA_TABLE_SIZE: usize = 64 * 1024;
-
-/// Table header size: 32 bytes.
-const TABLE_HEADER_SIZE: usize = 32;
-
-/// Table entry size: 32 bytes.
-const TABLE_ENTRY_SIZE: usize = 32;
-
-/// Locator header size: 20 bytes.
-const LOCATOR_HEADER_SIZE: usize = 20;
-
-/// Key-value entry size: 12 bytes.
-const KV_ENTRY_SIZE: usize = 12;
 
 /// Expected metadata table signature: "metadata" in ASCII.
 const SIGNATURE: &[u8; 8] = b"metadata";
@@ -49,7 +37,7 @@ impl<'a> Metadata<'a> {
     ///
     /// Returns [`Error::InvalidMetadata`] if the buffer is smaller than 64 KB.
     pub(crate) fn new(data: &'a [u8]) -> Result<Self> {
-        if data.len() < METADATA_TABLE_SIZE {
+        if data.len() < METADATA_TABLE_SIZE as usize {
             return Err(Error::InvalidMetadata(format!(
                 "metadata region too small: {} bytes, need at least {METADATA_TABLE_SIZE}",
                 data.len()
@@ -62,7 +50,7 @@ impl<'a> Metadata<'a> {
     #[must_use]
     pub fn table(&self) -> MetadataTable<'a> {
         MetadataTable {
-            data: &self.data[..METADATA_TABLE_SIZE],
+            data: &self.data[..METADATA_TABLE_SIZE as usize],
         }
     }
 
@@ -90,7 +78,7 @@ impl<'a> MetadataTable<'a> {
     #[must_use]
     pub fn header(&self) -> TableHeader<'a> {
         TableHeader {
-            data: &self.data[..TABLE_HEADER_SIZE],
+            data: &self.data[..TABLE_HEADER_SIZE as usize],
         }
     }
 
@@ -115,9 +103,9 @@ impl<'a> MetadataTable<'a> {
         let count = self.header().entry_count() as usize;
         let data = self.data;
         (0..count).map(move |i| {
-            let start = TABLE_HEADER_SIZE + i * TABLE_ENTRY_SIZE;
+            let start = TABLE_HEADER_SIZE as usize + i * TABLE_ENTRY_SIZE as usize;
             TableEntry {
-                data: &data[start..start + TABLE_ENTRY_SIZE],
+                data: &data[start..start + TABLE_ENTRY_SIZE as usize],
             }
         })
     }
@@ -539,7 +527,7 @@ impl<'a> ParentLocator<'a> {
     #[must_use]
     pub fn header(&self) -> LocatorHeader<'a> {
         LocatorHeader {
-            data: &self.data[..LOCATOR_HEADER_SIZE.min(self.data.len())],
+            data: &self.data[..(LOCATOR_HEADER_SIZE as usize).min(self.data.len())],
         }
     }
 
@@ -555,8 +543,8 @@ impl<'a> ParentLocator<'a> {
                 "parent locator entry index {index} out of range (count={count})"
             )));
         }
-        let start = LOCATOR_HEADER_SIZE + index * KV_ENTRY_SIZE;
-        let end = start + KV_ENTRY_SIZE;
+        let start = LOCATOR_HEADER_SIZE as usize + index * KV_ENTRY_SIZE as usize;
+        let end = start + KV_ENTRY_SIZE as usize;
         if end > self.data.len() {
             return Err(Error::InvalidParentLocator(
                 "parent locator data too short for entries".into(),
@@ -572,8 +560,8 @@ impl<'a> ParentLocator<'a> {
         let count = self.header().key_value_count() as usize;
         let data = self.data;
         (0..count).filter_map(move |i| {
-            let start = LOCATOR_HEADER_SIZE + i * KV_ENTRY_SIZE;
-            let end = start + KV_ENTRY_SIZE;
+            let start = LOCATOR_HEADER_SIZE as usize + i * KV_ENTRY_SIZE as usize;
+            let end = start + KV_ENTRY_SIZE as usize;
             if end <= data.len() {
                 Some(KeyValueEntry {
                     data: &data[start..end],
@@ -799,7 +787,7 @@ mod tests {
 
     /// Build a minimal valid metadata region for testing.
     fn build_test_metadata() -> Vec<u8> {
-        let mut buf = vec![0u8; METADATA_TABLE_SIZE + 4096];
+        let mut buf = vec![0u8; METADATA_TABLE_SIZE as usize + 4096];
 
         // -- Table Header (32 bytes) --
         buf[0..8].copy_from_slice(b"metadata"); // signature
@@ -808,7 +796,7 @@ mod tests {
         buf[10..12].copy_from_slice(&6u16.to_le_bytes());
         // reserved2 (20 bytes): 0
 
-        let mut off = TABLE_HEADER_SIZE;
+        let mut off: usize = TABLE_HEADER_SIZE as usize;
 
         // Helper to write an entry
         let mut write_entry = |guid: &Guid, item_offset: u32, length: u32, flags: u32| {
@@ -817,13 +805,13 @@ mod tests {
             buf[off + 20..off + 24].copy_from_slice(&length.to_le_bytes());
             buf[off + 24..off + 28].copy_from_slice(&flags.to_le_bytes());
             // reserved (4 bytes): 0
-            off += TABLE_ENTRY_SIZE;
+            off += TABLE_ENTRY_SIZE as usize;
         };
 
         // Entry 0: File Parameters (at offset 64KB, length 8)
         write_entry(
             &StandardItems::FILE_PARAMETERS,
-            u32::try_from(METADATA_TABLE_SIZE).expect("metadata table size fits u32"),
+            METADATA_TABLE_SIZE,
             8,
             0x0000_0004, // is_virtual_disk=0, is_required=1 (bit 2)
         );
@@ -831,7 +819,7 @@ mod tests {
         // Entry 1: Virtual Disk Size (at 64KB+8, length 8)
         write_entry(
             &StandardItems::VIRTUAL_DISK_SIZE,
-            u32::try_from(METADATA_TABLE_SIZE + 8).expect("metadata offset fits u32"),
+            METADATA_TABLE_SIZE + 8,
             8,
             0x0000_0006, // is_virtual_disk + is_required
         );
@@ -839,7 +827,7 @@ mod tests {
         // Entry 2: Virtual Disk ID (at 64KB+24, length 16)
         write_entry(
             &StandardItems::VIRTUAL_DISK_ID,
-            u32::try_from(METADATA_TABLE_SIZE + 24).expect("metadata offset fits u32"),
+            METADATA_TABLE_SIZE + 24,
             16,
             0x0000_0006,
         );
@@ -847,7 +835,7 @@ mod tests {
         // Entry 3: Logical Sector Size (at 64KB+40, length 4)
         write_entry(
             &StandardItems::LOGICAL_SECTOR_SIZE,
-            u32::try_from(METADATA_TABLE_SIZE + 40).expect("metadata offset fits u32"),
+            METADATA_TABLE_SIZE + 40,
             4,
             0x0000_0006,
         );
@@ -855,7 +843,7 @@ mod tests {
         // Entry 4: Physical Sector Size (at 64KB+48, length 4)
         write_entry(
             &StandardItems::PHYSICAL_SECTOR_SIZE,
-            u32::try_from(METADATA_TABLE_SIZE + 48).expect("metadata offset fits u32"),
+            METADATA_TABLE_SIZE + 48,
             4,
             0x0000_0006,
         );
@@ -864,7 +852,7 @@ mod tests {
         write_entry(&StandardItems::PARENT_LOCATOR, 0, 0, 0x0000_0004);
 
         // -- Metadata Items --
-        let items_base = METADATA_TABLE_SIZE;
+        let items_base = METADATA_TABLE_SIZE as usize;
 
         // File Parameters per MS-VHDX §2.6.2.1: block_size first, flags second
         let fp_block = (32 * 1024 * 1024u32).to_le_bytes();
@@ -918,7 +906,7 @@ mod tests {
         let entry = meta.table().entry(&StandardItems::FILE_PARAMETERS).unwrap();
         assert_eq!(
             entry.offset(),
-            u32::try_from(METADATA_TABLE_SIZE).expect("metadata table size fits u32")
+            METADATA_TABLE_SIZE
         );
         assert_eq!(entry.length(), 8);
     }
@@ -1020,21 +1008,20 @@ mod tests {
         let value_utf16: Vec<u8> = value.encode_utf16().flat_map(u16::to_le_bytes).collect();
 
         // Header (20) + 1 KV entry (12) + key data + value data
-        let kv_data_start = LOCATOR_HEADER_SIZE + KV_ENTRY_SIZE;
+        let kv_data_start = LOCATOR_HEADER_SIZE as usize + KV_ENTRY_SIZE as usize;
         let total_len = kv_data_start + key_utf16.len() + value_utf16.len();
 
-        let mut buf = vec![0u8; METADATA_TABLE_SIZE + total_len];
+        let mut buf = vec![0u8; METADATA_TABLE_SIZE as usize + total_len];
 
         // Table header
         buf[0..8].copy_from_slice(b"metadata");
         buf[10..12].copy_from_slice(&1u16.to_le_bytes()); // 1 entry
 
         // Entry 0: Parent Locator
-        let entry_off = TABLE_HEADER_SIZE;
+        let entry_off = TABLE_HEADER_SIZE as usize;
         buf[entry_off..entry_off + 16].copy_from_slice(&StandardItems::PARENT_LOCATOR.to_bytes());
         buf[entry_off + 16..entry_off + 20].copy_from_slice(
-            &u32::try_from(METADATA_TABLE_SIZE)
-                .expect("metadata table size fits u32")
+            &METADATA_TABLE_SIZE
                 .to_le_bytes(),
         );
         buf[entry_off + 20..entry_off + 24].copy_from_slice(
@@ -1045,14 +1032,14 @@ mod tests {
         buf[entry_off + 24..entry_off + 28].copy_from_slice(&0x0000_0004u32.to_le_bytes());
 
         // Locator data
-        let base = METADATA_TABLE_SIZE;
+        let base = METADATA_TABLE_SIZE as usize;
         // Locator header
         buf[base..base + 16].copy_from_slice(&StandardItems::LOCATOR_TYPE_VHDX.to_bytes());
         buf[base + 16..base + 18].copy_from_slice(&0u16.to_le_bytes()); // reserved
         buf[base + 18..base + 20].copy_from_slice(&1u16.to_le_bytes()); // 1 kv entry
 
         // KV entry: key at kv_data_start, value at kv_data_start + key_len
-        let kv_entry_off = base + LOCATOR_HEADER_SIZE;
+        let kv_entry_off = base + LOCATOR_HEADER_SIZE as usize;
         buf[kv_entry_off..kv_entry_off + 4].copy_from_slice(
             &u32::try_from(kv_data_start)
                 .expect("key/value data start fits u32")
@@ -1118,22 +1105,21 @@ mod tests {
             })
             .collect();
 
-        let kv_data_start = LOCATOR_HEADER_SIZE + count * KV_ENTRY_SIZE;
+        let kv_data_start = LOCATOR_HEADER_SIZE as usize + count * (KV_ENTRY_SIZE as usize);
         let total_data_len: usize = encoded.iter().map(|(k, v)| k.len() + v.len()).sum();
         let total_len = kv_data_start + total_data_len;
 
-        let mut buf = vec![0u8; METADATA_TABLE_SIZE + total_len];
+        let mut buf = vec![0u8; METADATA_TABLE_SIZE as usize + total_len];
 
         // Table header
         buf[0..8].copy_from_slice(b"metadata");
         buf[10..12].copy_from_slice(&1u16.to_le_bytes()); // 1 entry
 
         // Entry 0: Parent Locator
-        let entry_off = TABLE_HEADER_SIZE;
+        let entry_off = TABLE_HEADER_SIZE as usize;
         buf[entry_off..entry_off + 16].copy_from_slice(&StandardItems::PARENT_LOCATOR.to_bytes());
         buf[entry_off + 16..entry_off + 20].copy_from_slice(
-            &u32::try_from(METADATA_TABLE_SIZE)
-                .expect("metadata table size fits u32")
+            &METADATA_TABLE_SIZE
                 .to_le_bytes(),
         );
         buf[entry_off + 20..entry_off + 24].copy_from_slice(
@@ -1144,7 +1130,7 @@ mod tests {
         buf[entry_off + 24..entry_off + 28].copy_from_slice(&0x0000_0004u32.to_le_bytes());
 
         // Locator header
-        let base = METADATA_TABLE_SIZE;
+        let base = METADATA_TABLE_SIZE as usize;
         buf[base..base + 16].copy_from_slice(&StandardItems::LOCATOR_TYPE_VHDX.to_bytes());
         buf[base + 16..base + 18].copy_from_slice(&0u16.to_le_bytes()); // reserved
         buf[base + 18..base + 20].copy_from_slice(
@@ -1156,7 +1142,7 @@ mod tests {
         // Write KV entries and data
         let mut data_offset = kv_data_start;
         for (i, (key_bytes, val_bytes)) in encoded.iter().enumerate() {
-            let kv_entry_off = base + LOCATOR_HEADER_SIZE + i * KV_ENTRY_SIZE;
+            let kv_entry_off = base + LOCATOR_HEADER_SIZE as usize + i * KV_ENTRY_SIZE as usize;
             buf[kv_entry_off..kv_entry_off + 4].copy_from_slice(
                 &u32::try_from(data_offset)
                     .expect("data offset fits u32")

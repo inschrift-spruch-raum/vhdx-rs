@@ -11,7 +11,9 @@
 //! - MS-VHDX-`宽松扩展标准` (permissive validation, RELAX)
 //! - MS-VHDX-`只读扩展标准` (read-only semantics, ROEXT)
 
+use crate::constants::{BAT_REGION_GUID, METADATA_REGION_GUID, MIB};
 use crate::error::{Error, Result, SignaturePosition};
+use crate::file::{is_known_metadata_guid, is_known_region_guid};
 use crate::header::{Header, HeaderStructure};
 use crate::types::{Guid, StandardItems};
 use crate::{bat::PayloadBlockState, bat::SectorBitmapState};
@@ -340,8 +342,7 @@ impl<'a> SpecValidator<'a> {
         let current = header.header(0)?;
         let log_offset = current.log_offset();
         let log_length = current.log_length();
-        let mb: u64 = 1024 * 1024;
-        if log_length > 0 && u64::from(log_length) % mb != 0 {
+        if log_length > 0 && u64::from(log_length) % u64::from(MIB) != 0 {
             Self::push_issue(
                 issues,
                 ValidationIssue::new(
@@ -356,7 +357,7 @@ impl<'a> SpecValidator<'a> {
                 value: u64::from(log_length),
             });
         }
-        if log_offset > 0 && log_offset % mb != 0 {
+        if log_offset > 0 && log_offset % u64::from(MIB) != 0 {
             Self::push_issue(
                 issues,
                 ValidationIssue::new(
@@ -547,11 +548,10 @@ impl<'a> SpecValidator<'a> {
         &self, i: usize, entry: &crate::header::RegionTableEntry<'a>,
         entries: &[crate::header::RegionTableEntry<'a>], issues: &mut Vec<ValidationIssue>,
     ) -> Result<()> {
-        let mb: u64 = 1024 * 1024;
         let file_offset = entry.file_offset();
         let length = entry.length();
 
-        if !file_offset.is_multiple_of(mb) {
+        if !file_offset.is_multiple_of(u64::from(MIB)) {
             Self::push_issue(
                 issues,
                 ValidationIssue::new(
@@ -565,7 +565,7 @@ impl<'a> SpecValidator<'a> {
                 "REGION_ENTRY_ALIGNMENT: entry {i} file_offset {file_offset:#x} not 1MB-aligned"
             )));
         }
-        if file_offset < mb {
+        if file_offset < u64::from(MIB) {
             Self::push_issue(
                 issues,
                 ValidationIssue::new(
@@ -579,7 +579,7 @@ impl<'a> SpecValidator<'a> {
                 "REGION_ENTRY_OFFSET_MINIMUM: entry {i} file_offset {file_offset} < 1MB minimum"
             )));
         }
-        if u64::from(length) % mb != 0 {
+        if u64::from(length) % u64::from(MIB) != 0 {
             Self::push_issue(
                 issues,
                 ValidationIssue::new(
@@ -2281,22 +2281,12 @@ impl<'a> SpecValidator<'a> {
 
     /// Resolve the BAT region data.
     fn bat_region(&self) -> Option<&'a [u8]> {
-        // BAT region GUID: 2DC27766-F623-4200-9D64-115E9BFD4A08
-        const BAT_GUID: Guid = Guid::from_bytes([
-            0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42, 0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD,
-            0x4A, 0x08,
-        ]);
-        self.region_for_guid(&BAT_GUID)
+        self.region_for_guid(&BAT_REGION_GUID)
     }
 
     /// Resolve the metadata region data.
     fn metadata_region(&self) -> Option<&'a [u8]> {
-        // Metadata region GUID: 8B7CA206-4790-4B9A-B8FE-575F050F886E
-        const METADATA_GUID: Guid = Guid::from_bytes([
-            0x06, 0xA2, 0x7C, 0x8B, 0x90, 0x47, 0x9A, 0x4B, 0xB8, 0xFE, 0x57, 0x5F, 0x05, 0x0F,
-            0x88, 0x6E,
-        ]);
-        self.region_for_guid(&METADATA_GUID)
+        self.region_for_guid(&METADATA_REGION_GUID)
     }
 
     /// Determine whether this is a differencing disk (`has_parent` flag).
@@ -2385,35 +2375,6 @@ fn parse_guid_from_braced_string(s: &str) -> Option<Guid> {
     Some(Guid::from_bytes(bytes))
 }
 
-/// Check whether a GUID corresponds to a known region type.
-fn is_known_region_guid(guid: &Guid) -> bool {
-    // BAT and Metadata are the only required regions per MS-VHDX.
-    const KNOWN: &[Guid] = &[
-        Guid::from_bytes([
-            0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42, 0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD,
-            0x4A, 0x08,
-        ]), // BAT
-        Guid::from_bytes([
-            0x06, 0xA2, 0x7C, 0x8B, 0x90, 0x47, 0x9A, 0x4B, 0xB8, 0xFE, 0x57, 0x5F, 0x05, 0x0F,
-            0x88, 0x6E,
-        ]), // Metadata
-    ];
-    KNOWN.contains(guid)
-}
-
-/// Check whether a GUID corresponds to a known metadata item type.
-fn is_known_metadata_guid(guid: &Guid) -> bool {
-    const KNOWN: &[Guid] = &[
-        StandardItems::FILE_PARAMETERS,
-        StandardItems::VIRTUAL_DISK_SIZE,
-        StandardItems::VIRTUAL_DISK_ID,
-        StandardItems::LOGICAL_SECTOR_SIZE,
-        StandardItems::PHYSICAL_SECTOR_SIZE,
-        StandardItems::PARENT_LOCATOR,
-    ];
-    KNOWN.contains(guid)
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -2421,6 +2382,10 @@ fn is_known_metadata_guid(guid: &Guid) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::{
+        HEADER_SIZE, HEADER1_OFFSET, HEADER2_OFFSET, METADATA_TABLE_SIZE, MIB, REGION_TABLE_SIZE,
+        REGION_TABLE1_OFFSET, REGION_TABLE2_OFFSET,
+    };
     use bitvec::prelude::*;
     use crc32c::crc32c;
 
@@ -2432,9 +2397,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // Test helpers
     // -----------------------------------------------------------------------
-
-    const KB: usize = 1024;
-    const MB: usize = 1024 * KB;
 
     /// Build a minimal valid VHDX file in memory for validation testing.
     fn build_test_vhdx() -> Vec<u8> {
@@ -2451,24 +2413,24 @@ mod tests {
             u32::try_from(
                 u64::try_from(bat_bytes)
                     .expect("bat bytes fit u64")
-                    .div_ceil(u64::try_from(MB).expect("MB fits u64")),
+                    .div_ceil(u64::from(MIB)),
             )
             .expect("BAT size in MB units fits u32"),
             1,
-        ) * u32::try_from(MB).expect("MB fits u32");
+        ) * MIB;
 
-        let header_size = 4 * KB;
-        let region_table_size = 64 * KB;
+        let header_size = HEADER_SIZE;
+        let region_table_size = REGION_TABLE_SIZE;
 
-        let header1_offset = 64 * KB;
-        let header2_offset = 128 * KB;
-        let rt1_offset = 192 * KB;
-        let rt2_offset = 256 * KB;
-        let log_offset: u64 = u64::try_from(MB).expect("MB fits u64");
-        let log_length: u32 = u32::try_from(MB).expect("MB fits u32");
-        let bat_offset: u64 = 2 * u64::try_from(MB).expect("MB fits u64");
+        let header1_offset = HEADER1_OFFSET;
+        let header2_offset = HEADER2_OFFSET;
+        let rt1_offset = REGION_TABLE1_OFFSET;
+        let rt2_offset = REGION_TABLE2_OFFSET;
+        let log_offset: u64 = u64::from(MIB);
+        let log_length: u32 = MIB;
+        let bat_offset: u64 = 2 * u64::from(MIB);
         let metadata_offset: u64 = bat_offset + u64::from(bat_size);
-        let metadata_size: u32 = u32::try_from(MB).expect("MB fits u32");
+        let metadata_size: u32 = MIB;
 
         let file_end = metadata_offset + u64::from(metadata_size);
         let mut buf = vec![0u8; usize::try_from(file_end).expect("file size fits usize")];
@@ -2479,13 +2441,13 @@ mod tests {
         // Write headers
         let _ = (header_size, region_table_size, log_offset, log_length);
 
-        write_header(&mut buf, header1_offset, 5);
-        write_header(&mut buf, header2_offset, 3);
+        write_header(&mut buf, header1_offset as usize, 5);
+        write_header(&mut buf, header2_offset as usize, 3);
 
         // Write region tables
         write_region_table(
             &mut buf,
-            rt1_offset,
+            rt1_offset as usize,
             bat_offset,
             bat_size,
             metadata_offset,
@@ -2493,7 +2455,7 @@ mod tests {
         );
         write_region_table(
             &mut buf,
-            rt2_offset,
+            rt2_offset as usize,
             bat_offset,
             bat_size,
             metadata_offset,
@@ -2503,9 +2465,9 @@ mod tests {
         // Write minimal BAT: payload entries = FullyPresent with block-aligned
         // offsets, sector bitmap entries = NotPresent.
         let bat_start = usize::try_from(bat_offset).expect("BAT offset fits usize");
-        let block_size_mb = u64::from(block_size) / u64::try_from(MB).expect("MB fits u64");
+        let block_size_mb = u64::from(block_size / MIB);
         let metadata_end_mb = (metadata_offset + u64::from(metadata_size))
-            .div_ceil(u64::try_from(MB).expect("MB fits u64"));
+            .div_ceil(u64::from(MIB));
         // Align first payload offset to block_size boundary.
         let first_payload_mb = metadata_end_mb.div_ceil(block_size_mb) * block_size_mb;
         let mut sb_written: u64 = 0;
@@ -2547,15 +2509,15 @@ mod tests {
     }
 
     fn write_header(buf: &mut [u8], offset: usize, seq: u64) {
-        let header_size = 4 * KB;
-        let slice = &mut buf[offset..][..header_size];
+        let header_size = HEADER_SIZE;
+        let slice = &mut buf[offset..][..header_size as usize];
         slice[..4].copy_from_slice(b"head");
         slice[4..8].copy_from_slice(&0u32.to_le_bytes());
         slice[8..16].copy_from_slice(&seq.to_le_bytes());
         slice[64..66].copy_from_slice(&0u16.to_le_bytes()); // log_version
         slice[66..68].copy_from_slice(&1u16.to_le_bytes()); // version
-        slice[68..72].copy_from_slice(&u32::try_from(MB).expect("MB fits u32").to_le_bytes()); // log_length
-        slice[72..80].copy_from_slice(&u64::try_from(MB).expect("MB fits u64").to_le_bytes()); // log_offset
+        slice[68..72].copy_from_slice(&MIB.to_le_bytes()); // log_length
+        slice[72..80].copy_from_slice(&u64::from(MIB).to_le_bytes()); // log_offset
 
         let checksum = crc32c(slice);
         slice[4..8].copy_from_slice(&checksum.to_le_bytes());
@@ -2565,8 +2527,8 @@ mod tests {
         buf: &mut [u8], offset: usize, bat_offset: u64, bat_size: u32, metadata_offset: u64,
         metadata_size: u32,
     ) {
-        let region_table_size = 64 * KB;
-        let slice = &mut buf[offset..][..region_table_size];
+        let region_table_size = REGION_TABLE_SIZE;
+        let slice = &mut buf[offset..][..region_table_size as usize];
 
         slice[..4].copy_from_slice(b"regi");
         slice[4..8].copy_from_slice(&0u32.to_le_bytes()); // checksum placeholder
@@ -2603,7 +2565,7 @@ mod tests {
     }
 
     fn write_metadata(buf: &mut [u8], offset: usize, block_size: u32, logical_sector_size: u32) {
-        let metadata_table_size = 64 * KB;
+        let metadata_table_size = METADATA_TABLE_SIZE;
 
         // Table header
         buf[offset..offset + 8].copy_from_slice(b"metadata");
@@ -2612,7 +2574,7 @@ mod tests {
         // Write 6 table entries. Item offsets are relative to the start of the
         // metadata region (which includes the 64KB table).
         let mut entry_off = offset + 32;
-        let item_base = u32::try_from(metadata_table_size).expect("table size fits u32"); // items start right after the 64KB table
+        let item_base = metadata_table_size; // items start right after the 64KB table
 
         // Entry 0: FileParameters (relative offset = 64KB+0, length=8)
         write_metadata_entry(
@@ -2675,7 +2637,7 @@ mod tests {
         );
 
         // FileParameters per MS-VHDX §2.6.2.1: block_size first, flags second
-        let items_base = offset + metadata_table_size;
+        let items_base = offset + metadata_table_size as usize;
         let fp_flags: u32 = 0; // dynamic disk
         buf[items_base..items_base + 4].copy_from_slice(&block_size.to_le_bytes());
         buf[items_base + 4..items_base + 8].copy_from_slice(&fp_flags.to_le_bytes());
@@ -2740,8 +2702,8 @@ mod tests {
     fn validate_header_corrupted_header1() {
         let mut buf = build_test_vhdx();
         // Corrupt both header signatures so neither is valid
-        buf[64 * KB] = 0xFF;
-        buf[128 * KB] = 0xFF;
+        buf[HEADER1_OFFSET as usize] = 0xFF;
+        buf[HEADER2_OFFSET as usize] = 0xFF;
         let validator = SpecValidator::new(&buf, true);
         // Both headers invalid -> must fail
         assert!(validator.validate_header().is_err());
@@ -2751,8 +2713,8 @@ mod tests {
     fn validate_header_bad_version() {
         let mut buf = build_test_vhdx();
         // Set version to 2 on both headers
-        buf[64 * KB + 66..64 * KB + 68].copy_from_slice(&2u16.to_le_bytes());
-        buf[128 * KB + 66..128 * KB + 68].copy_from_slice(&2u16.to_le_bytes());
+        buf[HEADER1_OFFSET as usize + 66..HEADER1_OFFSET as usize + 68].copy_from_slice(&2u16.to_le_bytes());
+        buf[HEADER2_OFFSET as usize + 66..HEADER2_OFFSET as usize + 68].copy_from_slice(&2u16.to_le_bytes());
         let validator = SpecValidator::new(&buf, true);
         assert!(validator.validate_header().is_err());
     }
@@ -2768,7 +2730,7 @@ mod tests {
     fn validate_region_table_bad_signature() {
         let mut buf = build_test_vhdx();
         // Corrupt RT1 signature
-        buf[192 * KB] = 0xFF;
+        buf[REGION_TABLE1_OFFSET as usize] = 0xFF;
         let validator = SpecValidator::new(&buf, true);
         assert!(validator.validate_region_table().is_err());
     }
@@ -2777,9 +2739,11 @@ mod tests {
     fn validate_region_table_bad_entry_count() {
         let mut buf = build_test_vhdx();
         // Set entry count to 3000 (> 2047) and fix CRC
-        buf[192 * KB + 8..192 * KB + 12].copy_from_slice(&3000u32.to_le_bytes());
-        let checksum = crc32c(&buf[192 * KB..][..64 * KB]);
-        buf[192 * KB + 4..192 * KB + 8].copy_from_slice(&checksum.to_le_bytes());
+        buf[REGION_TABLE1_OFFSET as usize + 8..REGION_TABLE1_OFFSET as usize + 12]
+            .copy_from_slice(&3000u32.to_le_bytes());
+        let checksum = crc32c(&buf[REGION_TABLE1_OFFSET as usize..][..REGION_TABLE_SIZE as usize]);
+        buf[REGION_TABLE1_OFFSET as usize + 4..REGION_TABLE1_OFFSET as usize + 8]
+            .copy_from_slice(&checksum.to_le_bytes());
         let validator = SpecValidator::new(&buf, true);
         // Entry count > 2047 should cause header.region_table() to fail
         assert!(validator.validate_region_table().is_err());
@@ -2812,8 +2776,11 @@ mod tests {
         // Find metadata offset from region table entry 1 (Metadata entry)
         // Region table starts at 192KB. Entry 1 (Metadata) starts at offset 16+32=48.
         // file_offset is at entry_start+16 = 64.
-        let metadata_offset =
-            u64::from_le_bytes(buf[192 * KB + 64..192 * KB + 72].try_into().unwrap());
+        let metadata_offset = u64::from_le_bytes(
+            buf[REGION_TABLE1_OFFSET as usize + 64..REGION_TABLE1_OFFSET as usize + 72]
+                .try_into()
+                .unwrap(),
+        );
         let mo = usize::try_from(metadata_offset).expect("metadata offset fits usize");
         // Zero out the FileParameters entry GUID (first entry after header, at offset 32)
         buf[mo + 32..mo + 48].copy_from_slice(&[0u8; 16]);
@@ -2825,8 +2792,11 @@ mod tests {
     fn test_metadata_item_corrupted_file_parameters() {
         let mut buf = build_test_vhdx();
         // Find metadata offset from region table entry 1 (Metadata entry)
-        let metadata_offset =
-            u64::from_le_bytes(buf[192 * KB + 64..192 * KB + 72].try_into().unwrap());
+        let metadata_offset = u64::from_le_bytes(
+            buf[REGION_TABLE1_OFFSET as usize + 64..REGION_TABLE1_OFFSET as usize + 72]
+                .try_into()
+                .unwrap(),
+        );
         let mo = usize::try_from(metadata_offset).expect("metadata offset fits usize");
         // Modify FileParameters entry (entry 0, at offset 32 from metadata start)
         // length field: bytes 20-23 of the entry → change from 8 to 4
@@ -2857,8 +2827,11 @@ mod tests {
     #[test]
     fn test_metadata_item_corrupted_preserves_missing() {
         let mut buf = build_test_vhdx();
-        let metadata_offset =
-            u64::from_le_bytes(buf[192 * KB + 64..192 * KB + 72].try_into().unwrap());
+        let metadata_offset = u64::from_le_bytes(
+            buf[REGION_TABLE1_OFFSET as usize + 64..REGION_TABLE1_OFFSET as usize + 72]
+                .try_into()
+                .unwrap(),
+        );
         let mo = usize::try_from(metadata_offset).expect("metadata offset fits usize");
         // Zero out FileParameters entry GUID in metadata table
         buf[mo + 32..mo + 48].copy_from_slice(&[0u8; 16]);
@@ -2913,7 +2886,7 @@ mod tests {
 
         // Add a third region table entry with an unknown GUID (required=0)
         // Region table 1 is at 192KB. Current: 2 entries (header 16 bytes + 2*32 = 80 bytes used).
-        let rt_offset = 192 * KB;
+        let rt_offset = REGION_TABLE1_OFFSET as usize;
         // Update entry count: 2 → 3
         buf[rt_offset + 8..rt_offset + 12].copy_from_slice(&3u32.to_le_bytes());
 
@@ -2935,11 +2908,11 @@ mod tests {
 
         // Fix CRC for RT1 (zero out checksum field first, then compute)
         buf[rt_offset + 4..rt_offset + 8].copy_from_slice(&0u32.to_le_bytes());
-        let checksum = crc32c(&buf[rt_offset..][..64 * KB]);
+        let checksum = crc32c(&buf[rt_offset..][..REGION_TABLE_SIZE as usize]);
         buf[rt_offset + 4..rt_offset + 8].copy_from_slice(&checksum.to_le_bytes());
 
         // Do the same for RT2 at 256KB
-        let rt2_offset = 256 * KB;
+        let rt2_offset = REGION_TABLE2_OFFSET as usize;
         buf[rt2_offset + 8..rt2_offset + 12].copy_from_slice(&3u32.to_le_bytes());
         let rt2_entry_start = rt2_offset + 16 + 2 * 32;
         buf[rt2_entry_start..rt2_entry_start + 16].copy_from_slice(&unknown_guid);
@@ -2947,7 +2920,7 @@ mod tests {
         buf[rt2_entry_start + 24..rt2_entry_start + 28].copy_from_slice(&length.to_le_bytes());
         buf[rt2_entry_start + 28..rt2_entry_start + 32].copy_from_slice(&0u32.to_le_bytes());
         buf[rt2_offset + 4..rt2_offset + 8].copy_from_slice(&0u32.to_le_bytes());
-        let checksum2 = crc32c(&buf[rt2_offset..][..64 * KB]);
+        let checksum2 = crc32c(&buf[rt2_offset..][..REGION_TABLE_SIZE as usize]);
         buf[rt2_offset + 4..rt2_offset + 8].copy_from_slice(&checksum2.to_le_bytes());
 
         // Extend buffer to cover the new region offset
@@ -2967,7 +2940,7 @@ mod tests {
         let mut buf = build_test_vhdx();
 
         // Add a third region table entry with an unknown GUID and required=1
-        let rt_offset = 192 * KB;
+        let rt_offset = REGION_TABLE1_OFFSET as usize;
         buf[rt_offset + 8..rt_offset + 12].copy_from_slice(&3u32.to_le_bytes());
 
         let entry_start = rt_offset + 16 + 2 * 32;
@@ -2984,15 +2957,15 @@ mod tests {
         buf[entry_start + 28..entry_start + 32].copy_from_slice(&1u32.to_le_bytes());
 
         let checksum = crc32c(&{
-            let mut slice = vec![0u8; 64 * KB];
-            slice.copy_from_slice(&buf[rt_offset..][..64 * KB]);
+            let mut slice = vec![0u8; REGION_TABLE_SIZE as usize];
+            slice.copy_from_slice(&buf[rt_offset..][..REGION_TABLE_SIZE as usize]);
             slice[4..8].copy_from_slice(&0u32.to_le_bytes());
             slice
         });
         buf[rt_offset + 4..rt_offset + 8].copy_from_slice(&checksum.to_le_bytes());
 
         // RT2
-        let rt2_offset = 256 * KB;
+        let rt2_offset = REGION_TABLE2_OFFSET as usize;
         buf[rt2_offset + 8..rt2_offset + 12].copy_from_slice(&3u32.to_le_bytes());
         let rt2_entry_start = rt2_offset + 16 + 2 * 32;
         buf[rt2_entry_start..rt2_entry_start + 16].copy_from_slice(&unknown_guid);
@@ -3000,8 +2973,8 @@ mod tests {
         buf[rt2_entry_start + 24..rt2_entry_start + 28].copy_from_slice(&length.to_le_bytes());
         buf[rt2_entry_start + 28..rt2_entry_start + 32].copy_from_slice(&1u32.to_le_bytes());
         let checksum2 = crc32c(&{
-            let mut slice = vec![0u8; 64 * KB];
-            slice.copy_from_slice(&buf[rt2_offset..][..64 * KB]);
+            let mut slice = vec![0u8; REGION_TABLE_SIZE as usize];
+            slice.copy_from_slice(&buf[rt2_offset..][..REGION_TABLE_SIZE as usize]);
             slice[4..8].copy_from_slice(&0u32.to_le_bytes());
             slice
         });
@@ -3029,7 +3002,7 @@ mod tests {
         let mut buf = build_test_vhdx();
 
         // Add a third region table entry with an unknown GUID and required=0
-        let rt_offset = 192 * KB;
+        let rt_offset = REGION_TABLE1_OFFSET as usize;
         buf[rt_offset + 8..rt_offset + 12].copy_from_slice(&3u32.to_le_bytes());
 
         let entry_start = rt_offset + 16 + 2 * 32;
@@ -3045,15 +3018,15 @@ mod tests {
         buf[entry_start + 28..entry_start + 32].copy_from_slice(&0u32.to_le_bytes());
 
         let checksum = crc32c(&{
-            let mut slice = vec![0u8; 64 * KB];
-            slice.copy_from_slice(&buf[rt_offset..][..64 * KB]);
+            let mut slice = vec![0u8; REGION_TABLE_SIZE as usize];
+            slice.copy_from_slice(&buf[rt_offset..][..REGION_TABLE_SIZE as usize]);
             slice[4..8].copy_from_slice(&0u32.to_le_bytes());
             slice
         });
         buf[rt_offset + 4..rt_offset + 8].copy_from_slice(&checksum.to_le_bytes());
 
         // RT2
-        let rt2_offset = 256 * KB;
+        let rt2_offset = REGION_TABLE2_OFFSET as usize;
         buf[rt2_offset + 8..rt2_offset + 12].copy_from_slice(&3u32.to_le_bytes());
         let rt2_entry_start = rt2_offset + 16 + 2 * 32;
         buf[rt2_entry_start..rt2_entry_start + 16].copy_from_slice(&unknown_guid);
@@ -3061,8 +3034,8 @@ mod tests {
         buf[rt2_entry_start + 24..rt2_entry_start + 28].copy_from_slice(&length.to_le_bytes());
         buf[rt2_entry_start + 28..rt2_entry_start + 32].copy_from_slice(&0u32.to_le_bytes());
         let checksum2 = crc32c(&{
-            let mut slice = vec![0u8; 64 * KB];
-            slice.copy_from_slice(&buf[rt2_offset..][..64 * KB]);
+            let mut slice = vec![0u8; REGION_TABLE_SIZE as usize];
+            slice.copy_from_slice(&buf[rt2_offset..][..REGION_TABLE_SIZE as usize]);
             slice[4..8].copy_from_slice(&0u32.to_le_bytes());
             slice
         });
@@ -3098,11 +3071,11 @@ mod tests {
 
         // Locate the metadata region from region table 1 (at 192 KB).
         // RT: 16-byte header + 2×32-byte entries. Entry 1 (metadata) starts at offset 48.
-        let rt_offset = 192 * KB;
+        let rt_offset = REGION_TABLE1_OFFSET as usize;
         let metadata_offset =
             u64::from_le_bytes(buf[rt_offset + 64..rt_offset + 72].try_into().unwrap());
         let mo = usize::try_from(metadata_offset).expect("metadata offset fits usize");
-        let items_base = mo + 64 * KB; // items start after the 64 KB metadata table
+        let items_base = mo + METADATA_TABLE_SIZE as usize; // items start after the 64 KB metadata table
 
         // Mark the disk as differencing: set FileParameters has_parent bit (bit 1).
         buf[items_base..items_base + 8]
@@ -3198,11 +3171,11 @@ mod tests {
 
         // Locator data is at items_base + 48. KV entry 0 starts at
         // pl_start + 20 (after 20-byte locator header). key_length is at [8..10].
-        let rt_offset = 192 * KB;
+        let rt_offset = REGION_TABLE1_OFFSET as usize;
         let metadata_offset =
             u64::from_le_bytes(buf[rt_offset + 64..rt_offset + 72].try_into().unwrap());
         let mo = usize::try_from(metadata_offset).expect("metadata offset fits usize");
-        let kv0_off = mo + 64 * KB + 48 + 20;
+        let kv0_off = mo + METADATA_TABLE_SIZE as usize + 48 + 20;
         buf[kv0_off + 8..kv0_off + 10].copy_from_slice(&5u16.to_le_bytes()); // odd length
 
         let validator = SpecValidator::new(&buf, true);
@@ -3368,7 +3341,7 @@ mod tests {
         let mut buf = build_test_vhdx();
 
         // Add a third region table entry with an unknown GUID (required=0)
-        let rt_offset = 192 * KB;
+        let rt_offset = REGION_TABLE1_OFFSET as usize;
         buf[rt_offset + 8..rt_offset + 12].copy_from_slice(&3u32.to_le_bytes());
 
         let entry_start = rt_offset + 16 + 2 * 32;
@@ -3385,11 +3358,11 @@ mod tests {
 
         // Fix CRC for RT1
         buf[rt_offset + 4..rt_offset + 8].copy_from_slice(&0u32.to_le_bytes());
-        let checksum = crc32c(&buf[rt_offset..][..64 * KB]);
+        let checksum = crc32c(&buf[rt_offset..][..REGION_TABLE_SIZE as usize]);
         buf[rt_offset + 4..rt_offset + 8].copy_from_slice(&checksum.to_le_bytes());
 
         // Fix CRC for RT2
-        let rt2_offset = 256 * KB;
+        let rt2_offset = REGION_TABLE2_OFFSET as usize;
         buf[rt2_offset + 8..rt2_offset + 12].copy_from_slice(&3u32.to_le_bytes());
         let rt2_entry_start = rt2_offset + 16 + 2 * 32;
         buf[rt2_entry_start..rt2_entry_start + 16].copy_from_slice(&unknown_guid);
@@ -3397,7 +3370,7 @@ mod tests {
         buf[rt2_entry_start + 24..rt2_entry_start + 28].copy_from_slice(&length.to_le_bytes());
         buf[rt2_entry_start + 28..rt2_entry_start + 32].copy_from_slice(&0u32.to_le_bytes());
         buf[rt2_offset + 4..rt2_offset + 8].copy_from_slice(&0u32.to_le_bytes());
-        let checksum2 = crc32c(&buf[rt2_offset..][..64 * KB]);
+        let checksum2 = crc32c(&buf[rt2_offset..][..REGION_TABLE_SIZE as usize]);
         buf[rt2_offset + 4..rt2_offset + 8].copy_from_slice(&checksum2.to_le_bytes());
 
         // Extend buffer to cover the new region
@@ -3438,7 +3411,7 @@ mod tests {
         let mut buf = build_test_vhdx();
 
         // Get metadata offset from region table
-        let rt_offset = 192 * KB;
+        let rt_offset = REGION_TABLE1_OFFSET as usize;
         let metadata_offset =
             u64::from_le_bytes(buf[rt_offset + 64..rt_offset + 72].try_into().unwrap());
         let mo = usize::try_from(metadata_offset).expect("metadata offset fits usize");
@@ -3488,7 +3461,7 @@ mod tests {
         // strict=true: optional unknown should Err, not push issue
         let mut buf = build_test_vhdx();
 
-        let rt_offset = 192 * KB;
+        let rt_offset = REGION_TABLE1_OFFSET as usize;
         buf[rt_offset + 8..rt_offset + 12].copy_from_slice(&3u32.to_le_bytes());
 
         let entry_start = rt_offset + 16 + 2 * 32;
@@ -3504,10 +3477,10 @@ mod tests {
         buf[entry_start + 28..entry_start + 32].copy_from_slice(&0u32.to_le_bytes());
 
         buf[rt_offset + 4..rt_offset + 8].copy_from_slice(&0u32.to_le_bytes());
-        let checksum = crc32c(&buf[rt_offset..][..64 * KB]);
+        let checksum = crc32c(&buf[rt_offset..][..REGION_TABLE_SIZE as usize]);
         buf[rt_offset + 4..rt_offset + 8].copy_from_slice(&checksum.to_le_bytes());
 
-        let rt2_offset = 256 * KB;
+        let rt2_offset = REGION_TABLE2_OFFSET as usize;
         buf[rt2_offset + 8..rt2_offset + 12].copy_from_slice(&3u32.to_le_bytes());
         let rt2_entry_start = rt2_offset + 16 + 2 * 32;
         buf[rt2_entry_start..rt2_entry_start + 16].copy_from_slice(&unknown_guid);
@@ -3515,7 +3488,7 @@ mod tests {
         buf[rt2_entry_start + 24..rt2_entry_start + 28].copy_from_slice(&length.to_le_bytes());
         buf[rt2_entry_start + 28..rt2_entry_start + 32].copy_from_slice(&0u32.to_le_bytes());
         buf[rt2_offset + 4..rt2_offset + 8].copy_from_slice(&0u32.to_le_bytes());
-        let checksum2 = crc32c(&buf[rt2_offset..][..64 * KB]);
+        let checksum2 = crc32c(&buf[rt2_offset..][..REGION_TABLE_SIZE as usize]);
         buf[rt2_offset + 4..rt2_offset + 8].copy_from_slice(&checksum2.to_le_bytes());
 
         let needed = usize::try_from(offset + u64::from(length)).expect("needed size fits usize");
@@ -3536,7 +3509,7 @@ mod tests {
         let mut buf = build_test_vhdx();
 
         // Get metadata offset from region table
-        let rt_offset = 192 * KB;
+        let rt_offset = REGION_TABLE1_OFFSET as usize;
         let metadata_offset =
             u64::from_le_bytes(buf[rt_offset + 64..rt_offset + 72].try_into().unwrap());
         let mo = usize::try_from(metadata_offset).expect("metadata offset fits usize");
@@ -3562,13 +3535,13 @@ mod tests {
         let mut buf = build_test_vhdx();
 
         // Get metadata offset from region table
-        let rt_offset = 192 * KB;
+        let rt_offset = REGION_TABLE1_OFFSET as usize;
         let metadata_offset =
             u64::from_le_bytes(buf[rt_offset + 64..rt_offset + 72].try_into().unwrap());
         let mo = usize::try_from(metadata_offset).expect("metadata offset fits usize");
 
         // FileParameters data starts at mo + 64KB (after the 64KB metadata table)
-        let fp_data_off = mo + 64 * KB;
+        let fp_data_off = mo + METADATA_TABLE_SIZE as usize;
         // Set bit 2 of BitFields (bit 34 in the 8-byte Lsb0 view), which falls
         // in reserved bits 2-31. Per MS-VHDX §2.6.2.1 these bits MUST be 0;
         // BitFields is the second u32 (bytes 4-7, bits 32-63).
@@ -3597,7 +3570,7 @@ mod tests {
         // Build VHDX with header1 valid, header2 corrupted
         let mut buf = build_test_vhdx();
         // Corrupt header2 signature at offset 128 KB
-        buf[128 * KB] = 0xFF;
+        buf[HEADER2_OFFSET as usize] = 0xFF;
         let validator = SpecValidator::new(&buf, true);
         // Should succeed — single valid header is OK per MS-VHDX §2.2.2
         assert!(

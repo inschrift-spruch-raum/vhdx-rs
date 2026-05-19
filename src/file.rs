@@ -5,6 +5,12 @@ use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
+use crate::constants::{
+    BAT_REGION_GUID, BAT_REGION_OFFSET, HEADER_SIZE, HEADER1_OFFSET, HEADER2_OFFSET,
+    KV_ENTRY_SIZE, LOCATOR_HEADER_SIZE, LOG_LENGTH, LOG_OFFSET, METADATA_REGION_GUID,
+    METADATA_REGION_SIZE, METADATA_TABLE_SIZE, MIB as MIB, REGION_TABLE_SIZE,
+    REGION_TABLE1_OFFSET, REGION_TABLE2_OFFSET, TABLE_ENTRY_SIZE, TABLE_HEADER_SIZE, TIB as TIB,
+};
 use crate::error::{Error, Result, SignaturePosition};
 use crate::header::Header;
 use crate::log::Log;
@@ -12,44 +18,6 @@ use crate::log_replay::{self, ReplayOverlay};
 use crate::section::Sections;
 use crate::types::{self, Guid};
 use crc32c::crc32c;
-
-// ---------------------------------------------------------------------------
-// Layout constants
-// ---------------------------------------------------------------------------
-
-const KB: u64 = 1024;
-const MB: u64 = 1024 * KB;
-const GB: u64 = 1024 * MB;
-const TB: u64 = GB * 1024; // 1024^4 = 1 TiB
-
-const HEADER1_OFFSET: u64 = 64 * KB;
-const HEADER2_OFFSET: u64 = 128 * KB;
-const REGION_TABLE1_OFFSET: u64 = 192 * KB;
-const REGION_TABLE2_OFFSET: u64 = 256 * KB;
-
-/// Log starts at 1 MB (first MB-aligned slot after the header section).
-const LOG_OFFSET: u64 = MB;
-/// Minimum log length is 1 MB.
-const LOG_LENGTH: u32 = 1024 * 1024;
-
-/// BAT region starts at 2 MB (right after the log).
-const BAT_REGION_OFFSET: u64 = 2 * MB;
-/// Metadata region default size: 1 MB.
-const METADATA_REGION_SIZE: u32 = 1024 * 1024;
-
-const HEADER_SIZE: usize = 4096;
-const REGION_TABLE_SIZE: usize = 64 * 1024;
-
-/// Metadata table fixed size: 64 KB.
-const METADATA_TABLE_SIZE: usize = 64 * 1024;
-/// Table header size: 32 bytes.
-const TABLE_HEADER_SIZE: usize = 32;
-/// Table entry size: 32 bytes.
-const TABLE_ENTRY_SIZE: usize = 32;
-/// Locator header size: 20 bytes.
-const LOCATOR_HEADER_SIZE: usize = 20;
-/// Key-value entry size: 12 bytes.
-const KV_ENTRY_SIZE: usize = 12;
 
 struct MetadataEntryMeta {
     guid: Guid,
@@ -67,31 +35,18 @@ const VHDX_SIGNATURE_BYTES: [u8; 8] = [0x76, 0x68, 0x64, 0x78, 0x66, 0x69, 0x6C,
 /// Size of the header buffer (first 1 MB of the file).
 const HEADER_BUFFER_SIZE: usize = 1024 * 1024;
 
-// Known region GUIDs (mixed-endian on-disk byte order)
-//
-// BAT:   2DC27766-F623-4200-9D64-115E9BFD4A08
-// Metadata: 8B7CA206-4790-4B9A-B8FE-575F050F886E
-
-const BAT_REGION_GUID: Guid = Guid::from_bytes([
-    0x66, 0x77, 0xC2, 0x2D, 0x23, 0xF6, 0x00, 0x42, 0x9D, 0x64, 0x11, 0x5E, 0x9B, 0xFD, 0x4A, 0x08,
-]);
-
-const METADATA_REGION_GUID: Guid = Guid::from_bytes([
-    0x06, 0xA2, 0x7C, 0x8B, 0x90, 0x47, 0x9A, 0x4B, 0xB8, 0xFE, 0x57, 0x5F, 0x05, 0x0F, 0x88, 0x6E,
-]);
-
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
 
 /// Check whether a GUID corresponds to a known region type.
-fn is_known_region_guid(guid: &Guid) -> bool {
+pub(crate) fn is_known_region_guid(guid: &Guid) -> bool {
     const KNOWN: &[Guid] = &[BAT_REGION_GUID, METADATA_REGION_GUID];
     KNOWN.contains(guid)
 }
 
 /// Check whether a GUID corresponds to a known metadata item type.
-fn is_known_metadata_guid(guid: &Guid) -> bool {
+pub(crate) fn is_known_metadata_guid(guid: &Guid) -> bool {
     const KNOWN: &[Guid] = &[
         types::StandardItems::FILE_PARAMETERS,
         types::StandardItems::VIRTUAL_DISK_SIZE,
@@ -392,13 +347,12 @@ impl File {
             return self.header_buf.clone();
         };
 
-        let one_mb: usize = 1024 * 1024;
         let log_offset = usize::try_from(current.log_offset()).unwrap();
         let log_length = usize::try_from(current.log_length()).unwrap();
         let header_log_guid = current.log_guid();
 
         // Determine maximum extent across all regions
-        let mut max_end = one_mb.max(log_offset + log_length);
+        let mut max_end = (MIB as usize).max(log_offset + log_length);
         for entry in rt.entries() {
             let end = usize::try_from(entry.file_offset()).unwrap()
                 + usize::try_from(entry.length()).unwrap();
@@ -408,7 +362,7 @@ impl File {
         let mut buf = vec![0u8; max_end];
 
         // Copy header at offset 0
-        let header_len = self.header_buf.len().min(one_mb);
+        let header_len = self.header_buf.len().min(MIB as usize);
         buf[..header_len].copy_from_slice(&self.header_buf[..header_len]);
 
         // Copy log region at log_offset.
@@ -609,22 +563,21 @@ impl OpenOptions {
     fn validate_region_table_entries(
         rt: &crate::header::RegionTable<'_>, strict: bool,
     ) -> Result<()> {
-        let mb: u64 = 1024 * 1024;
         let entries: Vec<_> = rt.entries().collect();
         for (i, entry) in entries.iter().enumerate() {
             let file_offset = entry.file_offset();
             let length = entry.length();
-            if file_offset % mb != 0 {
+            if file_offset % u64::from(MIB) != 0 {
                 return Err(Error::InvalidRegionTable(format!(
                     "REGION_ENTRY_ALIGNMENT: entry {i} file_offset {file_offset:#x} not 1MB-aligned"
                 )));
             }
-            if file_offset < mb {
+            if file_offset < u64::from(MIB) {
                 return Err(Error::InvalidRegionTable(format!(
                     "REGION_ENTRY_OFFSET_MINIMUM: entry {i} file_offset {file_offset} < 1MB minimum"
                 )));
             }
-            if u64::from(length) % mb != 0 {
+            if u64::from(length) % u64::from(MIB) != 0 {
                 return Err(Error::InvalidRegionTable(format!(
                     "REGION_ENTRY_ALIGNMENT: entry {i} length {length} not 1MB-aligned"
                 )));
@@ -713,9 +666,9 @@ impl OpenOptions {
         };
         let noncurrent_idx = if current_idx == 1 { 2 } else { 1 };
         let noncurrent_offset: u64 = if noncurrent_idx == 1 {
-            HEADER1_OFFSET
+            u64::from(HEADER1_OFFSET)
         } else {
-            HEADER2_OFFSET
+            u64::from(HEADER2_OFFSET)
         };
         let current_header = hdr.header(0)?;
         let updated_header = Self::build_updated_header(&current_header);
@@ -723,14 +676,14 @@ impl OpenOptions {
         file.write_all(&updated_header)?;
         file.sync_all()?;
         let start = usize::try_from(noncurrent_offset).unwrap();
-        header_buf[start..start + HEADER_SIZE].copy_from_slice(&updated_header);
+        header_buf[start..start + HEADER_SIZE as usize].copy_from_slice(&updated_header);
         Ok(())
     }
 
     fn build_updated_header(
         current_header: &crate::header::HeaderStructure<'_>,
-    ) -> [u8; HEADER_SIZE] {
-        let mut updated_header = [0u8; HEADER_SIZE];
+    ) -> [u8; HEADER_SIZE as usize] {
+        let mut updated_header = [0u8; HEADER_SIZE as usize];
         updated_header[..4].copy_from_slice(b"head");
         updated_header[4..8].copy_from_slice(&0u32.to_le_bytes());
         updated_header[8..16]
@@ -1053,7 +1006,7 @@ impl CreateOptions {
             ));
         }
 
-        if self.virtual_size > 64 * TB {
+        if self.virtual_size > 64 * TIB {
             return Err(Error::InvalidParameter(
                 "virtual disk size must not exceed 64 TB".into(),
             ));
@@ -1068,9 +1021,7 @@ impl CreateOptions {
             ));
         }
 
-        let one_mb: u32 = 1024 * 1024;
-        let two_fifty_six_mb: u32 = 256 * 1024 * 1024;
-        if self.block_size < one_mb || self.block_size > two_fifty_six_mb {
+        if self.block_size < MIB || self.block_size > 256 * MIB {
             return Err(Error::InvalidParameter(
                 "block size must be between 1 MB and 256 MB".into(),
             ));
@@ -1130,7 +1081,7 @@ impl CreateOptions {
 
         let bat_size =
             Self::calculate_bat_size(self.virtual_size, self.block_size, self.logical_sector_size);
-        let metadata_offset = BAT_REGION_OFFSET + u64::from(bat_size);
+        let metadata_offset = u64::from(BAT_REGION_OFFSET) + u64::from(bat_size);
 
         // 1. File Type Identifier (offset 0)
         Self::write_file_type_identifier(&mut w)?;
@@ -1142,21 +1093,21 @@ impl CreateOptions {
 
         // Header 1 with sequence number 0
         let header1 = Self::build_header(0, &file_write_guid, &data_write_guid, &log_guid);
-        std::io::Seek::seek(&mut w, std::io::SeekFrom::Start(HEADER1_OFFSET))?;
+        std::io::Seek::seek(&mut w, std::io::SeekFrom::Start(u64::from(HEADER1_OFFSET)))?;
         w.write_all(&header1)?;
 
         // Header 2 with sequence number 1 (different from header1 to satisfy §2.2.2)
         let header2 = Self::build_header(1, &file_write_guid, &data_write_guid, &log_guid);
-        std::io::Seek::seek(&mut w, std::io::SeekFrom::Start(HEADER2_OFFSET))?;
+        std::io::Seek::seek(&mut w, std::io::SeekFrom::Start(u64::from(HEADER2_OFFSET)))?;
         w.write_all(&header2)?;
 
         // 3. Region Tables (offsets 192 KB and 256 KB)
         let region = Self::build_region_table(bat_size, metadata_offset);
 
-        std::io::Seek::seek(&mut w, std::io::SeekFrom::Start(REGION_TABLE1_OFFSET))?;
+        std::io::Seek::seek(&mut w, std::io::SeekFrom::Start(u64::from(REGION_TABLE1_OFFSET)))?;
         w.write_all(&region)?;
 
-        std::io::Seek::seek(&mut w, std::io::SeekFrom::Start(REGION_TABLE2_OFFSET))?;
+        std::io::Seek::seek(&mut w, std::io::SeekFrom::Start(u64::from(REGION_TABLE2_OFFSET)))?;
         w.write_all(&region)?;
 
         // 4. Extend file to cover log + BAT + metadata (zero-filled)
@@ -1170,11 +1121,11 @@ impl CreateOptions {
                     self.block_size,
                     self.logical_sector_size,
                 );
-            let payload_align = u64::from(self.block_size) / MB;
-            let raw_first_mb = (metadata_offset + u64::from(METADATA_REGION_SIZE)).div_ceil(MB);
+            let payload_align = u64::from(self.block_size / MIB);
+            let raw_first_mb = (metadata_offset + u64::from(METADATA_REGION_SIZE)).div_ceil(u64::from(MIB));
             let first_payload_offset_mb = raw_first_mb.div_ceil(payload_align) * payload_align;
             let total_payload = num_payload * u64::from(self.block_size);
-            let end = first_payload_offset_mb * MB + total_payload;
+            let end = first_payload_offset_mb * u64::from(MIB) + total_payload;
             w.flush()?;
             w.get_ref().set_len(end)?;
             first_payload_offset_mb
@@ -1240,7 +1191,7 @@ impl CreateOptions {
         let (_num_payload, _num_sb, total_entries, _chunk_ratio) =
             Self::compute_bat_entry_counts(virtual_size, block_size, logical_sector_size);
         let bat_bytes = total_entries * 8;
-        let bat_mb = std::cmp::max(bat_bytes.div_ceil(MB), 1);
+        let bat_mb = std::cmp::max(bat_bytes.div_ceil(u64::from(MIB)), 1);
         u32::try_from(bat_mb).unwrap() * (1024 * 1024)
     }
 
@@ -1261,8 +1212,8 @@ impl CreateOptions {
 
     fn build_header(
         sequence_number: u64, file_write_guid: &Guid, data_write_guid: &Guid, log_guid: &Guid,
-    ) -> [u8; HEADER_SIZE] {
-        let mut buf = [0u8; HEADER_SIZE];
+    ) -> [u8; HEADER_SIZE as usize] {
+        let mut buf = [0u8; HEADER_SIZE as usize];
         buf[..4].copy_from_slice(b"head");
         buf[4..8].copy_from_slice(&0u32.to_le_bytes());
         buf[8..16].copy_from_slice(&sequence_number.to_le_bytes());
@@ -1272,7 +1223,7 @@ impl CreateOptions {
         buf[64..66].copy_from_slice(&0u16.to_le_bytes());
         buf[66..68].copy_from_slice(&1u16.to_le_bytes());
         buf[68..72].copy_from_slice(&LOG_LENGTH.to_le_bytes());
-        buf[72..80].copy_from_slice(&LOG_OFFSET.to_le_bytes());
+        buf[72..80].copy_from_slice(&u64::from(LOG_OFFSET).to_le_bytes());
 
         let checksum = crc32c(&buf);
         buf[4..8].copy_from_slice(&checksum.to_le_bytes());
@@ -1281,14 +1232,14 @@ impl CreateOptions {
     }
 
     fn build_region_table(bat_size: u32, metadata_offset: u64) -> Vec<u8> {
-        let mut buf = vec![0u8; REGION_TABLE_SIZE];
+        let mut buf = vec![0u8; REGION_TABLE_SIZE as usize];
         buf[..4].copy_from_slice(b"regi");
         buf[4..8].copy_from_slice(&0u32.to_le_bytes());
         buf[8..12].copy_from_slice(&2u32.to_le_bytes());
         buf[12..16].copy_from_slice(&0u32.to_le_bytes());
 
         buf[16..32].copy_from_slice(&BAT_REGION_GUID.to_bytes());
-        buf[32..40].copy_from_slice(&BAT_REGION_OFFSET.to_le_bytes());
+        buf[32..40].copy_from_slice(&u64::from(BAT_REGION_OFFSET).to_le_bytes());
         buf[40..44].copy_from_slice(&bat_size.to_le_bytes());
         buf[44..48].view_bits_mut::<Lsb0>().set(0, true); // Required
 
@@ -1333,7 +1284,7 @@ impl CreateOptions {
             // Still ensure the minimum BAT region exists by seeking to its end.
             std::io::Seek::seek(
                 w,
-                std::io::SeekFrom::Start(BAT_REGION_OFFSET + u64::from(bat_size)),
+                std::io::SeekFrom::Start(u64::from(BAT_REGION_OFFSET + bat_size)),
             )?;
             return Ok(());
         }
@@ -1341,11 +1292,12 @@ impl CreateOptions {
         // Fixed disk: write interleaved payload + sector-bitmap entries.
         // Align first payload to block_size boundary so that the validator's
         // payload-offset alignment check passes (MS-VHDX §2.5.1.1).
-        let payload_align = u64::from(block_size) / MB;
-        let raw_first_payload_mb = (metadata_offset + u64::from(METADATA_REGION_SIZE)).div_ceil(MB);
+        let payload_align = u64::from(block_size / MIB);
+        let raw_first_payload_mb =
+            (metadata_offset + u64::from(METADATA_REGION_SIZE)).div_ceil(u64::from(MIB));
         let first_payload_offset_mb = raw_first_payload_mb.div_ceil(payload_align) * payload_align;
 
-        std::io::Seek::seek(w, std::io::SeekFrom::Start(BAT_REGION_OFFSET))?;
+        std::io::Seek::seek(w, std::io::SeekFrom::Start(BAT_REGION_OFFSET.into()))?;
 
         let mut sb_written: u64 = 0;
         for i in 0..total_entries {
@@ -1363,7 +1315,7 @@ impl CreateOptions {
             } else {
                 // Payload entry: FullyPresent at sequential offset
                 let payload_idx = payloads_written;
-                let offset_mb = first_payload_offset_mb + payload_idx * u64::from(block_size) / MB;
+                let offset_mb = first_payload_offset_mb + payload_idx * u64::from(block_size / MIB);
                 let mut raw_bytes = [0u8; 8];
                 let bits = raw_bytes.view_bits_mut::<Lsb0>();
                 bits[0..3].store::<u8>(6u8); // FullyPresent
@@ -1392,7 +1344,7 @@ impl CreateOptions {
     }
 
     fn rel_metadata_offset(items_buf: &[u8]) -> Result<u32> {
-        let base = u32::try_from(METADATA_TABLE_SIZE).expect("METADATA_TABLE_SIZE must fit u32");
+        let base = METADATA_TABLE_SIZE;
         let rel = u32::try_from(items_buf.len())
             .map_err(|_| Error::InvalidParameter("metadata items buffer too large".into()))?;
         base.checked_add(rel)
@@ -1505,16 +1457,16 @@ impl CreateOptions {
     }
 
     fn build_metadata_table(entry_count: u16, item_metas: &[MetadataEntryMeta]) -> Vec<u8> {
-        let mut table = vec![0u8; METADATA_TABLE_SIZE];
+        let mut table = vec![0u8; METADATA_TABLE_SIZE as usize];
         table[0..8].copy_from_slice(b"metadata");
         table[10..12].copy_from_slice(&entry_count.to_le_bytes());
-        let mut entry_off = TABLE_HEADER_SIZE;
+        let mut entry_off: usize = TABLE_HEADER_SIZE as usize;
         for meta in item_metas {
             table[entry_off..entry_off + 16].copy_from_slice(&meta.guid.to_bytes());
             table[entry_off + 16..entry_off + 20].copy_from_slice(&meta.rel_offset.to_le_bytes());
             table[entry_off + 20..entry_off + 24].copy_from_slice(&meta.length.to_le_bytes());
             table[entry_off + 24..entry_off + 28].copy_from_slice(&meta.flags.to_le_bytes());
-            entry_off += TABLE_ENTRY_SIZE;
+            entry_off += TABLE_ENTRY_SIZE as usize;
         }
         table
     }
@@ -1557,7 +1509,7 @@ impl CreateOptions {
             .flat_map(u16::to_le_bytes)
             .collect();
 
-        let kv_data_start = LOCATOR_HEADER_SIZE + 2 * KV_ENTRY_SIZE;
+        let kv_data_start = LOCATOR_HEADER_SIZE as usize + 2 * KV_ENTRY_SIZE as usize;
 
         let key1_off = kv_data_start;
         let val1_off = key1_off + key1_utf16.len();
@@ -1573,7 +1525,7 @@ impl CreateOptions {
         buf[18..20].copy_from_slice(&2u16.to_le_bytes()); // 2 KV entries
 
         // KV entry 0: parent_linkage
-        let kv0_off = LOCATOR_HEADER_SIZE;
+        let kv0_off = LOCATOR_HEADER_SIZE as usize;
         buf[kv0_off..kv0_off + 4].copy_from_slice(&u32::try_from(key1_off).unwrap().to_le_bytes());
         buf[kv0_off + 4..kv0_off + 8]
             .copy_from_slice(&u32::try_from(val1_off).unwrap().to_le_bytes());
@@ -1583,7 +1535,7 @@ impl CreateOptions {
             .copy_from_slice(&u16::try_from(val1_utf16.len()).unwrap().to_le_bytes());
 
         // KV entry 1: relative_path
-        let kv1_off = LOCATOR_HEADER_SIZE + KV_ENTRY_SIZE;
+        let kv1_off = LOCATOR_HEADER_SIZE as usize + KV_ENTRY_SIZE as usize;
         buf[kv1_off..kv1_off + 4].copy_from_slice(&u32::try_from(key2_off).unwrap().to_le_bytes());
         buf[kv1_off + 4..kv1_off + 8]
             .copy_from_slice(&u32::try_from(val2_off).unwrap().to_le_bytes());
@@ -1927,8 +1879,8 @@ mod tests {
     /// Read a metadata table entry's GUID and offset from the raw buffer.
     fn read_entry(data: &[u8], metadata_offset: u64, entry_idx: usize) -> (Guid, u32, u32, u32) {
         let base = usize::try_from(metadata_offset).unwrap()
-            + TABLE_HEADER_SIZE
-            + entry_idx * TABLE_ENTRY_SIZE;
+            + TABLE_HEADER_SIZE as usize
+            + entry_idx * TABLE_ENTRY_SIZE as usize;
         let guid_bytes: [u8; 16] = data[base..base + 16].try_into().unwrap();
         let guid = Guid::from_bytes(guid_bytes);
         let offset = u32::from_le_bytes(data[base + 16..base + 20].try_into().unwrap());
@@ -1962,7 +1914,7 @@ mod tests {
             found.insert(format!("{guid}"));
             // Item offsets must be >= 64KB (METADATA_TABLE_SIZE)
             assert!(
-                offset >= u32::try_from(METADATA_TABLE_SIZE).unwrap(),
+                offset >= METADATA_TABLE_SIZE,
                 "entry {i} offset {offset} < 64KB"
             );
             // Flags: IsRequired bit (2 per MS-VHDX §2.6.1.2) must be set
@@ -2209,7 +2161,7 @@ mod tests {
                 found_pl = true;
                 assert!(length > 0, "ParentLocator should have non-zero length");
                 assert!(
-                    offset >= u32::try_from(METADATA_TABLE_SIZE).unwrap(),
+                    offset >= METADATA_TABLE_SIZE,
                     "parent locator offset < 64KB"
                 );
 
@@ -2296,7 +2248,7 @@ mod tests {
     // -- helpers --
 
     fn validate_header_crc(data: &[u8], offset: usize) {
-        let mut slice = data[offset..][..HEADER_SIZE].to_vec();
+        let mut slice = data[offset..][..HEADER_SIZE as usize].to_vec();
         let stored = u32::from_le_bytes(slice[4..8].try_into().unwrap());
         slice[4..8].copy_from_slice(&0u32.to_le_bytes());
         let computed = crc32c(&slice);
@@ -2304,7 +2256,7 @@ mod tests {
     }
 
     fn validate_region_crc(data: &[u8], offset: usize) {
-        let mut slice = data[offset..][..REGION_TABLE_SIZE].to_vec();
+        let mut slice = data[offset..][..REGION_TABLE_SIZE as usize].to_vec();
         let stored = u32::from_le_bytes(slice[4..8].try_into().unwrap());
         slice[4..8].copy_from_slice(&0u32.to_le_bytes());
         let computed = crc32c(&slice);

@@ -25,6 +25,9 @@ use std::sync::Arc;
 use std::io::{self, SeekFrom};
 
 use crate::bat::{Bat, BatState, PayloadBlockState, SectorBitmapState};
+use crate::constants::MIB;
+#[cfg(test)]
+use crate::constants::SECTOR_SIZE;
 use crate::error::{Error, Result};
 use crate::file::File;
 use crate::file::ReadSemanticsPolicy;
@@ -444,7 +447,7 @@ impl Sector<'_> {
                 BatState::Payload(payload_state) => match payload_state {
                     PayloadBlockState::FullyPresent | PayloadBlockState::PartiallyPresent => {
                         let file_offset =
-                            entry.file_offset_mb() * 1024 * 1024 + sector_in_block * lss as u64;
+entry.file_offset_mb() * u64::from(MIB) + sector_in_block * lss as u64;
                         write_at(
                             self.file.inner(),
                             &data[buf_offset..buf_offset + bytes_this_round],
@@ -506,7 +509,7 @@ impl Sector<'_> {
         buf: &mut [u8],
     ) -> Result<()> {
         let lss = self.logical_sector_size as usize;
-        let file_offset = entry.file_offset_mb() * 1024 * 1024 + sector_in_block * lss as u64;
+        let file_offset = entry.file_offset_mb() * u64::from(MIB) + sector_in_block * lss as u64;
 
         // Consult replay overlay first (per-block-span)
         if let Some(ref overlay) = self.io.overlay {
@@ -567,8 +570,8 @@ impl Sector<'_> {
             });
         }
 
-        let sb_file_offset = sb_entry.file_offset_mb() * (1024 * 1024);
-        let bitmap_size = 1024 * 1024;
+        let sb_file_offset = sb_entry.file_offset_mb() * u64::from(MIB);
+        let bitmap_size = MIB as usize;
         let mut bitmap = vec![0u8; bitmap_size];
         read_at(self.file.inner(), &mut bitmap, sb_file_offset)?;
 
@@ -626,7 +629,7 @@ impl Sector<'_> {
         let items = meta.items();
         let p_block_size = items
             .file_parameters()
-            .map_or(32 * 1024 * 1024, |fp| fp.block_size());
+            .map_or(32 * MIB, |fp| fp.block_size());
         let p_lss = items.logical_sector_size().ok().unwrap_or(4096);
         let p_chunk_ratio = (1u64 << 23) * u64::from(p_lss) / u64::from(p_block_size);
         let p_sectors_per_block = u64::from(p_block_size) / u64::from(p_lss);
@@ -647,7 +650,7 @@ impl Sector<'_> {
             }
             match p_entry.state()? {
                 BatState::Payload(PayloadBlockState::FullyPresent) => {
-                    let file_offset = p_entry.file_offset_mb() * 1024 * 1024
+                    let file_offset = p_entry.file_offset_mb() * u64::from(MIB)
                         + u64::from(p_sector_in_block) * lss as u64;
                     read_at(parent.inner(), buf, file_offset)?;
                 }
@@ -836,8 +839,8 @@ mod tests {
         let path = dir.path().join("test.vhdx");
 
         VhdxFile::create(&path)
-            .size(256 * 1024 * 1024) // 256 MB virtual
-            .block_size(32 * 1024 * 1024)
+            .size(256 * u64::from(MIB)) // 256 MB virtual
+            .block_size(32 * MIB)
             .logical_sector_size(4096)
             .finish()
             .expect("create test vhdx");
@@ -856,9 +859,9 @@ mod tests {
         let ctx = create_test_io();
         let io = ctx.io();
         assert!(io.block_size > 0);
-        assert_eq!(io.block_size, 32 * 1024 * 1024);
+        assert_eq!(io.block_size, 32 * MIB);
         assert!(io.logical_sector_size > 0);
-        assert_eq!(io.logical_sector_size, 4096);
+        assert_eq!(io.logical_sector_size, u32::from(SECTOR_SIZE));
     }
 
     #[test]
@@ -884,7 +887,7 @@ mod tests {
         let ctx = create_test_io();
         let io = ctx.io();
         let mut sector = io.sector(0, 1).expect("get sector 0");
-        let mut buf = vec![0u8; 4096];
+        let mut buf = vec![0u8; SECTOR_SIZE.into()];
         sector.read_exact(&mut buf).expect("read sector 0");
     }
 
@@ -895,7 +898,7 @@ mod tests {
         let mut sector = io.sector(0, 1).expect("get sector 0");
         let mut buf = [0u8; 4097]; // 1 byte too many for a single 4096-byte sector
         let n = sector.read(&mut buf).expect("should read what's available");
-        assert_eq!(n, 4096, "reads max available");
+        assert_eq!(n, SECTOR_SIZE.into(), "reads max available");
     }
 
     #[test]
@@ -903,7 +906,7 @@ mod tests {
         let ctx = create_test_io();
         let io = ctx.io();
         let mut sector = io.sector(0, 1).expect("sector 0");
-        let mut buf = vec![0xFFu8; 4096];
+        let mut buf = vec![0xFFu8; SECTOR_SIZE.into()];
         sector.read_exact(&mut buf).expect("read sector 0");
         // Dynamic disk: sector 0 is in a NotPresent block → should be zeros
         assert!(
@@ -917,7 +920,7 @@ mod tests {
         let ctx = create_test_io();
         let io = ctx.io();
         let mut sector = io.sector(0, 1).expect("sector 0");
-        let data = vec![0x42u8; 4096];
+        let data = vec![0x42u8; SECTOR_SIZE.into()];
         let result = sector.write(&data);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), ErrorKind::PermissionDenied);
@@ -932,8 +935,8 @@ mod tests {
         let path = dir.path().join("test-fixed.vhdx");
 
         VhdxFile::create(&path)
-            .size(4 * 1024 * 1024) // 4 MB virtual
-            .block_size(1024 * 1024) // 1 MB blocks
+            .size(4 * u64::from(MIB)) // 4 MB virtual
+            .block_size(MIB) // 1 MB blocks
             .logical_sector_size(4096)
             .fixed(true)
             .finish()
@@ -952,7 +955,7 @@ mod tests {
     fn sector_zero_file_offset(io: &IO<'_>) -> u64 {
         let sector = io.sector(0, 1).expect("sector 0");
         let entry = sector.resolve_bat_entry().expect("resolve BAT");
-        entry.file_offset_mb() * 1024 * 1024
+        entry.file_offset_mb() * u64::from(MIB)
     }
 
     #[test]
@@ -963,8 +966,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir for baseline");
         let path = dir.path().join("base.vhdx");
         VhdxFile::create(&path)
-            .size(4 * 1024 * 1024)
-            .block_size(1024 * 1024)
+            .size(4 * u64::from(MIB))
+            .block_size(MIB)
             .logical_sector_size(4096)
             .fixed(true)
             .finish()
@@ -981,13 +984,13 @@ mod tests {
 
         // Construct overlay with a sector full of 0xAA at the payload offset.
         let mut sectors = HashMap::new();
-        sectors.insert(payload_offset, vec![0xAAu8; 4096]);
+        sectors.insert(payload_offset, vec![0xAAu8; SECTOR_SIZE.into()]);
         let overlay = ReplayOverlay::from_raw(sectors, vec![]);
 
         let ctx = create_fixed_io_with_overlay(overlay);
         let io = ctx.io();
         let mut sector = io.sector(0, 1).expect("sector 0");
-        let mut buf = vec![0u8; 4096];
+        let mut buf = vec![0u8; SECTOR_SIZE.into()];
         sector
             .read_exact(&mut buf)
             .expect("read sector 0 with overlay");
@@ -1004,8 +1007,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("no-overlay.vhdx");
         VhdxFile::create(&path)
-            .size(4 * 1024 * 1024)
-            .block_size(1024 * 1024)
+            .size(4 * u64::from(MIB))
+            .block_size(MIB)
             .logical_sector_size(4096)
             .fixed(true)
             .finish()
@@ -1022,7 +1025,7 @@ mod tests {
         assert!(io.overlay.is_none(), "expected no overlay");
 
         let mut sector = io.sector(0, 1).expect("sector 0");
-        let mut buf = vec![0xFFu8; 4096];
+        let mut buf = vec![0xFFu8; SECTOR_SIZE.into()];
         sector.read_exact(&mut buf).expect("read sector 0");
         // Fixed disk: sector 0 is in a FullyPresent block, zero-filled on create.
         assert!(
@@ -1039,8 +1042,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir for baseline");
         let path = dir.path().join("base-zero.vhdx");
         VhdxFile::create(&path)
-            .size(4 * 1024 * 1024)
-            .block_size(1024 * 1024)
+            .size(4 * u64::from(MIB))
+            .block_size(MIB)
             .logical_sector_size(4096)
             .fixed(true)
             .finish()
@@ -1056,12 +1059,12 @@ mod tests {
         let payload_offset = sector_zero_file_offset(&baseline_io);
 
         // Construct overlay with a zero region covering sector 0.
-        let overlay = ReplayOverlay::from_raw(HashMap::new(), vec![(payload_offset, 4096)]);
+        let overlay = ReplayOverlay::from_raw(HashMap::new(), vec![(payload_offset, u64::from(SECTOR_SIZE))]);
 
         let ctx = create_fixed_io_with_overlay(overlay);
         let io = ctx.io();
         let mut sector = io.sector(0, 1).expect("sector 0");
-        let mut buf = vec![0xFFu8; 4096];
+        let mut buf = vec![0xFFu8; SECTOR_SIZE.into()];
         sector
             .read_exact(&mut buf)
             .expect("read sector 0 with zero overlay");
@@ -1084,8 +1087,8 @@ mod tests {
         let path = dir.path().join("test-fixed-rw.vhdx");
 
         VhdxFile::create(&path)
-            .size(4 * 1024 * 1024)
-            .block_size(1024 * 1024)
+            .size(4 * u64::from(MIB))
+            .block_size(MIB)
             .logical_sector_size(4096)
             .fixed(true)
             .finish()
@@ -1109,9 +1112,9 @@ mod tests {
         let io = ctx.io();
         // 1 MB / 4096 = 256 sectors per block; 3 sectors fit in block 0.
         let mut sector = io.sector(0, 3).expect("sector(0,3)");
-        let mut buf = vec![0u8; 3 * 4096];
+        let mut buf = vec![0u8; 3 * SECTOR_SIZE as usize];
         sector.read_exact(&mut buf).expect("read 3 sectors");
-        assert_eq!(buf.len(), 3 * 4096);
+        assert_eq!(buf.len(), 3 * SECTOR_SIZE as usize);
         // Fixed disk is zero-initialized.
         assert!(buf.iter().all(|&b| b == 0), "expected all zeros");
     }
@@ -1123,9 +1126,9 @@ mod tests {
         // Write a known pattern to sector 0.
         let mut sw = io.sector(0, 1).expect("sector 0");
         sw.seek(SeekFrom::Start(0)).expect("seek to 0");
-        sw.write_all(&[0x42u8; 4096]).expect("write 0x42");
+        sw.write_all(&[0x42u8; SECTOR_SIZE as usize]).expect("write 0x42");
 
-        let mut buf = vec![0u8; 4096];
+        let mut buf = vec![0u8; SECTOR_SIZE.into()];
         let mut sr = io.sector(0, 1).expect("sector 0");
         sr.read_exact(&mut buf).expect("read back");
         assert!(
@@ -1141,9 +1144,9 @@ mod tests {
         let io = ctx.io();
         let mut sw = io.sector(0, 1).expect("sector 0");
         sw.seek(SeekFrom::Start(0)).expect("seek to 0");
-        sw.write_all(&[0xAAu8; 4096]).expect("write 0xAA");
+        sw.write_all(&[0xAAu8; SECTOR_SIZE as usize]).expect("write 0xAA");
 
-        let mut buf = vec![0u8; 4096];
+        let mut buf = vec![0u8; SECTOR_SIZE.into()];
         let mut sr = io.sector(0, 1).expect("sector 0");
         sr.read_exact(&mut buf).expect("read back");
         assert!(
@@ -1158,9 +1161,9 @@ mod tests {
         let ctx = create_test_io();
         let io = ctx.io();
         let mut sector = io.sector(0, 3).expect("sector(0,3)");
-        let mut buf = vec![0u8; 4096]; // smaller than 3*4096
+        let mut buf = vec![0u8; SECTOR_SIZE.into()]; // smaller than 3*4096
         let n = sector.read(&mut buf).expect("read from 3-sector range");
-        assert_eq!(n, 4096, "reads partial from 3-sector range");
+        assert_eq!(n, SECTOR_SIZE.into(), "reads partial from 3-sector range");
     }
 
     #[test]
@@ -1168,9 +1171,9 @@ mod tests {
         let ctx = create_fixed_test_io_writable();
         let io = ctx.io();
         let mut sector = io.sector(0, 2).expect("sector(0,2)");
-        let data = vec![0u8; 4096]; // smaller than 2*4096
+        let data = vec![0u8; SECTOR_SIZE.into()]; // smaller than 2*4096
         let n = sector.write(&data).expect("write to 2-sector range");
-        assert_eq!(n, 4096, "writes partial to 2-sector range");
+        assert_eq!(n, SECTOR_SIZE.into(), "writes partial to 2-sector range");
     }
 
     #[test]
@@ -1218,7 +1221,7 @@ mod tests {
         // 1 MB / 4096 = 256 sectors per block
         // Read sectors 254-257: spans block 0 (sectors 0-255) → block 1 (sectors 256-511)
         let mut sector = io.sector(254, 4).expect("sector(254,4)");
-        let mut buf = vec![0xFFu8; 4 * 4096];
+        let mut buf = vec![0xFFu8; 4 * SECTOR_SIZE as usize];
         sector.read_exact(&mut buf).expect("read spanning boundary");
         // Fixed disk is zero-initialized
         assert!(
@@ -1233,13 +1236,13 @@ mod tests {
         let io = ctx.io();
         // 1 MB / 4096 = 256 sectors per block
         // Write to sectors 254-257: spans block 0 → block 1
-        let data = vec![0x42u8; 4 * 4096];
+        let data = vec![0x42u8; 4 * SECTOR_SIZE as usize];
         let mut sw = io.sector(254, 4).expect("sector(254,4)");
         sw.seek(SeekFrom::Start(0)).expect("seek to 0");
         sw.write_all(&data).expect("write spanning boundary");
 
         // Read back and verify
-        let mut buf = vec![0u8; 4 * 4096];
+        let mut buf = vec![0u8; 4 * SECTOR_SIZE as usize];
         let mut sr = io.sector(254, 4).expect("sector(254,4)");
         sr.read_exact(&mut buf)
             .expect("read back spanning boundary");
@@ -1259,14 +1262,14 @@ mod tests {
     /// without needing an actual VHDX file.
     #[test]
     fn sector_bitmap_bit_lookup_correctness() {
-        let block_size: u64 = 32 * 1024 * 1024;
-        let logical_sector_size: u64 = 4096;
+        let block_size: u64 = 32 * u64::from(MIB);
+        let logical_sector_size: u64 = u64::from(SECTOR_SIZE);
         let sectors_per_block = block_size / logical_sector_size; // 8192
         let chunk_ratio: u64 = (1u64 << 23) * logical_sector_size / block_size; // 1024
         let stride = chunk_ratio + 1; // 1025
 
         // Build a synthetic 1 MB bitmap with known patterns
-        let mut bitmap = vec![0u8; 1024 * 1024];
+        let mut bitmap = vec![0u8; MIB as usize];
 
         // Set specific bits to validate lookup:
         {
@@ -1376,8 +1379,8 @@ mod tests {
         let path = dir.path().join("test-fixed-ro.vhdx");
 
         VhdxFile::create(&path)
-            .size(4 * 1024 * 1024)
-            .block_size(1024 * 1024)
+            .size(4 * u64::from(MIB))
+            .block_size(MIB)
             .logical_sector_size(4096)
             .fixed(true)
             .finish()
@@ -1400,14 +1403,14 @@ mod tests {
         // Write pattern to sector 0
         let mut sw = io.sector(0, 1).expect("sector 0");
         sw.seek(SeekFrom::Start(0)).expect("seek to 0");
-        sw.write_all(&[0x42u8; 4096]).expect("write sector 0");
+        sw.write_all(&[0x42u8; SECTOR_SIZE as usize]).expect("write sector 0");
 
         // Read full sector via byte_offset=0
-        let mut full_buf = vec![0u8; 4096];
+        let mut full_buf = vec![0u8; SECTOR_SIZE.into()];
         let mut sr = io.sector(0, 1).expect("sector 0");
         sr.seek(SeekFrom::Start(0)).expect("seek to 0");
         sr.read_exact(&mut full_buf).expect("read sector 0");
-        assert_eq!(full_buf, [0x42u8; 4096]);
+        assert_eq!(full_buf, [0x42u8; SECTOR_SIZE as usize]);
 
         // Read small slice via byte_offset=0
         let mut small_buf = [0u8; 10];
@@ -1427,7 +1430,7 @@ mod tests {
         let io = ctx.io();
         let mut sw0 = io.sector(0, 1).expect("sector 0");
         sw0.seek(SeekFrom::Start(0)).expect("seek to 0");
-        sw0.write_all(&[0x11u8; 4096]).expect("write");
+        sw0.write_all(&[0x11u8; SECTOR_SIZE as usize]).expect("write");
 
         // Read 100 bytes at offset 50
         let mut buf = [0u8; 100];
@@ -1439,7 +1442,7 @@ mod tests {
         // Write 0x11 to sector 1 so the cross-sector read is consistent
         let mut sw1 = io.sector(1, 1).expect("sector 1");
         sw1.seek(SeekFrom::Start(0)).expect("seek to 0");
-        sw1.write_all(&[0x11u8; 4096]).expect("write sector 1");
+        sw1.write_all(&[0x11u8; SECTOR_SIZE as usize]).expect("write sector 1");
 
         // Read 50 bytes at offset 4090 (crosses into sector 1)
         let mut sector = io.sector(0, 2).expect("sector(0,2)");
@@ -1461,7 +1464,7 @@ mod tests {
         // Write full sector 0 with 0xAA
         sector.seek(SeekFrom::Start(0)).expect("seek to 0");
         sector
-            .write_all(&[0xAAu8; 4096])
+            .write_all(&[0xAAu8; SECTOR_SIZE as usize])
             .expect("write full sector");
 
         // Write 10 bytes at offset 100
@@ -1471,7 +1474,7 @@ mod tests {
             .expect("write 10 bytes at offset 100");
 
         // Read back full sector
-        let mut full_buf = vec![0u8; 4096];
+        let mut full_buf = vec![0u8; SECTOR_SIZE.into()];
         sector.seek(SeekFrom::Start(0)).expect("seek to 0");
         sector.read_exact(&mut full_buf).expect("read full sector");
 
@@ -1481,7 +1484,7 @@ mod tests {
         assert_eq!(&full_buf[100..110], &[0xBBu8; 10], "patch applied");
         // Verify after patch preserved
         assert_eq!(
-            &full_buf[110..4096],
+            &full_buf[110..SECTOR_SIZE.into()],
             &[0xAAu8; 3986],
             "after patch preserved"
         );
@@ -1497,8 +1500,8 @@ mod tests {
         let mut sector = io.sector(254, 4).expect("sector(254,4)");
 
         // Write known pattern to all 4 sectors
-        let mut pattern = Vec::with_capacity(4 * 4096);
-        for i in 0..(4 * 4096) {
+        let mut pattern = Vec::with_capacity(4 * SECTOR_SIZE as usize);
+        for i in 0..(4 * SECTOR_SIZE) {
             pattern.push(u8::try_from(i % 256).expect("modulo 256 fits u8"));
         }
         sector.seek(SeekFrom::Start(0)).expect("seek to 0");
@@ -1524,7 +1527,7 @@ mod tests {
         let mut sector = io.sector(254, 4).expect("sector(254,4)");
 
         // Write initial data: all 0xDD
-        let init = [0xDDu8; 4 * 4096];
+        let init = [0xDDu8; 4 * SECTOR_SIZE as usize];
         sector.seek(SeekFrom::Start(0)).expect("seek to 0");
         sector.write_all(&init).expect("write initial");
 
@@ -1537,7 +1540,7 @@ mod tests {
             .expect("write cross-boundary patch");
 
         // Read back and verify
-        let mut buf = vec![0u8; 4 * 4096];
+        let mut buf = vec![0u8; 4 * SECTOR_SIZE as usize];
         sector.seek(SeekFrom::Start(0)).expect("seek to 0");
         sector.read_exact(&mut buf).expect("read back");
 
@@ -1545,7 +1548,7 @@ mod tests {
         assert_eq!(&buf[8180..8210], &[0xEEu8; 30], "patch applied");
         assert_eq!(
             &buf[8210..],
-            &[0xDDu8; 4 * 4096 - 8210],
+            &[0xDDu8; 4 * SECTOR_SIZE as usize - 8210],
             "after patch preserved"
         );
     }
@@ -1558,7 +1561,7 @@ mod tests {
         let mut sector = io.sector(0, 1).expect("sector 0"); // 1 sector = 4096 bytes
 
         // Read at EOF
-        sector.seek(SeekFrom::Start(4096)).expect("seek to EOF");
+        sector.seek(SeekFrom::Start(u64::from(SECTOR_SIZE))).expect("seek to EOF");
         let mut tiny = [0u8; 1];
         let n = sector.read(&mut tiny).expect("read at EOF");
         assert_eq!(n, 0, "read at EOF should return 0");
@@ -1571,7 +1574,7 @@ mod tests {
 
         // Same for write
         // Write at EOF
-        sector.seek(SeekFrom::Start(4096)).expect("seek to EOF");
+        sector.seek(SeekFrom::Start(u64::from(SECTOR_SIZE))).expect("seek to EOF");
         let n = sector.write(b"x").expect("write at EOF");
         assert_eq!(n, 0, "write at EOF should return 0");
 
@@ -1626,8 +1629,8 @@ mod tests {
         let path = dir.path().join("test-dynamic-rw.vhdx");
 
         VhdxFile::create(&path)
-            .size(256 * 1024 * 1024)
-            .block_size(32 * 1024 * 1024)
+            .size(256 * u64::from(MIB))
+            .block_size(32 * MIB)
             .logical_sector_size(4096)
             .finish()
             .expect("create dynamic test vhdx");

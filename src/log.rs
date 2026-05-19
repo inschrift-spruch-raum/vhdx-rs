@@ -8,6 +8,11 @@ use std::borrow::Cow;
 use std::fmt;
 use std::sync::OnceLock;
 
+#[cfg(test)]
+use crate::constants::SIGNATURE_DATA;
+use crate::constants::{
+    DESCRIPTOR_SIZE, ENTRY_HEADER_SIZE, SECTOR_SIZE, SIGNATURE_DESC, SIGNATURE_LOGE, SIGNATURE_ZERO,
+};
 use crate::error::{Error, Result, SignaturePosition};
 use crate::types::{Crc32c, Guid};
 
@@ -15,19 +20,7 @@ use crate::types::{Crc32c, Guid};
 use crc32c::crc32c;
 
 // ---------------------------------------------------------------------------
-// Signature constants
-// ---------------------------------------------------------------------------
-
-const SIGNATURE_LOGE: [u8; 4] = *b"loge";
-const SIGNATURE_DESC: [u8; 4] = *b"desc";
-const SIGNATURE_ZERO: [u8; 4] = *b"zero";
-const ENTRY_HEADER_SIZE: usize = 64;
-const DESCRIPTOR_SIZE: usize = 32;
-const SECTOR_SIZE: usize = 4096;
-
-#[cfg(test)]
-const SIGNATURE_DATA: [u8; 4] = *b"data";
-
+// Log layout
 // ---------------------------------------------------------------------------
 // Log
 // ---------------------------------------------------------------------------
@@ -53,7 +46,7 @@ impl<'a> Log<'a> {
     /// Returns `Error::LogEntryCorrupted` if the buffer size is not a
     /// multiple of 4 KB.
     pub(crate) fn new(data: &'a [u8]) -> Result<Self> {
-        if !data.len().is_multiple_of(SECTOR_SIZE) {
+        if !data.len().is_multiple_of(SECTOR_SIZE as usize) {
             return Err(Error::LogEntryCorrupted(
                 "log buffer size is not a multiple of 4KB".into(),
             ));
@@ -97,7 +90,7 @@ impl<'a> Log<'a> {
             let entry_length = u32_at(&self.data[offset + 8..offset + 12]).ok_or_else(|| {
                 Error::LogEntryCorrupted("log buffer too small for entry header".into())
             })?;
-            if entry_length == 0 || !(entry_length as usize).is_multiple_of(SECTOR_SIZE) {
+            if entry_length == 0 || !(entry_length as usize).is_multiple_of(SECTOR_SIZE as usize) {
                 return Err(Error::LogEntryCorrupted(format!(
                     "invalid entry length {entry_length} at index {i}"
                 )));
@@ -138,7 +131,7 @@ impl<'a> Log<'a> {
 
     /// Parse an entry starting at `offset` within the log buffer.
     fn parse_entry_at(&self, offset: usize) -> Result<Entry<'_>> {
-        if offset + ENTRY_HEADER_SIZE > self.data.len() {
+        if offset + ENTRY_HEADER_SIZE as usize > self.data.len() {
             return Err(Error::LogEntryCorrupted(
                 "insufficient data for log entry header".into(),
             ));
@@ -147,12 +140,12 @@ impl<'a> Log<'a> {
 
         // Validate signature
         let sig = &entry_data[0..4];
-        if sig != SIGNATURE_LOGE {
+        if sig != SIGNATURE_LOGE.into_inner().to_le_bytes() {
             let mut found = [0u8; 4];
             found.copy_from_slice(sig);
             return Err(Error::InvalidSignature {
                 position: SignaturePosition::LogEntry,
-                expected: crate::error::pad_signature_4to8(SIGNATURE_LOGE),
+                expected: crate::error::pad_signature_4to8(SIGNATURE_LOGE.into_inner().to_le_bytes()),
                 found: crate::error::pad_signature_4to8(found),
             });
         }
@@ -160,7 +153,7 @@ impl<'a> Log<'a> {
         // Read entry_length and validate
         let entry_length = u32_at(&entry_data[8..12])
             .ok_or_else(|| Error::LogEntryCorrupted("entry_length read failed".into()))?;
-        if entry_length == 0 || !(entry_length as usize).is_multiple_of(SECTOR_SIZE) {
+        if entry_length == 0 || !(entry_length as usize).is_multiple_of(SECTOR_SIZE as usize) {
             return Err(Error::LogEntryCorrupted(format!(
                 "entry length {entry_length} is not a multiple of 4KB"
             )));
@@ -195,13 +188,13 @@ impl<'a> Iterator for LogEntryIter<'a> {
             return None;
         }
         // Check if there's room for at least a header
-        if self.offset + ENTRY_HEADER_SIZE > self.log.data.len() {
+        if self.offset + ENTRY_HEADER_SIZE as usize > self.log.data.len() {
             self.done = true;
             return None;
         }
         let remaining = &self.log.data[self.offset..];
         // Check signature — if not "loge", stop
-        if remaining[0..4] != SIGNATURE_LOGE {
+        if remaining[0..4] != SIGNATURE_LOGE.into_inner().to_le_bytes() {
             self.done = true;
             return None;
         }
@@ -227,14 +220,14 @@ pub struct Entry<'a> {
     data: &'a [u8],
     /// Lazily initialized per-sector `OnceLock` cells. Each cell holds the full
     /// reassembled 4096-byte sector on first access: `LeadingBytes(8) + Middle(4084) + TrailingBytes(4)`.
-    assembled_sectors: OnceLock<Vec<OnceLock<[u8; SECTOR_SIZE]>>>,
+    assembled_sectors: OnceLock<Vec<OnceLock<[u8; SECTOR_SIZE as usize]>>>,
 }
 
 impl<'a> Entry<'a> {
     /// Return the entry header (first 64 bytes).
     pub fn header(&self) -> LogEntryHeader<'_> {
         LogEntryHeader {
-            data: &self.data[..ENTRY_HEADER_SIZE],
+            data: &self.data[..ENTRY_HEADER_SIZE as usize],
         }
     }
 
@@ -252,9 +245,9 @@ impl<'a> Entry<'a> {
         }
         let raw = self.descriptor_bytes(index)?;
         let sig = &raw[0..4];
-        if sig == SIGNATURE_DESC {
+        if sig == SIGNATURE_DESC.into_inner().to_le_bytes() {
             Ok(Descriptor::Data(DataDescriptor { data: raw }))
-        } else if sig == SIGNATURE_ZERO {
+        } else if sig == SIGNATURE_ZERO.into_inner().to_le_bytes() {
             Ok(Descriptor::Zero(ZeroDescriptor { data: raw }))
         } else {
             let mut found = [0u8; 4];
@@ -303,7 +296,7 @@ impl<'a> Entry<'a> {
             let after_first = desc_count.saturating_sub(126);
             1 + after_first.div_ceil(128)
         };
-        let data_offset = desc_sectors * SECTOR_SIZE;
+        let data_offset = desc_sectors * SECTOR_SIZE as usize;
         let entry_length = self.data.len();
         let raw_data = self.data;
 
@@ -319,15 +312,15 @@ impl<'a> Entry<'a> {
             .into_iter()
             .enumerate()
             .filter_map(move |(sector_idx, di)| {
-                let sector_start = data_offset + sector_idx * SECTOR_SIZE;
-                if sector_start + SECTOR_SIZE > entry_length {
+                let sector_start = data_offset + sector_idx * SECTOR_SIZE as usize;
+                if sector_start + SECTOR_SIZE as usize > entry_length {
                     return None;
                 }
                 let Ok(Descriptor::Data(desc)) = self.descriptor(di) else {
                     return None;
                 };
                 Some(DataSector {
-                    data: &raw_data[sector_start..sector_start + SECTOR_SIZE],
+                    data: &raw_data[sector_start..sector_start + SECTOR_SIZE as usize],
                     leading_bytes: desc.leading_bytes_raw(),
                     trailing_bytes: desc.trailing_bytes_raw(),
                     cache: &caches[sector_idx],
@@ -368,20 +361,20 @@ impl<'a> Entry<'a> {
     fn descriptor_bytes(&self, index: usize) -> Result<&'a [u8]> {
         let abs_offset = if index < 126 {
             // First descriptor sector: header (64) + index * 32
-            ENTRY_HEADER_SIZE + index * DESCRIPTOR_SIZE
+            ENTRY_HEADER_SIZE as usize + index * DESCRIPTOR_SIZE as usize
         } else {
             // Subsequent descriptor sectors
             let remaining = index - 126;
             let sector_index = remaining / 128;
             let within_sector = remaining % 128;
-            SECTOR_SIZE * (1 + sector_index) + within_sector * DESCRIPTOR_SIZE
+            SECTOR_SIZE as usize * (1 + sector_index) + within_sector * DESCRIPTOR_SIZE as usize
         };
-        if abs_offset + DESCRIPTOR_SIZE > self.data.len() {
+        if abs_offset + DESCRIPTOR_SIZE as usize > self.data.len() {
             return Err(Error::LogEntryCorrupted(format!(
                 "descriptor {index} at offset {abs_offset} extends beyond entry"
             )));
         }
-        Ok(&self.data[abs_offset..abs_offset + DESCRIPTOR_SIZE])
+        Ok(&self.data[abs_offset..abs_offset + DESCRIPTOR_SIZE as usize])
     }
 }
 
@@ -662,7 +655,7 @@ pub struct DataSector<'a> {
     /// Trailing 4 bytes from the data descriptor.
     trailing_bytes: &'a [u8],
     /// Per-sector lazy cache for the assembled 4096-byte sector.
-    cache: &'a OnceLock<[u8; SECTOR_SIZE]>,
+    cache: &'a OnceLock<[u8; SECTOR_SIZE as usize]>,
 }
 
 impl<'a> DataSector<'a> {
@@ -693,7 +686,7 @@ impl<'a> DataSector<'a> {
     #[must_use]
     pub fn data(&self) -> Cow<'a, [u8]> {
         let assembled = self.cache.get_or_init(|| {
-            let mut buf = [0u8; SECTOR_SIZE];
+            let mut buf = [0u8; SECTOR_SIZE as usize];
             buf[0..8].copy_from_slice(&self.leading_bytes[..8]);
             buf[8..4092].copy_from_slice(&self.data[8..4092]);
             buf[4092..4096].copy_from_slice(&self.trailing_bytes[..4]);
@@ -717,7 +710,7 @@ impl<'a> DataSector<'a> {
 /// view into the Entry's lazily-assembled buffer.
 #[cfg(test)]
 pub(crate) struct DataSectorAssembly {
-    buf: [u8; SECTOR_SIZE],
+    buf: [u8; SECTOR_SIZE as usize],
 }
 
 #[cfg(test)]
@@ -726,7 +719,7 @@ impl DataSectorAssembly {
     ///
     /// The assembled data is: `LeadingBytes(8B) + DataSector middle(4084B) + TrailingBytes(4B)`.
     pub fn new(descriptor: &DataDescriptor<'_>, sector: &DataSector<'_>) -> Self {
-        let mut buf = [0u8; SECTOR_SIZE];
+        let mut buf = [0u8; SECTOR_SIZE as usize];
         // Leading 8 bytes
         buf[0..8].copy_from_slice(descriptor.leading_bytes_raw());
         // Middle 4084 bytes
@@ -776,20 +769,20 @@ mod tests {
         let header_size = 64;
         let desc_bytes = descriptors.len();
         // First descriptor sector: 4096 bytes total (64-byte header + up to 126 descriptors)
-        let desc_sectors = if desc_bytes + header_size <= SECTOR_SIZE {
+        let desc_sectors = if desc_bytes + header_size <= SECTOR_SIZE as usize {
             1
         } else {
-            let overflow = desc_bytes + header_size - SECTOR_SIZE;
-            1 + overflow.div_ceil(SECTOR_SIZE)
+            let overflow = desc_bytes + header_size - SECTOR_SIZE as usize;
+            1 + overflow.div_ceil(SECTOR_SIZE as usize)
         };
-        let desc_sector_bytes = desc_sectors * SECTOR_SIZE;
+        let desc_sector_bytes = desc_sectors * SECTOR_SIZE as usize;
         let total = desc_sector_bytes + data_sectors.len();
-        let total_aligned = total.div_ceil(SECTOR_SIZE) * SECTOR_SIZE;
+        let total_aligned = total.div_ceil(SECTOR_SIZE as usize) * SECTOR_SIZE as usize;
 
         let mut buf = vec![0u8; total_aligned];
 
         // Signature "loge"
-        buf[0..4].copy_from_slice(&SIGNATURE_LOGE);
+        buf[0..4].copy_from_slice(&SIGNATURE_LOGE.into_inner().to_le_bytes());
         // EntryLength
         buf[8..12].copy_from_slice(
             &u32::try_from(total_aligned)
@@ -826,7 +819,7 @@ mod tests {
 
     fn make_data_descriptor(seq: u64, file_offset: u64) -> [u8; 32] {
         let mut d = [0u8; 32];
-        d[0..4].copy_from_slice(&SIGNATURE_DESC);
+        d[0..4].copy_from_slice(&SIGNATURE_DESC.into_inner().to_le_bytes());
         // TrailingBytes = 0xDEADBEEF
         d[4..8].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
         // LeadingBytes = 0x0102030405060708
@@ -840,7 +833,7 @@ mod tests {
 
     fn make_zero_descriptor(seq: u64, file_offset: u64, zero_length: u64) -> [u8; 32] {
         let mut z = [0u8; 32];
-        z[0..4].copy_from_slice(&SIGNATURE_ZERO);
+        z[0..4].copy_from_slice(&SIGNATURE_ZERO.into_inner().to_le_bytes());
         z[4..8].copy_from_slice(&0u32.to_le_bytes()); // reserved
         z[8..16].copy_from_slice(&zero_length.to_le_bytes());
         z[16..24].copy_from_slice(&file_offset.to_le_bytes());
@@ -850,7 +843,7 @@ mod tests {
 
     fn make_data_sector(seq: u64, fill: u8) -> [u8; 4096] {
         let mut s = [0u8; 4096];
-        s[0..4].copy_from_slice(&SIGNATURE_DATA);
+        s[0..4].copy_from_slice(&SIGNATURE_DATA.into_inner().to_le_bytes());
         // SequenceHigh
         s[4..8].copy_from_slice(
             &u32::try_from(seq >> 32)
@@ -894,7 +887,7 @@ mod tests {
         let entry = log.entry(0).unwrap();
         let hdr = entry.header();
 
-        assert_eq!(hdr.signature(), &SIGNATURE_LOGE);
+        assert_eq!(hdr.signature(), &SIGNATURE_LOGE.into_inner().to_le_bytes());
         assert_eq!(hdr.sequence_number(), 1);
         assert_eq!(hdr.descriptor_count(), 1);
         assert_eq!(hdr.tail(), 0);
@@ -981,7 +974,7 @@ mod tests {
         let sectors: Vec<_> = entry.data().collect();
         assert_eq!(sectors.len(), 1);
         let s = &sectors[0];
-        assert_eq!(s.signature(), &SIGNATURE_DATA);
+        assert_eq!(s.signature(), &SIGNATURE_DATA.into_inner().to_le_bytes());
         assert_eq!(s.sequence_number(), 10);
         assert_eq!(
             u32::from_le_bytes(s.data[4..8].try_into().unwrap()),
@@ -1036,7 +1029,7 @@ mod tests {
         log_buf.extend_from_slice(&entry1);
         log_buf.extend_from_slice(&entry2);
         // Pad to 4KB alignment if needed
-        while log_buf.len() % SECTOR_SIZE != 0 {
+        while log_buf.len() % SECTOR_SIZE as usize != 0 {
             log_buf.push(0);
         }
 

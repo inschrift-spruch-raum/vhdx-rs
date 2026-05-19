@@ -8,11 +8,10 @@
 use std::collections::HashMap;
 use std::io::{Seek, SeekFrom, Write};
 
+use crate::constants::SECTOR_SIZE;
 use crate::error::{Error, Result};
 use crate::log::{Descriptor, Entry, Log};
 use crate::types::Guid;
-
-const SECTOR_SIZE: usize = 4096;
 
 // ---------------------------------------------------------------------------
 // ActiveSequence
@@ -341,7 +340,7 @@ pub fn detect_active_sequence<'a>(log: &'a Log<'a>, log_guid: &Guid) -> Result<A
         // Step 6: advance current_tail
         if current_entries.is_empty() || !is_valid {
             // Empty or invalid → advance by 4KB
-            current_tail = (current_tail + SECTOR_SIZE) % log_size;
+            current_tail = (current_tail + SECTOR_SIZE as usize) % log_size;
         } else {
             // Valid → advance past the head entry
             let last_entry_offset = current_entries.last().unwrap().0;
@@ -516,7 +515,7 @@ pub fn replay_to_file(file: &std::fs::File, active: &ActiveSequence<'_>) -> Resu
                     let file_offset = zero_desc.file_offset();
                     let zero_length = usize::try_from(zero_desc.zero_length())
                         .expect("zero descriptor length fits usize");
-                    let zero_buf = vec![0u8; SECTOR_SIZE.min(zero_length)];
+                    let zero_buf = vec![0u8; (SECTOR_SIZE as usize).min(zero_length)];
                     let mut written: usize = 0;
                     while written < zero_length {
                         let chunk = zero_buf.len().min(zero_length - written);
@@ -582,13 +581,9 @@ fn try_validate_entry<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::{SIGNATURE_DATA, SIGNATURE_DESC, SIGNATURE_LOGE, SIGNATURE_ZERO};
     use crc32c::crc32c;
     use std::io::Read;
-
-    const SIGNATURE_LOGE: [u8; 4] = *b"loge";
-    const SIGNATURE_DESC: [u8; 4] = *b"desc";
-    const SIGNATURE_ZERO: [u8; 4] = *b"zero";
-    const SIGNATURE_DATA: [u8; 4] = *b"data";
 
     /// Build a complete log entry buffer (header + descriptors + data sectors).
     fn build_log_entry(
@@ -606,13 +601,13 @@ mod tests {
         for &(is_data, file_offset, extra) in desc_specs {
             let mut d = [0u8; 32];
             if is_data {
-                d[0..4].copy_from_slice(&SIGNATURE_DESC);
+                d[0..4].copy_from_slice(&SIGNATURE_DESC.into_inner().to_le_bytes());
                 d[4..8].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes()); // trailing
                 d[8..16].copy_from_slice(&0x0102_0304_0506_0708u64.to_le_bytes()); // leading
                 d[16..24].copy_from_slice(&file_offset.to_le_bytes());
                 d[24..32].copy_from_slice(&seq.to_le_bytes());
             } else {
-                d[0..4].copy_from_slice(&SIGNATURE_ZERO);
+                d[0..4].copy_from_slice(&SIGNATURE_ZERO.into_inner().to_le_bytes());
                 d[4..8].copy_from_slice(&0u32.to_le_bytes()); // reserved
                 d[8..16].copy_from_slice(&extra.to_le_bytes()); // zero_length
                 d[16..24].copy_from_slice(&file_offset.to_le_bytes());
@@ -626,7 +621,7 @@ mod tests {
         let mut data_bytes = Vec::new();
         for _ in 0..data_desc_count {
             let mut s = [0u8; 4096];
-            s[0..4].copy_from_slice(&SIGNATURE_DATA);
+            s[0..4].copy_from_slice(&SIGNATURE_DATA.into_inner().to_le_bytes());
             s[4..8].copy_from_slice(
                 &u32::try_from(seq >> 32)
                     .expect("upper sequence bits fit u32")
@@ -644,20 +639,20 @@ mod tests {
         }
 
         // Calculate descriptor sectors
-        let desc_sectors = if desc_bytes.len() + header_size <= SECTOR_SIZE {
+        let desc_sectors = if desc_bytes.len() + header_size <= SECTOR_SIZE.into() {
             1
         } else {
-            let overflow = desc_bytes.len() + header_size - SECTOR_SIZE;
-            1 + overflow.div_ceil(SECTOR_SIZE)
+            let overflow = desc_bytes.len() + header_size - SECTOR_SIZE as usize;
+            1 + overflow.div_ceil(SECTOR_SIZE.into())
         };
-        let desc_sector_bytes = desc_sectors * SECTOR_SIZE;
+        let desc_sector_bytes = desc_sectors * SECTOR_SIZE as usize;
         let total = desc_sector_bytes + data_bytes.len();
-        let total_aligned = total.div_ceil(SECTOR_SIZE) * SECTOR_SIZE;
+        let total_aligned = total.div_ceil(SECTOR_SIZE as usize) * SECTOR_SIZE as usize;
 
         let mut buf = vec![0u8; total_aligned];
 
         // Header
-        buf[0..4].copy_from_slice(&SIGNATURE_LOGE);
+        buf[0..4].copy_from_slice(&SIGNATURE_LOGE.into_inner().to_le_bytes());
         buf[8..12].copy_from_slice(
             &u32::try_from(total_aligned)
                 .expect("total_aligned fits u32")
@@ -700,7 +695,7 @@ mod tests {
             buf.extend_from_slice(&e);
         }
         // Pad to 4KB alignment
-        while buf.len() % SECTOR_SIZE != 0 {
+        while buf.len() % SECTOR_SIZE as usize != 0 {
             buf.push(0);
         }
         buf
@@ -712,7 +707,7 @@ mod tests {
 
     #[test]
     fn empty_log_no_sequence() {
-        let buf = vec![0u8; SECTOR_SIZE * 4]; // empty (no valid entries)
+        let buf = vec![0u8; SECTOR_SIZE as usize * 4]; // empty (no valid entries)
         let log = Log::new(&buf).unwrap();
         let guid = test_log_guid();
         assert!(detect_active_sequence(&log, &guid).is_err());
@@ -859,7 +854,7 @@ mod tests {
     #[test]
     fn has_pending_log_empty_buffer() {
         let guid = test_log_guid();
-        let buf = vec![0u8; SECTOR_SIZE * 4];
+        let buf = vec![0u8; SECTOR_SIZE as usize * 4];
         let log = Log::new(&buf).unwrap();
         assert!(!has_pending_log(&log, &guid));
     }

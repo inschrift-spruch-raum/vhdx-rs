@@ -1,5 +1,8 @@
 use crc32c::{crc32c, crc32c_append};
 
+#[cfg(test)]
+use crate::constants::MIB;
+
 /// Compute CRC-32C over `data` with bytes `[4..8)` treated as zero.
 ///
 /// VHDX structures store their CRC-32C at bytes 4..8, and the field must
@@ -69,21 +72,21 @@ mod tests {
 
     #[test]
     fn compute_chunk_ratio_standard_values() {
-        // 32 MB blocks, 4096 logical sector size → (2^23 * 4096) / (32*1024*1024)
-        assert_eq!(compute_chunk_ratio(32 * 1024 * 1024, 4096), 1024);
+        // 32 MB blocks, 4096 logical sector size → (2^23 * 4096) / (32 * MIB)
+        assert_eq!(compute_chunk_ratio(32 * u64::from(MIB), 4096), 1024);
 
-        // 1 MB blocks, 4096 logical sector size → (2^23 * 4096) / (1024*1024)
-        assert_eq!(compute_chunk_ratio(1024 * 1024, 4096), 32768);
+        // 1 MB blocks, 4096 logical sector size → (2^23 * 4096) / MIB
+        assert_eq!(compute_chunk_ratio(u64::from(MIB), 4096), 32768);
 
-        // 256 MB blocks, 512 logical sector size → (2^23 * 512) / (256*1024*1024)
-        assert_eq!(compute_chunk_ratio(256 * 1024 * 1024, 512), 16);
+        // 256 MB blocks, 512 logical sector size → (2^23 * 512) / (256 * MIB)
+        assert_eq!(compute_chunk_ratio(256 * u64::from(MIB), 512), 16);
     }
 
     #[test]
     fn compute_chunk_ratio_large_block_small_sector() {
         // Large blocks reduce chunk ratio
-        let small = compute_chunk_ratio(256 * 1024 * 1024, 512);
-        let large = compute_chunk_ratio(1024 * 1024, 512);
+        let small = compute_chunk_ratio(256 * u64::from(MIB), 512);
+        let large = compute_chunk_ratio(u64::from(MIB), 512);
         assert!(
             small < large,
             "larger blocks should produce smaller chunk ratio"

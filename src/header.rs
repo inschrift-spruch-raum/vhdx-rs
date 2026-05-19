@@ -9,6 +9,11 @@
 
 use bitvec::prelude::*;
 
+use crate::constants::{
+    CREATOR_SIZE, HEADER_SIZE, HEADER1_OFFSET, HEADER2_OFFSET, MAX_REGION_ENTRIES,
+    REGION_ENTRY_SIZE, REGION_TABLE_SIZE, REGION_TABLE1_OFFSET, REGION_TABLE2_OFFSET,
+    RT_HEADER_SIZE,
+};
 use crate::error::{Error, Result, SignaturePosition};
 use crate::types::{Crc32c, Guid};
 
@@ -19,35 +24,10 @@ use crc32c::crc32c;
 // Layout constants
 // ---------------------------------------------------------------------------
 
-const KB: usize = 1024;
-const _MB: usize = 1024 * KB;
-
-/// Offset of Header 1 within the header section.
-const HEADER1_OFFSET: usize = 64 * KB;
-/// Offset of Header 2 within the header section.
-const HEADER2_OFFSET: usize = 128 * KB;
-/// Offset of Region Table 1 within the header section.
-const REGION_TABLE1_OFFSET: usize = 192 * KB;
-/// Offset of Region Table 2 within the header section.
-const REGION_TABLE2_OFFSET: usize = 256 * KB;
-
-/// Size of each VHDX header structure (4 KB).
-const HEADER_SIZE: usize = 4 * KB;
-/// Size of each region table (64 KB).
-const REGION_TABLE_SIZE: usize = 64 * KB;
-
 /// Expected header signature: "head" (0x68656164).
 const HEADER_SIGNATURE: [u8; 4] = [b'h', b'e', b'a', b'd'];
 /// Expected region table signature: "regi" (0x72656769).
 const REGION_SIGNATURE: [u8; 4] = [b'r', b'e', b'g', b'i'];
-
-/// Size of each region table entry (32 bytes).
-const REGION_ENTRY_SIZE: usize = 32;
-/// Maximum number of region table entries per spec.
-const MAX_REGION_ENTRIES: u32 = 2047;
-
-/// Creator field size in the file type identifier.
-const CREATOR_SIZE: usize = 512;
 
 // ---------------------------------------------------------------------------
 // Header (top-level section view)
@@ -68,7 +48,7 @@ impl<'a> Header<'a> {
     /// The buffer must be at least 320 KB (covering through Region Table 2).
     /// In practice it should be the full 1 MB header section.
     pub(crate) fn new(data: &'a [u8]) -> Result<Self> {
-        let min_size = REGION_TABLE2_OFFSET + REGION_TABLE_SIZE;
+        let min_size = (REGION_TABLE2_OFFSET + REGION_TABLE_SIZE) as usize;
         if data.len() < min_size {
             return Err(Error::InvalidFile(format!(
                 "header section too small: {} bytes, need at least {min_size}",
@@ -98,8 +78,8 @@ impl<'a> Header<'a> {
     pub fn header(&self, index: usize) -> Result<HeaderStructure<'a>> {
         match index {
             0 => self.current_header(),
-            1 => self.validate_header_at(HEADER1_OFFSET),
-            2 => self.validate_header_at(HEADER2_OFFSET),
+             1 => self.validate_header_at(HEADER1_OFFSET as usize),
+             2 => self.validate_header_at(HEADER2_OFFSET as usize),
             _ => Err(Error::InvalidParameter(format!(
                 "header index must be 0, 1, or 2, got {index}"
             ))),
@@ -119,8 +99,8 @@ impl<'a> Header<'a> {
     pub fn region_table(&self, index: usize) -> Result<RegionTable<'a>> {
         match index {
             0 => self.current_region_table(),
-            1 => self.validate_region_table_at(REGION_TABLE1_OFFSET),
-            2 => self.validate_region_table_at(REGION_TABLE2_OFFSET),
+             1 => self.validate_region_table_at(REGION_TABLE1_OFFSET as usize),
+             2 => self.validate_region_table_at(REGION_TABLE2_OFFSET as usize),
             _ => Err(Error::InvalidParameter(format!(
                 "region table index must be 0, 1, or 2, got {index}"
             ))),
@@ -131,7 +111,7 @@ impl<'a> Header<'a> {
 
     /// Parse and validate the header at the given byte offset.
     fn validate_header_at(&self, offset: usize) -> Result<HeaderStructure<'a>> {
-        let slice = &self.data[offset..][..HEADER_SIZE];
+        let slice = &self.data[offset..][..HEADER_SIZE as usize];
 
         // Check signature.
         if slice[..4] != HEADER_SIGNATURE {
@@ -161,8 +141,8 @@ impl<'a> Header<'a> {
 
     /// Determine the current header by comparing sequence numbers.
     fn current_header(&self) -> Result<HeaderStructure<'a>> {
-        let h1 = self.validate_header_at(HEADER1_OFFSET);
-        let h2 = self.validate_header_at(HEADER2_OFFSET);
+        let h1 = self.validate_header_at(HEADER1_OFFSET as usize);
+        let h2 = self.validate_header_at(HEADER2_OFFSET as usize);
 
         match (h1, h2) {
             (Ok(h1), Ok(h2)) => {
@@ -188,8 +168,8 @@ impl<'a> Header<'a> {
 
     /// Return the index (1 or 2) of the current header.
     fn current_header_index(&self) -> Result<usize> {
-        let h1 = self.validate_header_at(HEADER1_OFFSET);
-        let h2 = self.validate_header_at(HEADER2_OFFSET);
+        let h1 = self.validate_header_at(HEADER1_OFFSET as usize);
+        let h2 = self.validate_header_at(HEADER2_OFFSET as usize);
 
         match (h1, h2) {
             (Ok(h1), Ok(h2)) => {
@@ -215,7 +195,7 @@ impl<'a> Header<'a> {
 
     /// Parse and validate a region table at the given byte offset.
     fn validate_region_table_at(&self, offset: usize) -> Result<RegionTable<'a>> {
-        let slice = &self.data[offset..][..REGION_TABLE_SIZE];
+        let slice = &self.data[offset..][..REGION_TABLE_SIZE as usize];
 
         // Check signature.
         if slice[..4] != REGION_SIGNATURE {
@@ -242,7 +222,7 @@ impl<'a> Header<'a> {
 
         // Validate entry count.
         let entry_count = u32::from_le_bytes(slice[8..12].try_into().unwrap());
-        if entry_count > MAX_REGION_ENTRIES {
+        if entry_count > u32::from(MAX_REGION_ENTRIES) {
             return Err(Error::InvalidRegionTable(format!(
                 "REGION_ENTRY_COUNT_EXCEEDS_MAXIMUM: entry count {entry_count} exceeds maximum of {MAX_REGION_ENTRIES}"
             )));
@@ -250,8 +230,8 @@ impl<'a> Header<'a> {
 
         // Check that entries fit within the 64 KB table.
         let entries_start = 16; // after the 16-byte region table header
-        let entries_end = entries_start + entry_count as usize * REGION_ENTRY_SIZE;
-        if entries_end > REGION_TABLE_SIZE {
+        let entries_end = entries_start + entry_count as usize * REGION_ENTRY_SIZE as usize;
+        if entries_end > REGION_TABLE_SIZE as usize {
             return Err(Error::InvalidRegionTable(format!(
                 "entry count {entry_count} overflows region table"
             )));
@@ -267,8 +247,8 @@ impl<'a> Header<'a> {
     fn current_region_table(&self) -> Result<RegionTable<'a>> {
         let idx = self.current_header_index()?;
         let offset = match idx {
-            1 => REGION_TABLE1_OFFSET,
-            2 => REGION_TABLE2_OFFSET,
+            1 => REGION_TABLE1_OFFSET as usize,
+            2 => REGION_TABLE2_OFFSET as usize,
             _ => unreachable!(),
         };
         self.validate_region_table_at(offset)
@@ -304,7 +284,7 @@ impl<'a> FileTypeIdentifier<'a> {
     /// Panics if the header buffer is shorter than the required creator field.
     #[must_use]
     pub fn creator(&self) -> &'a [u8; 512] {
-        self.data[8..8 + CREATOR_SIZE].try_into().unwrap()
+        self.data[8..8 + CREATOR_SIZE as usize].try_into().unwrap()
     }
 }
 
@@ -438,15 +418,12 @@ pub struct RegionTable<'a> {
     data: &'a [u8],
 }
 
-/// Region table header is 16 bytes: signature(4) + checksum(4) + `entry_count(4)` + reserved(4).
-const RT_HEADER_SIZE: usize = 16;
-
 impl<'a> RegionTable<'a> {
     /// Return the region table header.
     #[must_use]
     pub fn header(&self) -> RegionTableHeader<'a> {
         RegionTableHeader {
-            data: &self.data[..RT_HEADER_SIZE],
+            data: &self.data[..RT_HEADER_SIZE as usize],
         }
     }
 
@@ -454,9 +431,9 @@ impl<'a> RegionTable<'a> {
     pub fn entries(&self) -> impl Iterator<Item = RegionTableEntry<'a>> + '_ {
         let count = self.header().entry_count() as usize;
         (0..count).map(move |i| {
-            let offset = RT_HEADER_SIZE + i * REGION_ENTRY_SIZE;
+            let offset = RT_HEADER_SIZE as usize + i * REGION_ENTRY_SIZE as usize;
             RegionTableEntry {
-                data: &self.data[offset..][..REGION_ENTRY_SIZE],
+                data: &self.data[offset..][..REGION_ENTRY_SIZE as usize],
             }
         })
     }
@@ -574,28 +551,28 @@ mod tests {
 
     /// Build a minimal valid 320 KB header section for testing.
     fn build_test_header_section() -> Vec<u8> {
-        let mut buf = vec![0u8; REGION_TABLE2_OFFSET + REGION_TABLE_SIZE];
+        let mut buf = vec![0u8; (REGION_TABLE2_OFFSET + REGION_TABLE_SIZE) as usize];
 
         // File type identifier
         buf[0..8].copy_from_slice(b"vhdxfile");
 
         // Header 1 at 64 KB (sequence_number = 5)
-        write_header(&mut buf, HEADER1_OFFSET, 5);
+        write_header(&mut buf, HEADER1_OFFSET as usize, 5);
 
         // Header 2 at 128 KB (sequence_number = 3)
-        write_header(&mut buf, HEADER2_OFFSET, 3);
+        write_header(&mut buf, HEADER2_OFFSET as usize, 3);
 
         // Region table 1 at 192 KB (2 entries)
-        write_region_table(&mut buf, REGION_TABLE1_OFFSET, 2);
+        write_region_table(&mut buf, REGION_TABLE1_OFFSET as usize, 2);
 
         // Region table 2 at 256 KB (2 entries)
-        write_region_table(&mut buf, REGION_TABLE2_OFFSET, 2);
+        write_region_table(&mut buf, REGION_TABLE2_OFFSET as usize, 2);
 
         buf
     }
 
     fn write_header(buf: &mut [u8], offset: usize, seq: u64) {
-        let slice = &mut buf[offset..][..HEADER_SIZE];
+        let slice = &mut buf[offset..][..HEADER_SIZE as usize];
         slice[..4].copy_from_slice(b"head");
         slice[4..8].copy_from_slice(&0u32.to_le_bytes()); // checksum placeholder
         slice[8..16].copy_from_slice(&seq.to_le_bytes());
@@ -612,16 +589,16 @@ mod tests {
     }
 
     fn write_region_table(buf: &mut [u8], offset: usize, entry_count: u32) {
-        let slice = &mut buf[offset..][..REGION_TABLE_SIZE];
+        let slice = &mut buf[offset..][..REGION_TABLE_SIZE as usize];
         slice[..4].copy_from_slice(b"regi");
         slice[4..8].copy_from_slice(&0u32.to_le_bytes()); // checksum placeholder
         slice[8..12].copy_from_slice(&entry_count.to_le_bytes());
         slice[12..16].copy_from_slice(&0u32.to_le_bytes()); // reserved
 
         // Write entry_count entries starting at byte 16
-        let entries_start = offset + RT_HEADER_SIZE;
+        let entries_start = offset + RT_HEADER_SIZE as usize;
         for i in 0..entry_count as usize {
-            let eoff = entries_start + i * REGION_ENTRY_SIZE;
+            let eoff = entries_start + i * REGION_ENTRY_SIZE as usize;
             // guid (16 bytes of incrementing pattern)
             buf[eoff..eoff + 16]
                 .copy_from_slice(&[u8::try_from(i).expect("entry index fits u8"); 16]);
@@ -639,7 +616,7 @@ mod tests {
         }
 
         // Compute CRC-32C over the full 64 KB with checksum zeroed.
-        let slice = &mut buf[offset..][..REGION_TABLE_SIZE];
+        let slice = &mut buf[offset..][..REGION_TABLE_SIZE as usize];
         let checksum = crc32c(slice);
         slice[4..8].copy_from_slice(&checksum.to_le_bytes());
     }
@@ -691,7 +668,7 @@ mod tests {
     fn current_header_picks_only_valid() {
         let mut buf = build_test_header_section();
         // Corrupt header 1 by overwriting signature
-        buf[HEADER1_OFFSET] = 0xFF;
+        buf[HEADER1_OFFSET as usize] = 0xFF;
         let header = Header::new(&buf).unwrap();
         let h = header.header(0).unwrap();
         assert_eq!(h.sequence_number(), 3); // falls back to header 2
@@ -700,8 +677,8 @@ mod tests {
     #[test]
     fn both_headers_corrupt_fails() {
         let mut buf = build_test_header_section();
-        buf[HEADER1_OFFSET] = 0xFF;
-        buf[HEADER2_OFFSET] = 0xFF;
+        buf[HEADER1_OFFSET as usize] = 0xFF;
+        buf[HEADER2_OFFSET as usize] = 0xFF;
         let header = Header::new(&buf).unwrap();
         let result = header.header(0);
         assert!(result.is_err());
@@ -718,7 +695,7 @@ mod tests {
     fn header_crc_validated() {
         let mut buf = build_test_header_section();
         // Corrupt the CRC of header 1
-        buf[HEADER1_OFFSET + 4] ^= 0xFF;
+        buf[HEADER1_OFFSET as usize + 4] ^= 0xFF;
         let header = Header::new(&buf).unwrap();
         assert!(header.header(1).is_err());
     }
@@ -771,7 +748,7 @@ mod tests {
     #[test]
     fn region_table_crc_validated() {
         let mut buf = build_test_header_section();
-        buf[REGION_TABLE1_OFFSET + 4] ^= 0xFF;
+        buf[REGION_TABLE1_OFFSET as usize + 4] ^= 0xFF;
         let header = Header::new(&buf).unwrap();
         assert!(header.region_table(1).is_err());
     }
@@ -818,7 +795,7 @@ mod tests {
         let rt = header.region_table(1).unwrap();
         let stored = rt.header().checksum();
         // Re-verify manually
-        let slice = &buf[REGION_TABLE1_OFFSET..][..REGION_TABLE_SIZE];
+        let slice = &buf[REGION_TABLE1_OFFSET as usize..][..REGION_TABLE_SIZE as usize];
         let mut tmp = slice.to_vec();
         tmp[4..8].copy_from_slice(&0u32.to_le_bytes());
         assert_eq!(stored, Crc32c::from_raw(crc32c(&tmp)));
@@ -828,11 +805,11 @@ mod tests {
     fn current_header_rejects_equal_sequence() {
         let mut buf = build_test_header_section();
         // Both headers have seq=5: header 1 already has seq=5, set header 2 to seq=5
-        let h2_offset = HEADER2_OFFSET;
+        let h2_offset = HEADER2_OFFSET as usize;
         buf[h2_offset + 8..h2_offset + 16].copy_from_slice(&5u64.to_le_bytes());
         // Recompute CRC for header 2
         buf[h2_offset + 4..h2_offset + 8].copy_from_slice(&0u32.to_le_bytes());
-        let slice = &buf[h2_offset..h2_offset + HEADER_SIZE];
+        let slice = &buf[h2_offset..h2_offset + HEADER_SIZE as usize];
         let checksum = crc32c(slice);
         buf[h2_offset + 4..h2_offset + 8].copy_from_slice(&checksum.to_le_bytes());
 
