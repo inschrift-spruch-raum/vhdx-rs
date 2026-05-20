@@ -42,8 +42,6 @@ pub(crate) const REGION_TABLE1_OFFSET: u32 = 192 * (KIB as u32);
 /// Offset of Region Table 2 within the header section/file.
 pub(crate) const REGION_TABLE2_OFFSET: u32 = 256 * (KIB as u32);
 
-
-
 /// Log starts at 1 MiB (first MiB-aligned slot after the header section).
 pub(crate) const LOG_OFFSET: u32 = MIB;
 
@@ -136,6 +134,34 @@ pub(crate) const SIGNATURE_ZERO: BitArray<u32, Lsb0> = BitArray {
 #[cfg(test)]
 pub(crate) const SIGNATURE_DATA: BitArray<u32, Lsb0> = BitArray {
     data: u32::from_le_bytes(*b"data"),
+    _ord: PhantomData,
+};
+
+// ---------------------------------------------------------------------------
+// File/structure signatures
+// ---------------------------------------------------------------------------
+
+/// VHDX file signature bytes: "vhdxfile" (8 bytes).
+pub(crate) const VHDX_SIGNATURE_BYTES: BitArray<u64, Lsb0> = BitArray {
+    data: u64::from_le_bytes(*b"vhdxfile"),
+    _ord: PhantomData,
+};
+
+/// Header structure signature: "head".
+pub(crate) const HEADER_SIGNATURE: BitArray<u32, Lsb0> = BitArray {
+    data: u32::from_le_bytes(*b"head"),
+    _ord: PhantomData,
+};
+
+/// Region table signature: "regi".
+pub(crate) const REGION_SIGNATURE: BitArray<u32, Lsb0> = BitArray {
+    data: u32::from_le_bytes(*b"regi"),
+    _ord: PhantomData,
+};
+
+/// Metadata table signature: "metadata" (8 bytes).
+pub(crate) const METADATA_SIGNATURE: BitArray<u64, Lsb0> = BitArray {
+    data: u64::from_le_bytes(*b"metadata"),
     _ord: PhantomData,
 };
 

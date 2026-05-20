@@ -145,7 +145,9 @@ impl<'a> Log<'a> {
             found.copy_from_slice(sig);
             return Err(Error::InvalidSignature {
                 position: SignaturePosition::LogEntry,
-                expected: crate::error::pad_signature_4to8(SIGNATURE_LOGE.into_inner().to_le_bytes()),
+                expected: crate::error::pad_signature_4to8(
+                    SIGNATURE_LOGE.into_inner().to_le_bytes(),
+                ),
                 found: crate::error::pad_signature_4to8(found),
             });
         }

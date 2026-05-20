@@ -10,24 +10,15 @@
 use bitvec::prelude::*;
 
 use crate::constants::{
-    CREATOR_SIZE, HEADER_SIZE, HEADER1_OFFSET, HEADER2_OFFSET, MAX_REGION_ENTRIES,
-    REGION_ENTRY_SIZE, REGION_TABLE_SIZE, REGION_TABLE1_OFFSET, REGION_TABLE2_OFFSET,
-    RT_HEADER_SIZE,
+    CREATOR_SIZE, HEADER_SIGNATURE, HEADER_SIZE, HEADER1_OFFSET, HEADER2_OFFSET,
+    MAX_REGION_ENTRIES, REGION_ENTRY_SIZE, REGION_SIGNATURE, REGION_TABLE_SIZE,
+    REGION_TABLE1_OFFSET, REGION_TABLE2_OFFSET, RT_HEADER_SIZE,
 };
 use crate::error::{Error, Result, SignaturePosition};
 use crate::types::{Crc32c, Guid};
 
 #[cfg(test)]
 use crc32c::crc32c;
-
-// ---------------------------------------------------------------------------
-// Layout constants
-// ---------------------------------------------------------------------------
-
-/// Expected header signature: "head" (0x68656164).
-const HEADER_SIGNATURE: [u8; 4] = [b'h', b'e', b'a', b'd'];
-/// Expected region table signature: "regi" (0x72656769).
-const REGION_SIGNATURE: [u8; 4] = [b'r', b'e', b'g', b'i'];
 
 // ---------------------------------------------------------------------------
 // Header (top-level section view)
@@ -78,8 +69,8 @@ impl<'a> Header<'a> {
     pub fn header(&self, index: usize) -> Result<HeaderStructure<'a>> {
         match index {
             0 => self.current_header(),
-             1 => self.validate_header_at(HEADER1_OFFSET as usize),
-             2 => self.validate_header_at(HEADER2_OFFSET as usize),
+            1 => self.validate_header_at(HEADER1_OFFSET as usize),
+            2 => self.validate_header_at(HEADER2_OFFSET as usize),
             _ => Err(Error::InvalidParameter(format!(
                 "header index must be 0, 1, or 2, got {index}"
             ))),
@@ -99,8 +90,8 @@ impl<'a> Header<'a> {
     pub fn region_table(&self, index: usize) -> Result<RegionTable<'a>> {
         match index {
             0 => self.current_region_table(),
-             1 => self.validate_region_table_at(REGION_TABLE1_OFFSET as usize),
-             2 => self.validate_region_table_at(REGION_TABLE2_OFFSET as usize),
+            1 => self.validate_region_table_at(REGION_TABLE1_OFFSET as usize),
+            2 => self.validate_region_table_at(REGION_TABLE2_OFFSET as usize),
             _ => Err(Error::InvalidParameter(format!(
                 "region table index must be 0, 1, or 2, got {index}"
             ))),
@@ -114,11 +105,11 @@ impl<'a> Header<'a> {
         let slice = &self.data[offset..][..HEADER_SIZE as usize];
 
         // Check signature.
-        if slice[..4] != HEADER_SIGNATURE {
+        if slice[..4].view_bits::<Lsb0>() != *HEADER_SIGNATURE {
             let mut found: [u8; 8] = [0; 8];
             found[..4].copy_from_slice(&slice[..4]);
             let mut expected: [u8; 8] = [0; 8];
-            expected[..4].copy_from_slice(&HEADER_SIGNATURE);
+            expected[..4].copy_from_slice(&HEADER_SIGNATURE.into_inner().to_le_bytes());
             return Err(Error::InvalidSignature {
                 position: SignaturePosition::Header,
                 expected,
@@ -198,11 +189,11 @@ impl<'a> Header<'a> {
         let slice = &self.data[offset..][..REGION_TABLE_SIZE as usize];
 
         // Check signature.
-        if slice[..4] != REGION_SIGNATURE {
+        if slice[..4].view_bits::<Lsb0>() != *REGION_SIGNATURE {
             let mut found: [u8; 8] = [0; 8];
             found[..4].copy_from_slice(&slice[..4]);
             let mut expected: [u8; 8] = [0; 8];
-            expected[..4].copy_from_slice(&REGION_SIGNATURE);
+            expected[..4].copy_from_slice(&REGION_SIGNATURE.into_inner().to_le_bytes());
             return Err(Error::InvalidSignature {
                 position: SignaturePosition::RegionTable,
                 expected,

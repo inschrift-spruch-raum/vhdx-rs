@@ -2466,8 +2466,7 @@ mod tests {
         // offsets, sector bitmap entries = NotPresent.
         let bat_start = usize::try_from(bat_offset).expect("BAT offset fits usize");
         let block_size_mb = u64::from(block_size / MIB);
-        let metadata_end_mb = (metadata_offset + u64::from(metadata_size))
-            .div_ceil(u64::from(MIB));
+        let metadata_end_mb = (metadata_offset + u64::from(metadata_size)).div_ceil(u64::from(MIB));
         // Align first payload offset to block_size boundary.
         let first_payload_mb = metadata_end_mb.div_ceil(block_size_mb) * block_size_mb;
         let mut sb_written: u64 = 0;
@@ -2713,8 +2712,10 @@ mod tests {
     fn validate_header_bad_version() {
         let mut buf = build_test_vhdx();
         // Set version to 2 on both headers
-        buf[HEADER1_OFFSET as usize + 66..HEADER1_OFFSET as usize + 68].copy_from_slice(&2u16.to_le_bytes());
-        buf[HEADER2_OFFSET as usize + 66..HEADER2_OFFSET as usize + 68].copy_from_slice(&2u16.to_le_bytes());
+        buf[HEADER1_OFFSET as usize + 66..HEADER1_OFFSET as usize + 68]
+            .copy_from_slice(&2u16.to_le_bytes());
+        buf[HEADER2_OFFSET as usize + 66..HEADER2_OFFSET as usize + 68]
+            .copy_from_slice(&2u16.to_le_bytes());
         let validator = SpecValidator::new(&buf, true);
         assert!(validator.validate_header().is_err());
     }

@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use crate::constants::{
-    BAT_REGION_GUID, BAT_REGION_OFFSET, HEADER_SIZE, HEADER1_OFFSET, HEADER2_OFFSET,
-    KV_ENTRY_SIZE, LOCATOR_HEADER_SIZE, LOG_LENGTH, LOG_OFFSET, METADATA_REGION_GUID,
-    METADATA_REGION_SIZE, METADATA_TABLE_SIZE, MIB as MIB, REGION_TABLE_SIZE,
-    REGION_TABLE1_OFFSET, REGION_TABLE2_OFFSET, TABLE_ENTRY_SIZE, TABLE_HEADER_SIZE, TIB as TIB,
+    BAT_REGION_GUID, BAT_REGION_OFFSET, HEADER_SIZE, HEADER1_OFFSET, HEADER2_OFFSET, KV_ENTRY_SIZE,
+    LOCATOR_HEADER_SIZE, LOG_LENGTH, LOG_OFFSET, METADATA_REGION_GUID, METADATA_REGION_SIZE,
+    METADATA_TABLE_SIZE, MIB, REGION_TABLE_SIZE, REGION_TABLE1_OFFSET, REGION_TABLE2_OFFSET,
+    TABLE_ENTRY_SIZE, TABLE_HEADER_SIZE, TIB, VHDX_SIGNATURE_BYTES,
 };
 use crate::error::{Error, Result, SignaturePosition};
 use crate::header::Header;
@@ -29,11 +29,8 @@ struct MetadataEntryMeta {
 // Signatures are written as byte literals (b"head", b"regi", etc.) to avoid
 // endianness issues — they are byte-strings, not numeric values.
 
-/// VHDX file signature bytes: "vhdxfile" (8 bytes).
-const VHDX_SIGNATURE_BYTES: [u8; 8] = [0x76, 0x68, 0x64, 0x78, 0x66, 0x69, 0x6C, 0x65];
-
-/// Size of the header buffer (first 1 MB of the file).
-const HEADER_BUFFER_SIZE: usize = 1024 * 1024;
+/// Size of the header buffer (first 1 MiB of the file).
+const HEADER_BUFFER_SIZE: usize = MIB as usize;
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -515,7 +512,7 @@ impl OpenOptions {
         let mut file = opts.open(&self.path)?;
         let mut header_buf = vec![0u8; HEADER_BUFFER_SIZE];
         let bytes_read = file.read(&mut header_buf)?;
-        if bytes_read < VHDX_SIGNATURE_BYTES.len() {
+        if bytes_read < VHDX_SIGNATURE_BYTES.len() / 8 {
             return Err(Error::InvalidFile(
                 "file too small to contain VHDX signature".into(),
             ));
@@ -525,15 +522,15 @@ impl OpenOptions {
     }
 
     fn validate_file_signature(header_buf: &[u8]) -> Result<()> {
-        let sig = &header_buf[..VHDX_SIGNATURE_BYTES.len()];
-        if sig == VHDX_SIGNATURE_BYTES {
+        let sig = &header_buf[..VHDX_SIGNATURE_BYTES.len() / 8];
+        if sig.view_bits::<Lsb0>() == *VHDX_SIGNATURE_BYTES {
             return Ok(());
         }
         let mut actual_bytes = [0u8; 8];
         actual_bytes.copy_from_slice(sig);
         Err(Error::InvalidSignature {
             position: SignaturePosition::FileTypeIdentifier,
-            expected: VHDX_SIGNATURE_BYTES,
+            expected: VHDX_SIGNATURE_BYTES.into_inner().to_le_bytes(),
             found: actual_bytes,
         })
     }
@@ -1104,10 +1101,16 @@ impl CreateOptions {
         // 3. Region Tables (offsets 192 KB and 256 KB)
         let region = Self::build_region_table(bat_size, metadata_offset);
 
-        std::io::Seek::seek(&mut w, std::io::SeekFrom::Start(u64::from(REGION_TABLE1_OFFSET)))?;
+        std::io::Seek::seek(
+            &mut w,
+            std::io::SeekFrom::Start(u64::from(REGION_TABLE1_OFFSET)),
+        )?;
         w.write_all(&region)?;
 
-        std::io::Seek::seek(&mut w, std::io::SeekFrom::Start(u64::from(REGION_TABLE2_OFFSET)))?;
+        std::io::Seek::seek(
+            &mut w,
+            std::io::SeekFrom::Start(u64::from(REGION_TABLE2_OFFSET)),
+        )?;
         w.write_all(&region)?;
 
         // 4. Extend file to cover log + BAT + metadata (zero-filled)
@@ -1122,7 +1125,8 @@ impl CreateOptions {
                     self.logical_sector_size,
                 );
             let payload_align = u64::from(self.block_size / MIB);
-            let raw_first_mb = (metadata_offset + u64::from(METADATA_REGION_SIZE)).div_ceil(u64::from(MIB));
+            let raw_first_mb =
+                (metadata_offset + u64::from(METADATA_REGION_SIZE)).div_ceil(u64::from(MIB));
             let first_payload_offset_mb = raw_first_mb.div_ceil(payload_align) * payload_align;
             let total_payload = num_payload * u64::from(self.block_size);
             let end = first_payload_offset_mb * u64::from(MIB) + total_payload;
@@ -1196,7 +1200,7 @@ impl CreateOptions {
     }
 
     fn write_file_type_identifier(w: &mut (impl Write + ?Sized)) -> Result<()> {
-        w.write_all(&VHDX_SIGNATURE_BYTES)?;
+        w.write_all(&VHDX_SIGNATURE_BYTES.into_inner().to_le_bytes())?;
 
         let mut creator = [0u8; 512];
         let ident = "vhdx-rs\0";
@@ -1570,7 +1574,7 @@ impl CreateOptions {
         buf.truncate(bytes_read);
 
         // Validate parent's VHDX signature
-        if buf[..8] != VHDX_SIGNATURE_BYTES {
+        if buf[..8].view_bits::<Lsb0>() != *VHDX_SIGNATURE_BYTES {
             return Err(Error::ParentNotFound);
         }
 
@@ -1918,7 +1922,8 @@ mod tests {
                 "entry {i} offset {offset} < 64KB"
             );
             // Flags: IsRequired bit (2 per MS-VHDX §2.6.1.2) must be set
-            let ef = EntryFlags(flags);
+            let flags_bytes = flags.to_le_bytes();
+            let ef = EntryFlags::new(&flags_bytes);
             assert!(
                 ef.is_required(),
                 "entry {i} flags {flags:#x} missing IsRequired"

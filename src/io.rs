@@ -447,7 +447,7 @@ impl Sector<'_> {
                 BatState::Payload(payload_state) => match payload_state {
                     PayloadBlockState::FullyPresent | PayloadBlockState::PartiallyPresent => {
                         let file_offset =
-entry.file_offset_mb() * u64::from(MIB) + sector_in_block * lss as u64;
+                            entry.file_offset_mb() * u64::from(MIB) + sector_in_block * lss as u64;
                         write_at(
                             self.file.inner(),
                             &data[buf_offset..buf_offset + bytes_this_round],
@@ -1059,7 +1059,10 @@ mod tests {
         let payload_offset = sector_zero_file_offset(&baseline_io);
 
         // Construct overlay with a zero region covering sector 0.
-        let overlay = ReplayOverlay::from_raw(HashMap::new(), vec![(payload_offset, u64::from(SECTOR_SIZE))]);
+        let overlay = ReplayOverlay::from_raw(
+            HashMap::new(),
+            vec![(payload_offset, u64::from(SECTOR_SIZE))],
+        );
 
         let ctx = create_fixed_io_with_overlay(overlay);
         let io = ctx.io();
@@ -1126,7 +1129,8 @@ mod tests {
         // Write a known pattern to sector 0.
         let mut sw = io.sector(0, 1).expect("sector 0");
         sw.seek(SeekFrom::Start(0)).expect("seek to 0");
-        sw.write_all(&[0x42u8; SECTOR_SIZE as usize]).expect("write 0x42");
+        sw.write_all(&[0x42u8; SECTOR_SIZE as usize])
+            .expect("write 0x42");
 
         let mut buf = vec![0u8; SECTOR_SIZE.into()];
         let mut sr = io.sector(0, 1).expect("sector 0");
@@ -1144,7 +1148,8 @@ mod tests {
         let io = ctx.io();
         let mut sw = io.sector(0, 1).expect("sector 0");
         sw.seek(SeekFrom::Start(0)).expect("seek to 0");
-        sw.write_all(&[0xAAu8; SECTOR_SIZE as usize]).expect("write 0xAA");
+        sw.write_all(&[0xAAu8; SECTOR_SIZE as usize])
+            .expect("write 0xAA");
 
         let mut buf = vec![0u8; SECTOR_SIZE.into()];
         let mut sr = io.sector(0, 1).expect("sector 0");
@@ -1403,7 +1408,8 @@ mod tests {
         // Write pattern to sector 0
         let mut sw = io.sector(0, 1).expect("sector 0");
         sw.seek(SeekFrom::Start(0)).expect("seek to 0");
-        sw.write_all(&[0x42u8; SECTOR_SIZE as usize]).expect("write sector 0");
+        sw.write_all(&[0x42u8; SECTOR_SIZE as usize])
+            .expect("write sector 0");
 
         // Read full sector via byte_offset=0
         let mut full_buf = vec![0u8; SECTOR_SIZE.into()];
@@ -1430,7 +1436,8 @@ mod tests {
         let io = ctx.io();
         let mut sw0 = io.sector(0, 1).expect("sector 0");
         sw0.seek(SeekFrom::Start(0)).expect("seek to 0");
-        sw0.write_all(&[0x11u8; SECTOR_SIZE as usize]).expect("write");
+        sw0.write_all(&[0x11u8; SECTOR_SIZE as usize])
+            .expect("write");
 
         // Read 100 bytes at offset 50
         let mut buf = [0u8; 100];
@@ -1442,7 +1449,8 @@ mod tests {
         // Write 0x11 to sector 1 so the cross-sector read is consistent
         let mut sw1 = io.sector(1, 1).expect("sector 1");
         sw1.seek(SeekFrom::Start(0)).expect("seek to 0");
-        sw1.write_all(&[0x11u8; SECTOR_SIZE as usize]).expect("write sector 1");
+        sw1.write_all(&[0x11u8; SECTOR_SIZE as usize])
+            .expect("write sector 1");
 
         // Read 50 bytes at offset 4090 (crosses into sector 1)
         let mut sector = io.sector(0, 2).expect("sector(0,2)");
@@ -1561,7 +1569,9 @@ mod tests {
         let mut sector = io.sector(0, 1).expect("sector 0"); // 1 sector = 4096 bytes
 
         // Read at EOF
-        sector.seek(SeekFrom::Start(u64::from(SECTOR_SIZE))).expect("seek to EOF");
+        sector
+            .seek(SeekFrom::Start(u64::from(SECTOR_SIZE)))
+            .expect("seek to EOF");
         let mut tiny = [0u8; 1];
         let n = sector.read(&mut tiny).expect("read at EOF");
         assert_eq!(n, 0, "read at EOF should return 0");
@@ -1574,7 +1584,9 @@ mod tests {
 
         // Same for write
         // Write at EOF
-        sector.seek(SeekFrom::Start(u64::from(SECTOR_SIZE))).expect("seek to EOF");
+        sector
+            .seek(SeekFrom::Start(u64::from(SECTOR_SIZE)))
+            .expect("seek to EOF");
         let n = sector.write(b"x").expect("write at EOF");
         assert_eq!(n, 0, "write at EOF should return 0");
 

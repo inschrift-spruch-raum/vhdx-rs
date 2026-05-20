@@ -3,18 +3,12 @@ use std::path::PathBuf;
 use bitvec::prelude::*;
 
 use crate::constants::{
-    KV_ENTRY_SIZE, LOCATOR_HEADER_SIZE, METADATA_TABLE_SIZE, TABLE_ENTRY_SIZE, TABLE_HEADER_SIZE,
+    KV_ENTRY_SIZE, LOCATOR_HEADER_SIZE, METADATA_SIGNATURE, METADATA_TABLE_SIZE, TABLE_ENTRY_SIZE,
+    TABLE_HEADER_SIZE,
 };
 use crate::error::{Error, Result, SignaturePosition};
 use crate::types::Guid;
 pub use crate::types::StandardItems;
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Expected metadata table signature: "metadata" in ASCII.
-const SIGNATURE: &[u8; 8] = b"metadata";
 
 // ---------------------------------------------------------------------------
 // Metadata (top-level wrapper)
@@ -174,10 +168,10 @@ impl<'a> TableHeader<'a> {
     /// Returns [`Error::InvalidSignature`] if the signature does not match.
     pub(crate) fn validate_signature(&self) -> Result<()> {
         let signature = *self.signature();
-        if signature != *SIGNATURE {
+        if signature.view_bits::<Lsb0>() != *METADATA_SIGNATURE {
             return Err(Error::InvalidSignature {
                 position: SignaturePosition::MetadataTable,
-                expected: *SIGNATURE,
+                expected: METADATA_SIGNATURE.into_inner().to_le_bytes(),
                 found: signature,
             });
         }
@@ -248,8 +242,10 @@ impl TableEntry<'_> {
 
     /// Parsed flags.
     #[must_use]
-    pub fn flags(&self) -> EntryFlags {
-        EntryFlags(self.flags_bits())
+    pub fn flags(&self) -> EntryFlags<'_> {
+        EntryFlags {
+            data: &self.data[24..28],
+        }
     }
 }
 
@@ -262,35 +258,38 @@ impl TableEntry<'_> {
 /// Per MS-VHDX §2.6.1.2 diagram: A=IsUser(bit0), B=IsVirtualDisk(bit1),
 /// C=IsRequired(bit2), bits 3-31 Reserved and MUST be 0.
 #[derive(Clone, Copy, Debug)]
-pub struct EntryFlags(pub u32);
+pub struct EntryFlags<'a> {
+    data: &'a [u8],
+}
 
-impl EntryFlags {
-    /// View the flags as a `BitSlice` with `Lsb0` ordering.
-    fn bitslice(&self) -> &BitSlice<u32, Lsb0> {
-        self.0.view_bits::<Lsb0>()
+impl EntryFlags<'_> {
+    /// Create an `EntryFlags` view from a 4-byte flags slice.
+    #[cfg(test)]
+    pub(crate) fn new(data: &[u8]) -> EntryFlags<'_> {
+        EntryFlags { data }
     }
 
     /// `IsUser` (bit 0): user metadata vs system metadata.
     #[must_use]
     pub fn is_user(&self) -> bool {
-        self.bitslice()[0]
+        self.data.view_bits::<Lsb0>()[0]
     }
 
     /// `IsVirtualDisk` (bit 1): virtual disk metadata vs file metadata.
     #[must_use]
     pub fn is_virtual_disk(&self) -> bool {
-        self.bitslice()[1]
+        self.data.view_bits::<Lsb0>()[1]
     }
 
     /// `IsRequired` (bit 2): implementation must understand this item.
     #[must_use]
     pub fn is_required(&self) -> bool {
-        self.bitslice()[2]
+        self.data.view_bits::<Lsb0>()[2]
     }
 
     /// Whether any reserved bits (3-31) are set.
-    pub(crate) fn has_reserved_bits(self) -> bool {
-        self.bitslice()[3..=31].any()
+    pub(crate) fn has_reserved_bits(&self) -> bool {
+        self.data.view_bits::<Lsb0>()[3..=31].any()
     }
 }
 
@@ -904,10 +903,7 @@ mod tests {
         let buf = build_test_metadata();
         let meta = Metadata::new(&buf).unwrap();
         let entry = meta.table().entry(&StandardItems::FILE_PARAMETERS).unwrap();
-        assert_eq!(
-            entry.offset(),
-            METADATA_TABLE_SIZE
-        );
+        assert_eq!(entry.offset(), METADATA_TABLE_SIZE);
         assert_eq!(entry.length(), 8);
     }
 
@@ -958,24 +954,29 @@ mod tests {
     fn entry_flags() {
         // Per MS-VHDX §2.6.1.2 diagram: A=IsUser(bit0), B=IsVirtualDisk(bit1),
         // C=IsRequired(bit2).
-        let flags = EntryFlags(0x0000_0007); // bits 0 + 1 + 2 = all three set
+        let bytes = 0x0000_0007u32.to_le_bytes(); // bits 0 + 1 + 2 = all three set
+        let flags = EntryFlags { data: &bytes };
         assert!(flags.is_user());
         assert!(flags.is_virtual_disk());
         assert!(flags.is_required());
 
-        let flags = EntryFlags(0x0000_0000);
+        let bytes = 0x0000_0000u32.to_le_bytes();
+        let flags = EntryFlags { data: &bytes };
         assert!(!flags.is_user());
         assert!(!flags.is_virtual_disk());
         assert!(!flags.is_required());
 
         // Reserved bits 3-31: detection
-        let flags = EntryFlags(0x0000_0008); // bit 3 set
+        let bytes = 0x0000_0008u32.to_le_bytes(); // bit 3 set
+        let flags = EntryFlags { data: &bytes };
         assert!(flags.has_reserved_bits());
 
-        let flags = EntryFlags(0xFFFF_FFF8); // all reserved bits set
+        let bytes = 0xFFFF_FFF8u32.to_le_bytes(); // all reserved bits set
+        let flags = EntryFlags { data: &bytes };
         assert!(flags.has_reserved_bits());
 
-        let flags = EntryFlags(0x0000_0007); // only valid bits
+        let bytes = 0x0000_0007u32.to_le_bytes(); // only valid bits
+        let flags = EntryFlags { data: &bytes };
         assert!(!flags.has_reserved_bits());
     }
 
@@ -1020,10 +1021,7 @@ mod tests {
         // Entry 0: Parent Locator
         let entry_off = TABLE_HEADER_SIZE as usize;
         buf[entry_off..entry_off + 16].copy_from_slice(&StandardItems::PARENT_LOCATOR.to_bytes());
-        buf[entry_off + 16..entry_off + 20].copy_from_slice(
-            &METADATA_TABLE_SIZE
-                .to_le_bytes(),
-        );
+        buf[entry_off + 16..entry_off + 20].copy_from_slice(&METADATA_TABLE_SIZE.to_le_bytes());
         buf[entry_off + 20..entry_off + 24].copy_from_slice(
             &u32::try_from(total_len)
                 .expect("total length fits u32")
@@ -1118,10 +1116,7 @@ mod tests {
         // Entry 0: Parent Locator
         let entry_off = TABLE_HEADER_SIZE as usize;
         buf[entry_off..entry_off + 16].copy_from_slice(&StandardItems::PARENT_LOCATOR.to_bytes());
-        buf[entry_off + 16..entry_off + 20].copy_from_slice(
-            &METADATA_TABLE_SIZE
-                .to_le_bytes(),
-        );
+        buf[entry_off + 16..entry_off + 20].copy_from_slice(&METADATA_TABLE_SIZE.to_le_bytes());
         buf[entry_off + 20..entry_off + 24].copy_from_slice(
             &u32::try_from(total_len)
                 .expect("total length fits u32")
