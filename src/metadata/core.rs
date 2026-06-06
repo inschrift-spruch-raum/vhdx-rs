@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use bitvec::prelude::*;
 
 use crate::constants::{
-    KV_ENTRY_SIZE, LOCATOR_HEADER_SIZE, METADATA_SIGNATURE, METADATA_TABLE_SIZE, TABLE_ENTRY_SIZE,
-    TABLE_HEADER_SIZE,
+    FP_BITFIELDS, FP_BITS_END, FP_BLOCK_SIZE, FP_HAS_PARENT, FP_LEAVE_BLOCK_ALLOCATED,
+    FP_RESERVED_START, KV_ENTRY_SIZE, LOCATOR_HEADER_SIZE, METADATA_SIGNATURE, METADATA_TABLE_SIZE,
+    TABLE_ENTRY_SIZE, TABLE_HEADER_SIZE,
 };
 use crate::error::{Error, Result, SignaturePosition};
 use crate::types::Guid;
@@ -451,18 +452,6 @@ pub struct FileParameters<'a> {
     data: &'a [u8],
 }
 
-/// Bit index offsets within the 8-byte `FileParameters` view.
-///
-/// The full `data` is 8 bytes (64 bits) viewed as `Lsb0`:
-/// - `[ 0..32]` → `BlockSize`          (first u32, bytes 0-3)
-/// - `[32    ]` → `LeaveBlockAllocated` (bit 0 of `BitFields`, second u32)
-/// - `[33    ]` → `HasParent`          (bit 1 of `BitFields`, second u32)
-/// - `[34..64]` → Reserved           (bits 2-31 of `BitFields`, second u32)
-const FP_BLOCK_SIZE: std::ops::Range<usize> = 0..32;
-const FP_BITFIELDS: std::ops::Range<usize> = 32..64;
-const FP_LEAVE_BLOCK_ALLOCATED: usize = 32;
-const FP_HAS_PARENT: usize = 33;
-
 impl FileParameters<'_> {
     /// Block size in bytes (first u32 per MS-VHDX §2.6.2.1).
     #[must_use]
@@ -506,7 +495,7 @@ impl FileParameters<'_> {
         if self.data.len() < 8 {
             return false;
         }
-        self.data.view_bits::<Lsb0>()[34..64].any()
+        self.data.view_bits::<Lsb0>()[FP_RESERVED_START..FP_BITS_END].any()
     }
 }
 

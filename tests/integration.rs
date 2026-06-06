@@ -43,6 +43,7 @@ fn ref_to_tmp(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
 /// the file so `validate_file()` can succeed.
 fn patch_header2_seq_and_reopen(path: &std::path::Path) -> File {
     const HEADER2_OFFSET: u64 = 128 * 1024;
+
     // Open raw file, patch Header 2 sequence number to 1
     let mut raw = std::fs::OpenOptions::new()
         .read(true)

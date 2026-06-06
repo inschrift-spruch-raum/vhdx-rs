@@ -4,20 +4,19 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use crate::constants::{BAT_REGION_GUID, METADATA_REGION_GUID, MIB};
+use crate::constants::{
+    BAT_REGION_GUID, KNOWN_METADATA_GUIDS, KNOWN_REGION_GUIDS, METADATA_REGION_GUID, MIB,
+};
 use crate::error::{Error, Result};
 use crate::header::Header;
 use crate::log_replay::ReplayOverlay;
 use crate::section::Sections;
-use crate::types::{self, Guid};
+use crate::types::Guid;
 
 use super::{CreateOptions, LogReplayPolicy, OpenOptions};
 
 // Signatures are written as byte literals (b"head", b"regi", etc.) to avoid
 // endianness issues — they are byte-strings, not numeric values.
-
-/// Size of the header buffer (first 1 MiB of the file).
-pub(crate) const HEADER_BUFFER_SIZE: usize = MIB as usize;
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -25,21 +24,12 @@ pub(crate) const HEADER_BUFFER_SIZE: usize = MIB as usize;
 
 /// Check whether a GUID corresponds to a known region type.
 pub(crate) fn is_known_region_guid(guid: &Guid) -> bool {
-    const KNOWN: &[Guid] = &[BAT_REGION_GUID, METADATA_REGION_GUID];
-    KNOWN.contains(guid)
+    KNOWN_REGION_GUIDS.contains(guid)
 }
 
 /// Check whether a GUID corresponds to a known metadata item type.
 pub(crate) fn is_known_metadata_guid(guid: &Guid) -> bool {
-    const KNOWN: &[Guid] = &[
-        types::StandardItems::FILE_PARAMETERS,
-        types::StandardItems::VIRTUAL_DISK_SIZE,
-        types::StandardItems::VIRTUAL_DISK_ID,
-        types::StandardItems::LOGICAL_SECTOR_SIZE,
-        types::StandardItems::PHYSICAL_SECTOR_SIZE,
-        types::StandardItems::PARENT_LOCATOR,
-    ];
-    KNOWN.contains(guid)
+    KNOWN_METADATA_GUIDS.contains(guid)
 }
 
 // ---------------------------------------------------------------------------

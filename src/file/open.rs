@@ -4,12 +4,10 @@ use bitvec::prelude::*;
 use crc32c::crc32c;
 use std::io::{Read, Seek, SeekFrom, Write};
 
-use super::{
-    File, HEADER_BUFFER_SIZE, LogReplayPolicy, OpenOptions, is_known_metadata_guid,
-    is_known_region_guid,
-};
+use super::{File, LogReplayPolicy, OpenOptions, is_known_metadata_guid, is_known_region_guid};
 use crate::constants::{
-    HEADER_SIZE, HEADER1_OFFSET, HEADER2_OFFSET, METADATA_REGION_GUID, MIB, VHDX_SIGNATURE_BYTES,
+    HEADER_BUFFER_SIZE, HEADER_SIZE, HEADER1_OFFSET, HEADER2_OFFSET, METADATA_REGION_GUID, MIB,
+    VHDX_SIGNATURE_BYTES,
 };
 use crate::error::{Error, Result, SignaturePosition};
 use crate::header::Header;

@@ -4,10 +4,10 @@ use bitvec::prelude::*;
 use crc32c::crc32c;
 use std::io::{BufWriter, Read, Seek, Write};
 
-use super::{CreateOptions, File, HEADER_BUFFER_SIZE, LogReplayPolicy};
+use super::{CreateOptions, File, LogReplayPolicy};
 use crate::constants::{
-    BAT_REGION_GUID, HEADER_SIZE, HEADER1_OFFSET, HEADER2_OFFSET, LOG_OFFSET, METADATA_REGION_GUID,
-    MIB, VHDX_SIGNATURE_BYTES,
+    BAT_REGION_GUID, HEADER_BUFFER_SIZE, HEADER_SIZE, HEADER1_OFFSET, HEADER2_OFFSET, LOG_OFFSET,
+    METADATA_REGION_GUID, MIB, VHDX_SIGNATURE_BYTES,
 };
 use crate::constants::{
     BAT_REGION_OFFSET, KV_ENTRY_SIZE, LOCATOR_HEADER_SIZE, LOG_LENGTH, METADATA_REGION_SIZE,
