@@ -1277,7 +1277,8 @@ impl<'a> IO<'a> {
 /// - **范围末尾 (EOF)**：游标在末尾时，`read`/`write` 返回 `Ok(0)`，不是错误。
 /// - **块边界**：跨块范围自动按 VHDX block 边界拆分，对调用方透明。
 /// - **读取语义**：默认使用 `EffectiveDataPreferred`（`Unmapped` 块返回零），可通过 `semantics()` 覆盖。
-/// - **写入前提**：目标块必须为 `FullyPresent` 或 `PartiallyPresent` 状态。
+/// - **写入分配**：dynamic 磁盘写入 `NotPresent`、`Zero`、`Unmapped` 或 `Undefined` payload block 时会分配新 block 并更新 BAT。
+/// - **差分盘写入分配**：differencing 磁盘写入 sparse payload block 时会分配 child payload、分配/更新 sector bitmap，并将写入 sector 标记为 child-owned。
 ///
 /// # 错误映射
 ///
