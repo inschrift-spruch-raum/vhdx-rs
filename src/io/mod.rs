@@ -1,7 +1,7 @@
 //! io module facade.
 
 mod core;
-mod platform;
+pub(crate) mod platform;
 
 pub use self::core::{IO, Sector};
 

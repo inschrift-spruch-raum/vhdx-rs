@@ -54,12 +54,25 @@ pub struct IO<'a> {
     pub(super) logical_sector_size: u32,
     chunk_ratio: u64,
     max_sector: u64,
+    has_parent: bool,
     /// In-memory replay overlay for serving post-replay data through the read path.
     pub(super) overlay: Option<Arc<ReplayOverlay>>,
     /// Cached parent VHDX file (lazily opened for differencing disks).
     parent_file: RefCell<Option<File>>,
     /// Resolved parent path (cached after first resolution).
     parent_path: RefCell<Option<PathBuf>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ResolvedBatEntry {
+    state: BatState,
+    file_offset_mb: u64,
+}
+
+impl ResolvedBatEntry {
+    pub(super) fn file_offset_mb(&self) -> u64 {
+        self.file_offset_mb
+    }
 }
 
 impl<'a> IO<'a> {
@@ -76,6 +89,7 @@ impl<'a> IO<'a> {
             .file_parameters()
             .map_err(|_| Error::InvalidMetadata("FileParameters metadata item not found".into()))?;
         let block_size = fp.block_size();
+        let has_parent = fp.has_parent();
         if block_size == 0 {
             return Err(Error::InvalidMetadata("block size must be non-zero".into()));
         }
@@ -102,6 +116,7 @@ impl<'a> IO<'a> {
             logical_sector_size,
             chunk_ratio,
             max_sector: max_sector.saturating_sub(1),
+            has_parent,
             overlay: file.replay_overlay_arc().cloned(),
             parent_file: RefCell::new(None),
             parent_path: RefCell::new(None),
@@ -281,13 +296,13 @@ impl Sector<'_> {
                 usize::try_from(sectors_this_round).expect("sector count fits usize") * lss;
 
             let entry = self.resolve_bat_entry_for_block(block_idx)?;
-            let state = entry.state()?;
+            let state = entry.state;
 
             match state {
                 BatState::Payload(payload_state) => match payload_state {
                     PayloadBlockState::FullyPresent => {
                         self.read_block_range_from_file(
-                            &entry,
+                            entry.file_offset_mb(),
                             sector_in_block,
                             sectors_this_round,
                             &mut buf[buf_offset..buf_offset + bytes_this_round],
@@ -295,7 +310,7 @@ impl Sector<'_> {
                     }
                     PayloadBlockState::PartiallyPresent => {
                         self.read_partially_present_range(
-                            &entry,
+                            entry,
                             block_idx,
                             sector_in_block,
                             sectors_this_round,
@@ -306,7 +321,7 @@ impl Sector<'_> {
                         if self.semantics == ReadSemanticsPolicy::RawDataPreferred {
                             if self
                                 .read_block_range_from_file(
-                                    &entry,
+                                    entry.file_offset_mb(),
                                     sector_in_block,
                                     sectors_this_round,
                                     &mut buf[buf_offset..buf_offset + bytes_this_round],
@@ -318,6 +333,14 @@ impl Sector<'_> {
                         } else {
                             buf[buf_offset..buf_offset + bytes_this_round].fill(0);
                         }
+                    }
+                    PayloadBlockState::NotPresent if self.io.has_parent => {
+                        self.read_parent_range(
+                            block_idx,
+                            sector_in_block,
+                            sectors_this_round,
+                            &mut buf[buf_offset..buf_offset + bytes_this_round],
+                        )?;
                     }
                     PayloadBlockState::Zero
                     | PayloadBlockState::NotPresent
@@ -345,8 +368,8 @@ impl Sector<'_> {
     ///
     /// `byte_offset` is relative to the first sector in this range (0-based).
     /// The resulting byte range `[byte_offset, byte_offset + data.len())` must
-    /// fit within `sector_count * logical_sector_size`. Each affected block must
-    /// already be allocated (`FullyPresent` or `PartiallyPresent`).
+    /// fit within `sector_count * logical_sector_size`. Dynamic sparse payload
+    /// blocks are allocated as needed.
     ///
     /// # Panics
     ///
@@ -441,24 +464,77 @@ impl Sector<'_> {
                 usize::try_from(sectors_this_round).expect("sector count fits usize") * lss;
 
             let entry = self.resolve_bat_entry_for_block(block_idx)?;
-            let state = entry.state()?;
+            let state = entry.state;
 
             match state {
                 BatState::Payload(payload_state) => match payload_state {
-                    PayloadBlockState::FullyPresent | PayloadBlockState::PartiallyPresent => {
+                    PayloadBlockState::FullyPresent => {
                         let file_offset =
                             entry.file_offset_mb() * u64::from(MIB) + sector_in_block * lss as u64;
-                        write_at(
+                        Self::write_all_at(
                             self.file.inner(),
                             &data[buf_offset..buf_offset + bytes_this_round],
                             file_offset,
                         )?;
                     }
-                    _ => {
-                        return Err(Error::BlockNotPresent {
+                    PayloadBlockState::PartiallyPresent => {
+                        self.require_sector_bitmap_present(block_idx)?;
+                        let file_offset =
+                            entry.file_offset_mb() * u64::from(MIB) + sector_in_block * lss as u64;
+                        Self::write_all_at(
+                            self.file.inner(),
+                            &data[buf_offset..buf_offset + bytes_this_round],
+                            file_offset,
+                        )?;
+                        self.file.inner().sync_data()?;
+                        self.mark_child_sectors_present(
                             block_idx,
-                            state: format!("cannot write to block in state {payload_state:?}"),
-                        });
+                            sector_in_block,
+                            sectors_this_round,
+                        )?;
+                        self.file.inner().sync_data()?;
+                    }
+                    PayloadBlockState::NotPresent if self.io.has_parent => {
+                        let file_offset_mb = self.reserve_payload_block()?;
+                        let file_offset =
+                            file_offset_mb * u64::from(MIB) + sector_in_block * lss as u64;
+                        Self::write_all_at(
+                            self.file.inner(),
+                            &data[buf_offset..buf_offset + bytes_this_round],
+                            file_offset,
+                        )?;
+                        self.file.inner().sync_data()?;
+                        self.ensure_sector_bitmap_present(block_idx)?;
+                        self.mark_child_sectors_present(
+                            block_idx,
+                            sector_in_block,
+                            sectors_this_round,
+                        )?;
+                        self.file.inner().sync_data()?;
+                        self.publish_payload_block(
+                            block_idx,
+                            file_offset_mb,
+                            PayloadBlockState::PartiallyPresent,
+                        )?;
+                    }
+                    PayloadBlockState::NotPresent
+                    | PayloadBlockState::Zero
+                    | PayloadBlockState::Unmapped
+                    | PayloadBlockState::Undefined => {
+                        let file_offset_mb = self.reserve_payload_block()?;
+                        let file_offset =
+                            file_offset_mb * u64::from(MIB) + sector_in_block * lss as u64;
+                        Self::write_all_at(
+                            self.file.inner(),
+                            &data[buf_offset..buf_offset + bytes_this_round],
+                            file_offset,
+                        )?;
+                        self.file.inner().sync_data()?;
+                        self.publish_payload_block(
+                            block_idx,
+                            file_offset_mb,
+                            PayloadBlockState::FullyPresent,
+                        )?;
                     }
                 },
                 BatState::SectorBitmap(_) => {
@@ -484,19 +560,180 @@ impl Sector<'_> {
         u64::from(self.block_size) / u64::from(self.logical_sector_size)
     }
 
+    fn reserve_payload_block(&self) -> Result<u64> {
+        self.reserve_block(u64::from(self.block_size))
+    }
+
+    fn reserve_sector_bitmap_block(&self) -> Result<u64> {
+        self.reserve_block(u64::from(MIB))
+    }
+
+    fn reserve_block(&self, block_size: u64) -> Result<u64> {
+        let file_len = self.file.inner().metadata()?.len();
+        let payload_offset = file_len.div_ceil(block_size) * block_size;
+        let payload_end = payload_offset
+            .checked_add(block_size)
+            .ok_or_else(|| Error::InvalidParameter("payload block end overflow".into()))?;
+        self.file.inner().set_len(payload_end)?;
+
+        Ok(payload_offset / u64::from(MIB))
+    }
+
+    fn publish_payload_block(
+        &self, block_idx: u64, file_offset_mb: u64, state: PayloadBlockState,
+    ) -> Result<()> {
+        let mut raw_entry = [0u8; 8];
+        let bits = raw_entry.view_bits_mut::<Lsb0>();
+        bits[0..3].store::<u8>(state as u8);
+        bits[20..64].store::<u64>(file_offset_mb);
+
+        let bat_array_idx = block_idx + block_idx / self.chunk_ratio;
+        self.file.write_bat_entry(bat_array_idx, raw_entry)
+    }
+
+    fn ensure_sector_bitmap_present(&self, block_idx: u64) -> Result<u64> {
+        let sb_bat_idx = self.sector_bitmap_bat_index(block_idx);
+        let bat_buf = self.file.bat_buf()?;
+        let bat = Bat::new(&bat_buf, self.chunk_ratio);
+        let sb_entry = bat.entry(sb_bat_idx)?;
+
+        match sb_entry.sector_bitmap_state() {
+            Some(SectorBitmapState::Present) => Ok(sb_entry.file_offset_mb()),
+            Some(SectorBitmapState::NotPresent) => {
+                let file_offset_mb = self.reserve_sector_bitmap_block()?;
+                let zero_bitmap = vec![0u8; MIB as usize];
+                Self::write_all_at(
+                    self.file.inner(),
+                    &zero_bitmap,
+                    file_offset_mb * u64::from(MIB),
+                )?;
+                self.file.inner().sync_data()?;
+                self.publish_sector_bitmap_block(sb_bat_idx, file_offset_mb)?;
+                Ok(file_offset_mb)
+            }
+            None => Err(Error::InvalidSectorBitmapState(sb_entry.raw_state())),
+        }
+    }
+
+    fn publish_sector_bitmap_block(&self, bat_array_idx: u64, file_offset_mb: u64) -> Result<()> {
+        let mut raw_entry = [0u8; 8];
+        let bits = raw_entry.view_bits_mut::<Lsb0>();
+        bits[0..3].store::<u8>(SectorBitmapState::Present as u8);
+        bits[20..64].store::<u64>(file_offset_mb);
+
+        self.file.write_bat_entry(bat_array_idx, raw_entry)
+    }
+
+    fn mark_child_sectors_present(
+        &self, block_idx: u64, sector_in_block: u64, sector_count: u64,
+    ) -> Result<()> {
+        let sb_bat_idx = self.sector_bitmap_bat_index(block_idx);
+        let bat_buf = self.file.bat_buf()?;
+        let bat = Bat::new(&bat_buf, self.chunk_ratio);
+        let sb_entry = bat.entry(sb_bat_idx)?;
+        let sb_state = sb_entry
+            .sector_bitmap_state()
+            .ok_or(Error::InvalidSectorBitmapState(sb_entry.raw_state()))?;
+        if sb_state != SectorBitmapState::Present {
+            return Err(Error::StateMismatch {
+                state: sb_entry.raw_state(),
+                description: "sector bitmap not Present for differencing write".into(),
+            });
+        }
+
+        let bitmap_offset = sb_entry.file_offset_mb() * u64::from(MIB);
+        let mut bitmap = vec![0u8; MIB as usize];
+        read_at(self.file.inner(), &mut bitmap, bitmap_offset)?;
+
+        let spb = self.sectors_per_block();
+        let block_in_chunk = block_idx % self.chunk_ratio;
+        let bits = bitmap.view_bits_mut::<Lsb0>();
+        for i in 0..sector_count {
+            let sector_in_chunk = block_in_chunk * spb + sector_in_block + i;
+            let bit_idx = usize::try_from(sector_in_chunk).expect("bitmap bit index fits usize");
+            if bit_idx >= bits.len() {
+                return Err(Error::InvalidMetadata(format!(
+                    "sector bitmap index out of range: bit {bit_idx}"
+                )));
+            }
+            bits.set(bit_idx, true);
+        }
+
+        Self::write_all_at(self.file.inner(), &bitmap, bitmap_offset)?;
+        Ok(())
+    }
+
+    fn require_sector_bitmap_present(&self, block_idx: u64) -> Result<()> {
+        let sb_bat_idx = self.sector_bitmap_bat_index(block_idx);
+        let bat_buf = self.file.bat_buf()?;
+        let bat = Bat::new(&bat_buf, self.chunk_ratio);
+        let sb_entry = bat.entry(sb_bat_idx)?;
+        let sb_state = sb_entry
+            .sector_bitmap_state()
+            .ok_or(Error::InvalidSectorBitmapState(sb_entry.raw_state()))?;
+        if sb_state == SectorBitmapState::Present {
+            Ok(())
+        } else {
+            Err(Error::StateMismatch {
+                state: sb_entry.raw_state(),
+                description: "sector bitmap not Present for PartiallyPresent payload".into(),
+            })
+        }
+    }
+
+    fn sector_bitmap_bat_index(&self, block_idx: u64) -> u64 {
+        let stride = self.chunk_ratio + 1;
+        let chunk_idx = block_idx / self.chunk_ratio;
+        chunk_idx * stride + self.chunk_ratio
+    }
+
+    fn write_all_at(file: &std::fs::File, mut buf: &[u8], mut offset: u64) -> Result<()> {
+        while !buf.is_empty() {
+            let written = write_at(file, buf, offset)?;
+            if written == 0 {
+                return Err(Error::Io(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "failed to write complete buffer",
+                )));
+            }
+            offset += u64::try_from(written).expect("written byte count fits u64");
+            buf = &buf[written..];
+        }
+        Ok(())
+    }
+
+    fn read_parent_range(
+        &self, block_idx: u64, start_sector_in_block: u64, sector_count: u64, buf: &mut [u8],
+    ) -> Result<()> {
+        let lss = self.logical_sector_size as usize;
+        let spb = self.sectors_per_block();
+        for i in 0..sector_count {
+            let offset = usize::try_from(i).expect("sector offset fits usize") * lss;
+            self.read_from_parent_sector(
+                block_idx * spb + start_sector_in_block + i,
+                &mut buf[offset..offset + lss],
+            )?;
+        }
+        Ok(())
+    }
+
     /// Resolve the BAT entry for this sector's block.
     #[cfg(test)]
-    pub(super) fn resolve_bat_entry(&self) -> Result<crate::bat::BatEntry<'_>> {
+    pub(super) fn resolve_bat_entry(&self) -> Result<ResolvedBatEntry> {
         let block_idx = self.start / self.sectors_per_block();
         self.resolve_bat_entry_for_block(block_idx)
     }
 
     /// Resolve the BAT entry for a specific block index.
-    fn resolve_bat_entry_for_block(&self, block_idx: u64) -> Result<crate::bat::BatEntry<'_>> {
+    fn resolve_bat_entry_for_block(&self, block_idx: u64) -> Result<ResolvedBatEntry> {
         let bat_buf = self.file.bat_buf()?;
-        let bat = Bat::new(bat_buf, self.chunk_ratio);
+        let bat = Bat::new(&bat_buf, self.chunk_ratio);
         let bat_array_idx = block_idx + block_idx / self.chunk_ratio;
-        bat.entry(bat_array_idx)
+        let entry = bat.entry(bat_array_idx)?;
+        Ok(ResolvedBatEntry {
+            state: entry.state()?,
+            file_offset_mb: entry.file_offset_mb(),
+        })
     }
 
     /// Read a contiguous range of sectors from a payload block in the file.
@@ -505,11 +742,10 @@ impl Sector<'_> {
     /// `buf` determines the amount of data to read (its length sets the read size),
     /// and `_sector_count` is currently unused.
     fn read_block_range_from_file(
-        &self, entry: &crate::bat::BatEntry<'_>, sector_in_block: u64, _sector_count: u64,
-        buf: &mut [u8],
+        &self, file_offset_mb: u64, sector_in_block: u64, _sector_count: u64, buf: &mut [u8],
     ) -> Result<()> {
         let lss = self.logical_sector_size as usize;
-        let file_offset = entry.file_offset_mb() * u64::from(MIB) + sector_in_block * lss as u64;
+        let file_offset = file_offset_mb * u64::from(MIB) + sector_in_block * lss as u64;
 
         // Consult replay overlay first (per-block-span)
         if let Some(ref overlay) = self.io.overlay {
@@ -546,7 +782,7 @@ impl Sector<'_> {
     /// Panics if arithmetic overflow occurs during sector/offset conversion.
     /// This should not happen with well-formed VHDX files.
     fn read_partially_present_range(
-        &self, entry: &crate::bat::BatEntry<'_>, block_idx: u64, start_sector_in_block: u64,
+        &self, entry: ResolvedBatEntry, block_idx: u64, start_sector_in_block: u64,
         sector_count: u64, buf: &mut [u8],
     ) -> Result<()> {
         let lss = self.logical_sector_size as usize;
@@ -557,7 +793,7 @@ impl Sector<'_> {
         let sb_bat_idx = chunk_idx * stride + self.chunk_ratio;
 
         let bat_buf = self.file.bat_buf()?;
-        let bat = Bat::new(bat_buf, self.chunk_ratio);
+        let bat = Bat::new(&bat_buf, self.chunk_ratio);
         let sb_entry = bat.entry(sb_bat_idx)?;
 
         let sb_state = sb_entry
@@ -595,7 +831,12 @@ impl Sector<'_> {
             let offset = usize::try_from(i).expect("sector offset fits usize") * lss;
 
             if in_child {
-                self.read_block_range_from_file(entry, sib, 1, &mut buf[offset..offset + lss])?;
+                self.read_block_range_from_file(
+                    entry.file_offset_mb(),
+                    sib,
+                    1,
+                    &mut buf[offset..offset + lss],
+                )?;
             } else {
                 self.read_from_parent_sector(
                     block_idx * spb + start_sector_in_block + i,
@@ -639,7 +880,7 @@ impl Sector<'_> {
             .expect("parent sector offset fits u32");
 
         let p_bat_buf = parent.bat_buf()?;
-        let p_bat = Bat::new(p_bat_buf, p_chunk_ratio);
+        let p_bat = Bat::new(&p_bat_buf, p_chunk_ratio);
         let p_bat_array_idx = p_block_idx + p_block_idx / p_chunk_ratio;
 
         let result: Result<()> = (|| {

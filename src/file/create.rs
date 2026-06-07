@@ -262,7 +262,7 @@ impl CreateOptions {
             inner,
             path: self.path,
             header_buf,
-            bat_buf: OnceLock::new(),
+            bat_buf: std::sync::RwLock::new(None),
             metadata_buf: OnceLock::new(),
             log_buf: OnceLock::new(),
             write: true,

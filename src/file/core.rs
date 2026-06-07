@@ -1,14 +1,15 @@
 //! Core file types: [`File`], [`OpenOptions`], [`CreateOptions`], and opening policies.
 
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::constants::{
     BAT_REGION_GUID, KNOWN_METADATA_GUIDS, KNOWN_REGION_GUIDS, METADATA_REGION_GUID, MIB,
 };
 use crate::error::{Error, Result};
 use crate::header::Header;
+use crate::io::platform::write_at;
 use crate::log_replay::ReplayOverlay;
 use crate::section::Sections;
 use crate::types::Guid;
@@ -46,7 +47,7 @@ pub struct File {
     /// First 1 MB of the file, buffered for header section parsing.
     pub(super) header_buf: Vec<u8>,
     /// Cached BAT region data (lazy-loaded by [`File::bat_buf`]).
-    pub(super) bat_buf: OnceLock<Vec<u8>>,
+    pub(super) bat_buf: RwLock<Option<Vec<u8>>>,
     /// Cached metadata region data (lazy-loaded by [`File::metadata_buf`]).
     pub(super) metadata_buf: OnceLock<Vec<u8>>,
     /// Cached log region data (lazy-loaded by [`File::log_buf`]).
@@ -192,19 +193,78 @@ impl File {
     /// Thread-safe: under concurrent access, both threads may load from disk
     /// but only one result is cached; the other is silently discarded. The
     /// returned buffer is always valid regardless of which thread wins.
-    pub(crate) fn bat_buf(&self) -> Result<&[u8]> {
-        // Fast path: already cached
-        if let Some(buf) = self.bat_buf.get() {
-            return Ok(&buf[..]);
+    pub(crate) fn bat_buf(&self) -> Result<Vec<u8>> {
+        if let Some(buf) = self
+            .bat_buf
+            .read()
+            .map_err(|_| Error::InvalidFile("BAT cache lock poisoned".into()))?
+            .as_ref()
+        {
+            return Ok(buf.clone());
         }
 
         let data = self.read_region_with_overlay(BAT_REGION_GUID, Self::read_bat_region)?;
 
-        // Thread-safe set: if another thread already set it, silently drop ours
-        let _ = self.bat_buf.set(data);
+        *self
+            .bat_buf
+            .write()
+            .map_err(|_| Error::InvalidFile("BAT cache lock poisoned".into()))? =
+            Some(data.clone());
 
-        // Return cached value (either from us or from the racing thread)
-        Ok(self.bat_buf.get().unwrap().as_slice())
+        Ok(data)
+    }
+
+    pub(crate) fn write_bat_entry(&self, bat_array_idx: u64, raw_entry: [u8; 8]) -> Result<()> {
+        let header = Header::new(&self.header_buf)?;
+        let rt = header.region_table(0)?;
+        let bat_region = rt
+            .entries()
+            .find(|entry| entry.guid() == BAT_REGION_GUID)
+            .ok_or_else(|| Error::InvalidFile("BAT region not found in region table".into()))?;
+        let entry_offset = bat_array_idx
+            .checked_mul(8)
+            .and_then(|offset| bat_region.file_offset().checked_add(offset))
+            .ok_or_else(|| Error::InvalidParameter("BAT entry offset overflow".into()))?;
+
+        Self::write_all_at(&self.inner, &raw_entry, entry_offset)?;
+
+        if let Some(buf) = self
+            .bat_buf
+            .write()
+            .map_err(|_| Error::InvalidFile("BAT cache lock poisoned".into()))?
+            .as_mut()
+        {
+            let cache_offset = usize::try_from(bat_array_idx)
+                .map_err(|_| Error::InvalidParameter("BAT index does not fit usize".into()))?
+                .checked_mul(8)
+                .ok_or_else(|| Error::InvalidParameter("BAT cache offset overflow".into()))?;
+            let cache_end = cache_offset
+                .checked_add(8)
+                .ok_or_else(|| Error::InvalidParameter("BAT cache end overflow".into()))?;
+            if cache_end > buf.len() {
+                return Err(Error::InvalidParameter(
+                    "BAT entry index exceeds cached BAT region".into(),
+                ));
+            }
+            buf[cache_offset..cache_end].copy_from_slice(&raw_entry);
+        }
+
+        Ok(())
+    }
+
+    fn write_all_at(file: &std::fs::File, mut buf: &[u8], mut offset: u64) -> Result<()> {
+        while !buf.is_empty() {
+            let written = write_at(file, buf, offset)?;
+            if written == 0 {
+                return Err(Error::Io(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "failed to write complete buffer",
+                )));
+            }
+            offset += u64::try_from(written).expect("written byte count fits u64");
+            buf = &buf[written..];
+        }
+        Ok(())
     }
 
     /// Lazy-load the Metadata region data from disk.
@@ -347,7 +407,7 @@ impl File {
             let length = usize::try_from(entry.length()).unwrap();
 
             let region_data: &[u8] = if guid == BAT_REGION_GUID {
-                self.bat_buf().unwrap_or(&[])
+                &self.bat_buf().unwrap_or_default()
             } else if guid == METADATA_REGION_GUID {
                 self.metadata_buf().unwrap_or(&[])
             } else {

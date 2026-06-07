@@ -62,7 +62,7 @@ impl<'a> Sections<'a> {
     pub fn bat(&self) -> Result<Bat<'a>> {
         let bat_buf = self.file.bat_buf()?;
         let chunk_ratio = Self::compute_chunk_ratio(self.file)?;
-        Ok(Bat::new(bat_buf, chunk_ratio))
+        Ok(Bat::owned(bat_buf, chunk_ratio))
     }
 
     /// Parse and return the Metadata section view.

@@ -230,8 +230,341 @@ fn create_differencing_disk_and_verify_parent() {
 }
 
 // ---------------------------------------------------------------------------
-// 14. Write path integration: write to fixed disk and read back
+// 14. Write path integration: write to dynamic/fixed disks and read back
 // ---------------------------------------------------------------------------
+
+#[test]
+fn write_to_new_dynamic_disk_allocates_payload_block() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("dynamic-writable.vhdx");
+
+    let f = File::create(&path)
+        .size(4 * 1024 * 1024)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("create dynamic vhdx");
+    drop(f);
+
+    let f = File::open(&path).write().finish().expect("open writable");
+    let io = f.io().expect("IO context");
+
+    let pattern = vec![0xCDu8; 4096];
+    let mut writer = io.sector(0, 1).expect("sector 0 for write");
+    writer
+        .write_all(&pattern)
+        .expect("write to unallocated dynamic block should allocate payload");
+
+    let mut reader = io.sector(0, 1).expect("sector 0 for read");
+    let mut buf = vec![0u8; 4096];
+    reader.read_exact(&mut buf).expect("read sector 0");
+    assert_eq!(buf, pattern, "read back data must match written pattern");
+    drop(reader);
+    drop(io);
+    drop(f);
+
+    let reopened = File::open(&path).finish().expect("reopen after write");
+    let reopened_io = reopened.io().expect("reopened IO context");
+    let mut reopened_reader = reopened_io.sector(0, 1).expect("reopened sector 0");
+    let mut reopened_buf = vec![0u8; 4096];
+    reopened_reader
+        .read_exact(&mut reopened_buf)
+        .expect("read sector 0 after reopen");
+    assert_eq!(
+        reopened_buf, pattern,
+        "reopened file must retain allocated dynamic block data"
+    );
+}
+
+#[test]
+fn partial_write_to_new_dynamic_disk_preserves_zero_fill() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("dynamic-partial-writable.vhdx");
+
+    let f = File::create(&path)
+        .size(4 * 1024 * 1024)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("create dynamic vhdx");
+    drop(f);
+
+    let f = File::open(&path).write().finish().expect("open writable");
+    let io = f.io().expect("IO context");
+
+    let mut writer = io.sector(0, 1).expect("sector 0 for write");
+    writer.seek(SeekFrom::Start(512)).expect("seek into sector");
+    writer
+        .write_all(&[0x5Au8; 16])
+        .expect("partial write should allocate payload");
+
+    let mut reader = io.sector(0, 1).expect("sector 0 for read");
+    let mut buf = vec![0xFFu8; 4096];
+    reader.read_exact(&mut buf).expect("read sector 0");
+
+    assert!(buf[..512].iter().all(|&byte| byte == 0));
+    assert_eq!(&buf[512..528], &[0x5Au8; 16]);
+    assert!(buf[528..].iter().all(|&byte| byte == 0));
+}
+
+#[test]
+fn write_to_partially_present_differencing_block_without_bitmap_is_rejected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let parent_path = dir.path().join("parent.vhdx");
+    let child_path = dir.path().join("child.vhdx");
+
+    let parent = File::create(&parent_path)
+        .size(4 * 1024 * 1024)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("create parent");
+    drop(parent);
+
+    let child = File::create(&child_path)
+        .size(4 * 1024 * 1024)
+        .block_size(1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("create child");
+    drop(child);
+
+    let mut raw = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&child_path)
+        .expect("open child for BAT patch");
+    raw.seek(SeekFrom::Start(2 * 1024 * 1024))
+        .expect("seek to first BAT entry");
+    let partially_present_entry = (4u64 << 20) | 7;
+    raw.write_all(&partially_present_entry.to_le_bytes())
+        .expect("patch payload BAT entry");
+    drop(raw);
+
+    let child = File::open(&child_path)
+        .write()
+        .finish()
+        .expect("open writable child");
+    let io = child.io().expect("child IO context");
+    let mut writer = io.sector(0, 1).expect("sector 0 for write");
+
+    let err = writer
+        .write_all(&[0xA5u8; 4096])
+        .expect_err("PartiallyPresent differencing write requires bitmap support");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+}
+
+#[test]
+fn write_to_new_differencing_disk_allocates_child_payload_and_bitmap() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let parent_path = dir.path().join("parent.vhdx");
+    let child_path = dir.path().join("child.vhdx");
+
+    let parent = File::create(&parent_path)
+        .size(4 * 1024 * 1024)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("create parent");
+    drop(parent);
+
+    let parent = File::open(&parent_path)
+        .write()
+        .finish()
+        .expect("open writable parent");
+    let parent_io = parent.io().expect("parent IO context");
+    let parent_pattern = vec![0x11u8; 4096];
+    parent_io
+        .sector(0, 1)
+        .expect("parent sector 0")
+        .write_all(&parent_pattern)
+        .expect("write parent sector 0");
+    drop(parent_io);
+    drop(parent);
+
+    let child = File::create(&child_path)
+        .size(4 * 1024 * 1024)
+        .block_size(1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("create child");
+    drop(child);
+
+    let child = File::open(&child_path)
+        .write()
+        .finish()
+        .expect("open writable child");
+    let child_io = child.io().expect("child IO context");
+    let child_pattern = vec![0x22u8; 4096];
+    child_io
+        .sector(0, 1)
+        .expect("child sector 0")
+        .write_all(&child_pattern)
+        .expect("write to sparse differencing block should allocate child payload and bitmap");
+
+    let mut same_handle_buf = vec![0u8; 4096];
+    child_io
+        .sector(0, 1)
+        .expect("child sector 0 read")
+        .read_exact(&mut same_handle_buf)
+        .expect("read child sector 0 same handle");
+    assert_eq!(same_handle_buf, child_pattern);
+    drop(child_io);
+    drop(child);
+
+    let reopened = File::open(&child_path).finish().expect("reopen child");
+    let reopened_io = reopened.io().expect("reopened child IO");
+    let mut reopened_buf = vec![0u8; 4096];
+    reopened_io
+        .sector(0, 1)
+        .expect("reopened child sector 0")
+        .read_exact(&mut reopened_buf)
+        .expect("read child sector 0 after reopen");
+    assert_eq!(reopened_buf, child_pattern);
+
+    let bat = reopened.sections().bat().expect("reopened child BAT");
+    assert_eq!(
+        bat.entry(0).expect("payload BAT entry").state().unwrap(),
+        BatState::Payload(PayloadBlockState::PartiallyPresent)
+    );
+    assert_eq!(
+        bat.entry(32_768)
+            .expect("sector bitmap BAT entry")
+            .state()
+            .unwrap(),
+        BatState::SectorBitmap(SectorBitmapState::Present)
+    );
+}
+
+#[test]
+fn partial_write_to_new_differencing_disk_preserves_parent_bytes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let parent_path = dir.path().join("parent.vhdx");
+    let child_path = dir.path().join("child.vhdx");
+
+    let parent = File::create(&parent_path)
+        .size(4 * 1024 * 1024)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("create parent");
+    drop(parent);
+
+    let parent = File::open(&parent_path)
+        .write()
+        .finish()
+        .expect("open writable parent");
+    let parent_io = parent.io().expect("parent IO context");
+    let parent_pattern = vec![0x33u8; 4096];
+    parent_io
+        .sector(0, 1)
+        .expect("parent sector 0")
+        .write_all(&parent_pattern)
+        .expect("write parent sector 0");
+    drop(parent_io);
+    drop(parent);
+
+    let child = File::create(&child_path)
+        .size(4 * 1024 * 1024)
+        .block_size(1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("create child");
+    drop(child);
+
+    let child = File::open(&child_path)
+        .write()
+        .finish()
+        .expect("open writable child");
+    let child_io = child.io().expect("child IO context");
+    let mut writer = child_io.sector(0, 1).expect("child sector 0");
+    writer.seek(SeekFrom::Start(512)).expect("seek into sector");
+    writer
+        .write_all(&[0x44u8; 16])
+        .expect("partial sparse child write should preserve parent bytes");
+    drop(writer);
+    drop(child_io);
+    drop(child);
+
+    let reopened = File::open(&child_path).finish().expect("reopen child");
+    let reopened_io = reopened.io().expect("reopened child IO");
+    let mut reader = reopened_io.sector(0, 1).expect("reopened child sector 0");
+    let mut buf = vec![0u8; 4096];
+    reader
+        .read_exact(&mut buf)
+        .expect("read partial child sector after reopen");
+
+    assert_eq!(&buf[..512], &parent_pattern[..512]);
+    assert_eq!(&buf[512..528], &[0x44u8; 16]);
+    assert_eq!(&buf[528..], &parent_pattern[528..]);
+}
+
+#[test]
+fn partial_write_to_zero_differencing_block_preserves_zero_bytes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let parent_path = dir.path().join("parent.vhdx");
+    let child_path = dir.path().join("child.vhdx");
+
+    let parent = File::create(&parent_path)
+        .size(4 * 1024 * 1024)
+        .block_size(1024 * 1024)
+        .finish()
+        .expect("create parent");
+    drop(parent);
+
+    let parent = File::open(&parent_path)
+        .write()
+        .finish()
+        .expect("open writable parent");
+    let parent_io = parent.io().expect("parent IO context");
+    parent_io
+        .sector(0, 2)
+        .expect("parent sectors 0-1")
+        .write_all(&[0x77u8; 8192])
+        .expect("write parent sectors 0-1");
+    drop(parent_io);
+    drop(parent);
+
+    let child = File::create(&child_path)
+        .size(4 * 1024 * 1024)
+        .block_size(1024 * 1024)
+        .parent_path(&parent_path)
+        .finish()
+        .expect("create child");
+    drop(child);
+
+    let mut raw = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&child_path)
+        .expect("open child for BAT patch");
+    raw.seek(SeekFrom::Start(2 * 1024 * 1024))
+        .expect("seek to first BAT entry");
+    raw.write_all(&(PayloadBlockState::Zero as u64).to_le_bytes())
+        .expect("patch payload BAT entry to Zero");
+    drop(raw);
+
+    let child = File::open(&child_path)
+        .write()
+        .finish()
+        .expect("open writable child");
+    let child_io = child.io().expect("child IO context");
+    let mut writer = child_io.sector(0, 1).expect("child sector 0");
+    writer.seek(SeekFrom::Start(512)).expect("seek into sector");
+    writer
+        .write_all(&[0x88u8; 16])
+        .expect("partial sparse child write should preserve zero bytes");
+    drop(writer);
+    drop(child_io);
+    drop(child);
+
+    let reopened = File::open(&child_path).finish().expect("reopen child");
+    let reopened_io = reopened.io().expect("reopened child IO");
+    let mut buf = vec![0xFFu8; 8192];
+    reopened_io
+        .sector(0, 2)
+        .expect("reopened child sectors 0-1")
+        .read_exact(&mut buf)
+        .expect("read zero child sectors after reopen");
+
+    assert!(buf[..512].iter().all(|&byte| byte == 0));
+    assert_eq!(&buf[512..528], &[0x88u8; 16]);
+    assert!(buf[528..4096].iter().all(|&byte| byte == 0));
+    assert!(buf[4096..].iter().all(|&byte| byte == 0));
+}
 
 #[test]
 fn write_and_read_back_fixed_disk() {

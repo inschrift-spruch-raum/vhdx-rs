@@ -258,11 +258,9 @@ fn byte_offset_write_to_read_only_returns_error() {
     );
 }
 
-// T4.9: byte_offset_write_to_not_present_block_returns_error
+// T4.9: byte_offset_write_to_not_present_block_allocates
 #[test]
-fn byte_offset_write_to_not_present_block_returns_error() {
-    // create_test_io() is read-only; create a writable dynamic VHDX so the
-    // write reaches the block-state check (blocks are NotPresent by default).
+fn byte_offset_write_to_not_present_block_allocates() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("test-dynamic-rw.vhdx");
 
@@ -285,10 +283,12 @@ fn byte_offset_write_to_not_present_block_returns_error() {
     let io = ctx.io();
     let mut sector = io.sector(0, 1).expect("sector 0");
 
-    let err = sector.write(&[0x42u8; 10]).unwrap_err();
-    assert_eq!(
-        err.kind(),
-        ErrorKind::NotFound,
-        "write to NotPresent block should be NotFound"
-    );
+    let written = sector.write(&[0x42u8; 10]).expect("write allocates block");
+    assert_eq!(written, 10, "partial write should report bytes written");
+
+    sector.seek(SeekFrom::Start(0)).expect("seek to start");
+    let mut buf = vec![0xFFu8; SECTOR_SIZE.into()];
+    sector.read_exact(&mut buf).expect("read allocated sector");
+    assert_eq!(&buf[..10], &[0x42u8; 10]);
+    assert!(buf[10..].iter().all(|&byte| byte == 0));
 }

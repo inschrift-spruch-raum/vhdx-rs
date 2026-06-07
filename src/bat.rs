@@ -5,6 +5,7 @@
 //! chunk ratio: every `chunk_ratio` payload entries is followed by 1 sector bitmap entry.
 
 use bitvec::prelude::*;
+use std::borrow::Cow;
 
 use crate::error::{Error, Result};
 
@@ -148,10 +149,10 @@ impl BatEntry<'_> {
 ///
 /// The BAT entries are interleaved: every `chunk_ratio` payload block entries
 /// is followed by one sector bitmap block entry.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Bat<'a> {
     /// Raw BAT region bytes.
-    data: &'a [u8],
+    data: Cow<'a, [u8]>,
     /// Chunk ratio = (2²³ × `LogicalSectorSize`) / `BlockSize`.
     chunk_ratio: u64,
 }
@@ -162,7 +163,17 @@ impl<'a> Bat<'a> {
     /// `chunk_ratio` determines how payload and sector bitmap entries are interleaved.
     /// It is calculated as `(2^23 * LogicalSectorSize) / BlockSize`.
     pub(crate) fn new(data: &'a [u8], chunk_ratio: u64) -> Self {
-        Self { data, chunk_ratio }
+        Self {
+            data: Cow::Borrowed(data),
+            chunk_ratio,
+        }
+    }
+
+    pub(crate) fn owned(data: Vec<u8>, chunk_ratio: u64) -> Self {
+        Self {
+            data: Cow::Owned(data),
+            chunk_ratio,
+        }
     }
 
     /// Total number of 64-bit entries in the BAT buffer.
@@ -202,13 +213,13 @@ impl<'a> Bat<'a> {
     ///
     /// Panics if internal bounds validation is violated before converting the
     /// 8-byte slice into an array.
-    pub fn entry(&self, index: u64) -> Result<BatEntry<'a>> {
+    pub fn entry(&self, index: u64) -> Result<BatEntry<'_>> {
         let idx = usize::try_from(index).map_err(|_| Error::BatEntryNotFound { index })?;
         let offset = idx * 8;
         if offset.saturating_add(8) > self.data.len() {
             return Err(Error::BatEntryNotFound { index });
         }
-        let bytes: &'a [u8; 8] = self.data[offset..offset + 8]
+        let bytes: &[u8; 8] = self.data[offset..offset + 8]
             .try_into()
             .expect("length already validated");
         Ok(BatEntry {
@@ -218,9 +229,9 @@ impl<'a> Bat<'a> {
     }
 
     /// Unchecked entry access (used by the iterator).
-    fn entry_unchecked(&self, index: usize) -> BatEntry<'a> {
+    fn entry_unchecked(&self, index: usize) -> BatEntry<'_> {
         let offset = index * 8;
-        let bytes: &'a [u8; 8] = self.data[offset..offset + 8]
+        let bytes: &[u8; 8] = self.data[offset..offset + 8]
             .try_into()
             .expect("iterator index is within bounds");
         BatEntry {
@@ -233,7 +244,7 @@ impl<'a> Bat<'a> {
     ///
     /// The returned iterator borrows this BAT and yields exactly as many items
     /// as there are 64-bit entries in the buffer.
-    pub fn entries(&self) -> impl Iterator<Item = BatEntry<'a>> + '_ {
+    pub fn entries(&self) -> impl Iterator<Item = BatEntry<'_>> + '_ {
         (0..self.len()).map(move |i| self.entry_unchecked(i))
     }
 }
