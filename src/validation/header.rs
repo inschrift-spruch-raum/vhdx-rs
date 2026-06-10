@@ -3,7 +3,7 @@ use super::{
     ValidationIssue,
 };
 
-impl SpecValidator<'_> {
+impl SpecValidator {
     /// Validate the header section.
     ///
     /// Checks:

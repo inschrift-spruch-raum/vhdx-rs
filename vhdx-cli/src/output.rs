@@ -1,10 +1,13 @@
 use std::fmt::Write;
 use std::path::Path;
-use vhdx::section::HeaderStructure;
+use vhdx::Guid;
 
 pub(crate) struct InfoOutput<'a> {
     pub(crate) creator: &'a str,
-    pub(crate) hdr: &'a HeaderStructure<'a>,
+    pub(crate) sequence_number: u64,
+    pub(crate) file_write_guid: Guid,
+    pub(crate) data_write_guid: Guid,
+    pub(crate) version: u16,
     pub(crate) block_size: u32,
     pub(crate) logical_sector: u32,
     pub(crate) physical_sector: u32,
@@ -17,10 +20,10 @@ pub(crate) fn print_text(path: &Path, info: &InfoOutput<'_>) {
     println!("Signature: vhdxfile");
     println!("Creator: {}", info.creator);
     println!("Header:");
-    println!("  Sequence Number: {}", info.hdr.sequence_number());
-    println!("  File Write GUID: {}", info.hdr.file_write_guid());
-    println!("  Data Write GUID: {}", info.hdr.data_write_guid());
-    println!("  Version: {}", info.hdr.version());
+    println!("  Sequence Number: {}", info.sequence_number);
+    println!("  File Write GUID: {}", info.file_write_guid);
+    println!("  Data Write GUID: {}", info.data_write_guid);
+    println!("  Version: {}", info.version);
     println!("Metadata:");
     if info.block_size > 0 {
         println!("  Block Size: {} bytes", info.block_size);
@@ -43,16 +46,10 @@ pub(crate) fn print_json(path: &Path, info: &InfoOutput<'_>) {
     println!("  \"signature\": \"vhdxfile\",");
     println!("  \"creator\": {},", json_escape(info.creator));
     println!("  \"header\": {{");
-    println!("    \"sequence_number\": {},", info.hdr.sequence_number());
-    println!(
-        "    \"file_write_guid\": \"{}\",",
-        info.hdr.file_write_guid()
-    );
-    println!(
-        "    \"data_write_guid\": \"{}\",",
-        info.hdr.data_write_guid()
-    );
-    println!("    \"version\": {}", info.hdr.version());
+    println!("    \"sequence_number\": {},", info.sequence_number);
+    println!("    \"file_write_guid\": \"{}\",", info.file_write_guid);
+    println!("    \"data_write_guid\": \"{}\",", info.data_write_guid);
+    println!("    \"version\": {}", info.version);
     println!("  }},");
     println!("  \"metadata\": {{");
     if info.block_size > 0 {

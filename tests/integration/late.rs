@@ -1,7 +1,7 @@
 use super::*;
 
 // ---------------------------------------------------------------------------
-// 9. Overlay-aware structure reads: InMemoryOnReadOnly on file with pending log
+// 9. Overlay-aware structure reads: InMemoryOnReadOnly on Medium with pending log
 // ---------------------------------------------------------------------------
 
 /// Verify that `InMemoryOnReadOnly` opens `test-fs.vhdx` (which has a pending
@@ -10,12 +10,12 @@ use super::*;
 #[test]
 fn overlay_inmemory_read_sections_test_fs() {
     let (_dir, path) = ref_to_tmp("test-fs.vhdx");
-    let f = File::open(&path)
+    let f = Medium::open(std::fs::File::open(&path).expect("open VHDX medium"))
         .log_replay(LogReplayPolicy::InMemoryOnReadOnly)
         .finish()
         .expect("open test-fs.vhdx with InMemoryOnReadOnly");
 
-    let sections = f.sections();
+    let sections = f.sections().expect("sections");
 
     // Header section must be readable with overlay patches applied
     let header = sections.header().expect("header section via overlay");
@@ -57,7 +57,7 @@ fn overlay_inmemory_read_sections_test_fs() {
 #[test]
 fn overlay_require_rejects_pending_log() {
     let (_dir, path) = ref_to_tmp("test-fs.vhdx");
-    let result = File::open(&path)
+    let result = Medium::open(std::fs::File::open(&path).expect("open VHDX medium"))
         .log_replay(LogReplayPolicy::Require)
         .finish();
 
@@ -66,7 +66,7 @@ fn overlay_require_rejects_pending_log() {
             // Expected: Require mode rejects files with pending logs
         }
         other => panic!(
-            "Require mode should return LogReplayRequired for file with pending log, got: {other:?}"
+            "Require mode should return LogReplayRequired for Medium with pending log, got: {other:?}"
         ),
     }
 }
@@ -77,14 +77,14 @@ fn overlay_require_rejects_pending_log() {
 
 /// Verify that `InMemoryOnReadOnly` works normally on a freshly-created dynamic
 /// VHDX that has no pending log. No overlay is needed, but the policy should
-/// still allow the file to be opened and all sections read.
+/// still allow the Medium to be opened and all sections read.
 #[test]
 fn overlay_inmemory_clean_vhdx_no_pending_log() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("clean.vhdx");
 
     // Create a dynamic VHDX, then close the handle
-    let f = File::create(&path)
+    let f = create_medium(&path)
         .size(64 * 1024 * 1024)
         .block_size(8 * 1024 * 1024)
         .finish()
@@ -94,13 +94,13 @@ fn overlay_inmemory_clean_vhdx_no_pending_log() {
     // Keep tempdir alive
     let _dir = dir;
 
-    // Reopen with InMemoryOnReadOnly — no log, so no overlay is built
-    let f = File::open(&path)
+    // Reopen with InMemoryOnReadOnly —no log, so no overlay is built
+    let f = Medium::open(std::fs::File::open(&path).expect("open VHDX medium"))
         .log_replay(LogReplayPolicy::InMemoryOnReadOnly)
         .finish()
         .expect("reopen clean vhdx with InMemoryOnReadOnly");
 
-    let sections = f.sections();
+    let sections = f.sections().expect("sections");
 
     let header = sections.header().expect("header on clean vhdx");
     assert_eq!(
@@ -123,7 +123,7 @@ fn overlay_inmemory_clean_vhdx_no_pending_log() {
 }
 
 // ---------------------------------------------------------------------------
-// 12. ReadOnlyNoReplay allows structure reads on file with pending log
+// 12. ReadOnlyNoReplay allows structure reads on Medium with pending log
 // ---------------------------------------------------------------------------
 
 /// Verify that `ReadOnlyNoReplay` on `test-fs.vhdx` (which has a pending log)
@@ -133,12 +133,12 @@ fn overlay_inmemory_clean_vhdx_no_pending_log() {
 #[test]
 fn overlay_readonly_noreplay_structure_reads() {
     let (_dir, path) = ref_to_tmp("test-fs.vhdx");
-    let f = File::open(&path)
+    let f = Medium::open(std::fs::File::open(&path).expect("open VHDX medium"))
         .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
         .finish()
         .expect("open test-fs.vhdx with ReadOnlyNoReplay");
 
-    let sections = f.sections();
+    let sections = f.sections().expect("sections");
 
     // Header must be accessible
     let header = sections.header().expect("header with ReadOnlyNoReplay");
@@ -181,7 +181,7 @@ fn create_differencing_disk_and_verify_parent() {
     let child_path = dir.path().join("child.vhdx");
 
     // Create parent disk
-    let parent = File::create(&parent_path)
+    let parent = create_medium(&parent_path)
         .size(64 * 1024 * 1024)
         .block_size(8 * 1024 * 1024)
         .finish()
@@ -189,38 +189,51 @@ fn create_differencing_disk_and_verify_parent() {
     drop(parent);
 
     // Create child differencing disk
-    let child = File::create(&child_path)
+    let child = create_differencing_medium(&child_path, &parent_path)
         .size(64 * 1024 * 1024)
         .block_size(8 * 1024 * 1024)
-        .parent_path(&parent_path)
         .finish()
         .expect("create differencing vhdx");
     drop(child);
 
-    // Re-open child and verify parent locator resolves correctly
-    let child = File::open(&child_path)
+    // Re-open child and verify parent locator records the caller-provided path.
+    let mut child = Medium::open(std::fs::File::open(&child_path).expect("open VHDX medium"))
         .finish()
         .expect("re-open differencing vhdx");
 
-    let metadata = child.sections().metadata().expect("metadata");
-    let fp = metadata.items().file_parameters().expect("FileParameters");
-    assert!(fp.has_parent(), "differencing disk should have parent flag");
+    {
+        let sections = child.sections().expect("sections");
+        let metadata = sections.metadata().expect("metadata");
+        let fp = metadata.items().file_parameters().expect("FileParameters");
+        assert!(fp.has_parent(), "differencing disk should have parent flag");
 
-    let locator = metadata
-        .items()
-        .parent_locator()
-        .expect("parent locator should exist");
-    let resolved = locator
-        .resolve_parent_path()
-        .expect("resolve_parent_path should succeed");
-    assert_eq!(
-        resolved, parent_path,
-        "resolved parent path should match the parent we created"
-    );
+        let locator = metadata
+            .items()
+            .parent_locator()
+            .expect("parent locator should exist");
+        let relative_path = locator
+            .entries()
+            .find_map(|entry| {
+                let data = locator.key_value_data();
+                let key = entry.key(data).ok()?;
+                if key == "relative_path" {
+                    entry.value(data).ok()
+                } else {
+                    None
+                }
+            })
+            .expect("relative_path should exist");
+        assert_eq!(
+            std::path::PathBuf::from(relative_path),
+            parent_path,
+            "parent locator relative_path should match the parent we created"
+        );
+    }
 
     // Parent locator validation (including GUID chain check) must pass
     let issues = child
         .validator()
+        .expect("validator")
         .validate_parent_locator()
         .expect("validate_parent_locator should not error");
     assert!(
@@ -238,15 +251,15 @@ fn write_to_new_dynamic_disk_allocates_payload_block() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("dynamic-writable.vhdx");
 
-    let f = File::create(&path)
+    let f = create_medium(&path)
         .size(4 * 1024 * 1024)
         .block_size(1024 * 1024)
         .finish()
         .expect("create dynamic vhdx");
     drop(f);
 
-    let f = File::open(&path).write().finish().expect("open writable");
-    let io = f.io().expect("IO context");
+    let mut f = open_medium_writable(&path);
+    let mut io = f.io().expect("IO context");
 
     let pattern = vec![0xCDu8; 4096];
     let mut writer = io.sector(0, 1).expect("sector 0 for write");
@@ -254,16 +267,17 @@ fn write_to_new_dynamic_disk_allocates_payload_block() {
         .write_all(&pattern)
         .expect("write to unallocated dynamic block should allocate payload");
 
-    let mut reader = io.sector(0, 1).expect("sector 0 for read");
     let mut buf = vec![0u8; 4096];
-    reader.read_exact(&mut buf).expect("read sector 0");
+    io.sector(0, 1)
+        .expect("sector 0 for read")
+        .read_exact(&mut buf)
+        .expect("read sector 0");
     assert_eq!(buf, pattern, "read back data must match written pattern");
-    drop(reader);
     drop(io);
     drop(f);
 
-    let reopened = File::open(&path).finish().expect("reopen after write");
-    let reopened_io = reopened.io().expect("reopened IO context");
+    let mut reopened = open_medium(&path);
+    let mut reopened_io = reopened.io().expect("reopened IO context");
     let mut reopened_reader = reopened_io.sector(0, 1).expect("reopened sector 0");
     let mut reopened_buf = vec![0u8; 4096];
     reopened_reader
@@ -271,7 +285,7 @@ fn write_to_new_dynamic_disk_allocates_payload_block() {
         .expect("read sector 0 after reopen");
     assert_eq!(
         reopened_buf, pattern,
-        "reopened file must retain allocated dynamic block data"
+        "reopened Medium must retain allocated dynamic block data"
     );
 }
 
@@ -280,15 +294,15 @@ fn partial_write_to_new_dynamic_disk_preserves_zero_fill() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("dynamic-partial-writable.vhdx");
 
-    let f = File::create(&path)
+    let f = create_medium(&path)
         .size(4 * 1024 * 1024)
         .block_size(1024 * 1024)
         .finish()
         .expect("create dynamic vhdx");
     drop(f);
 
-    let f = File::open(&path).write().finish().expect("open writable");
-    let io = f.io().expect("IO context");
+    let mut f = open_medium_writable(&path);
+    let mut io = f.io().expect("IO context");
 
     let mut writer = io.sector(0, 1).expect("sector 0 for write");
     writer.seek(SeekFrom::Start(512)).expect("seek into sector");
@@ -311,17 +325,16 @@ fn write_to_partially_present_differencing_block_without_bitmap_is_rejected() {
     let parent_path = dir.path().join("parent.vhdx");
     let child_path = dir.path().join("child.vhdx");
 
-    let parent = File::create(&parent_path)
+    let parent = create_medium(&parent_path)
         .size(4 * 1024 * 1024)
         .block_size(1024 * 1024)
         .finish()
         .expect("create parent");
     drop(parent);
 
-    let child = File::create(&child_path)
+    let child = create_differencing_medium(&child_path, &parent_path)
         .size(4 * 1024 * 1024)
         .block_size(1024 * 1024)
-        .parent_path(&parent_path)
         .finish()
         .expect("create child");
     drop(child);
@@ -337,11 +350,8 @@ fn write_to_partially_present_differencing_block_without_bitmap_is_rejected() {
         .expect("patch payload BAT entry");
     drop(raw);
 
-    let child = File::open(&child_path)
-        .write()
-        .finish()
-        .expect("open writable child");
-    let io = child.io().expect("child IO context");
+    let mut child = open_medium_writable(&child_path);
+    let mut io = child.io().expect("child IO context");
     let mut writer = io.sector(0, 1).expect("sector 0 for write");
 
     let err = writer
@@ -356,18 +366,15 @@ fn write_to_new_differencing_disk_allocates_child_payload_and_bitmap() {
     let parent_path = dir.path().join("parent.vhdx");
     let child_path = dir.path().join("child.vhdx");
 
-    let parent = File::create(&parent_path)
+    let parent = create_medium(&parent_path)
         .size(4 * 1024 * 1024)
         .block_size(1024 * 1024)
         .finish()
         .expect("create parent");
     drop(parent);
 
-    let parent = File::open(&parent_path)
-        .write()
-        .finish()
-        .expect("open writable parent");
-    let parent_io = parent.io().expect("parent IO context");
+    let mut parent = open_medium_writable(&parent_path);
+    let mut parent_io = parent.io().expect("parent IO context");
     let parent_pattern = vec![0x11u8; 4096];
     parent_io
         .sector(0, 1)
@@ -377,19 +384,15 @@ fn write_to_new_differencing_disk_allocates_child_payload_and_bitmap() {
     drop(parent_io);
     drop(parent);
 
-    let child = File::create(&child_path)
+    let child = create_differencing_medium(&child_path, &parent_path)
         .size(4 * 1024 * 1024)
         .block_size(1024 * 1024)
-        .parent_path(&parent_path)
         .finish()
         .expect("create child");
     drop(child);
 
-    let child = File::open(&child_path)
-        .write()
-        .finish()
-        .expect("open writable child");
-    let child_io = child.io().expect("child IO context");
+    let mut child = open_medium_writable(&child_path);
+    let mut child_io = child.io().expect("child IO context");
     let child_pattern = vec![0x22u8; 4096];
     child_io
         .sector(0, 1)
@@ -407,8 +410,8 @@ fn write_to_new_differencing_disk_allocates_child_payload_and_bitmap() {
     drop(child_io);
     drop(child);
 
-    let reopened = File::open(&child_path).finish().expect("reopen child");
-    let reopened_io = reopened.io().expect("reopened child IO");
+    let mut reopened = open_medium(&child_path);
+    let mut reopened_io = reopened.io().expect("reopened child IO");
     let mut reopened_buf = vec![0u8; 4096];
     reopened_io
         .sector(0, 1)
@@ -417,7 +420,8 @@ fn write_to_new_differencing_disk_allocates_child_payload_and_bitmap() {
         .expect("read child sector 0 after reopen");
     assert_eq!(reopened_buf, child_pattern);
 
-    let bat = reopened.sections().bat().expect("reopened child BAT");
+    let sections = reopened.sections().expect("sections");
+    let bat = sections.bat().expect("reopened child BAT");
     assert_eq!(
         bat.entry(0).expect("payload BAT entry").state().unwrap(),
         BatState::Payload(PayloadBlockState::PartiallyPresent)
@@ -437,18 +441,15 @@ fn partial_write_to_new_differencing_disk_preserves_parent_bytes() {
     let parent_path = dir.path().join("parent.vhdx");
     let child_path = dir.path().join("child.vhdx");
 
-    let parent = File::create(&parent_path)
+    let parent = create_medium(&parent_path)
         .size(4 * 1024 * 1024)
         .block_size(1024 * 1024)
         .finish()
         .expect("create parent");
     drop(parent);
 
-    let parent = File::open(&parent_path)
-        .write()
-        .finish()
-        .expect("open writable parent");
-    let parent_io = parent.io().expect("parent IO context");
+    let mut parent = open_medium_writable(&parent_path);
+    let mut parent_io = parent.io().expect("parent IO context");
     let parent_pattern = vec![0x33u8; 4096];
     parent_io
         .sector(0, 1)
@@ -458,30 +459,40 @@ fn partial_write_to_new_differencing_disk_preserves_parent_bytes() {
     drop(parent_io);
     drop(parent);
 
-    let child = File::create(&child_path)
+    let child = create_differencing_medium(&child_path, &parent_path)
         .size(4 * 1024 * 1024)
         .block_size(1024 * 1024)
-        .parent_path(&parent_path)
         .finish()
         .expect("create child");
     drop(child);
 
-    let child = File::open(&child_path)
+    let child_inner = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&child_path)
+        .expect("open writable child VHDX medium");
+    let mut child = Medium::open(child_inner)
+        .with_parent_resolver(parent_resolver(parent_path.clone()))
         .write()
         .finish()
-        .expect("open writable child");
-    let child_io = child.io().expect("child IO context");
-    let mut writer = child_io.sector(0, 1).expect("child sector 0");
-    writer.seek(SeekFrom::Start(512)).expect("seek into sector");
-    writer
-        .write_all(&[0x44u8; 16])
-        .expect("partial sparse child write should preserve parent bytes");
-    drop(writer);
+        .expect("open writable child medium");
+    let mut child_io = child.io().expect("child IO context");
+    {
+        let mut writer = child_io.sector(0, 1).expect("child sector 0");
+        writer.seek(SeekFrom::Start(512)).expect("seek into sector");
+        writer
+            .write_all(&[0x44u8; 16])
+            .expect("partial sparse child write should preserve parent bytes");
+    }
     drop(child_io);
     drop(child);
 
-    let reopened = File::open(&child_path).finish().expect("reopen child");
-    let reopened_io = reopened.io().expect("reopened child IO");
+    let mut reopened =
+        Medium::open(std::fs::File::open(&child_path).expect("open child VHDX medium"))
+            .with_parent_resolver(parent_resolver(parent_path.clone()))
+            .finish()
+            .expect("open child medium");
+    let mut reopened_io = reopened.io().expect("reopened child IO");
     let mut reader = reopened_io.sector(0, 1).expect("reopened child sector 0");
     let mut buf = vec![0u8; 4096];
     reader
@@ -494,23 +505,101 @@ fn partial_write_to_new_differencing_disk_preserves_parent_bytes() {
 }
 
 #[test]
+fn parent_sector_size_mismatch_does_not_cache_invalid_parent() {
+    struct MismatchedParent {
+        guid: vhdx::Guid,
+    }
+
+    impl vhdx::ParentMedium for MismatchedParent {
+        fn data_write_guid(&mut self) -> vhdx::Result<vhdx::Guid> {
+            Ok(self.guid)
+        }
+
+        fn logical_sector_size(&mut self) -> vhdx::Result<u32> {
+            Ok(512)
+        }
+
+        fn read_sector(&mut self, _sector: u64, _buf: &mut [u8]) -> vhdx::Result<()> {
+            panic!("sector-size mismatch must be rejected before parent reads")
+        }
+    }
+
+    struct MismatchResolver {
+        calls: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    impl vhdx::ParentResolver for MismatchResolver {
+        fn resolve_parent(
+            &mut self, request: vhdx::ParentRequest<'_>,
+        ) -> vhdx::Result<Box<dyn vhdx::ParentMedium>> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(Box::new(MismatchedParent {
+                guid: request.expected_data_write_guid,
+            }))
+        }
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let parent_path = dir.path().join("parent.vhdx");
+    let child_path = dir.path().join("child.vhdx");
+
+    let parent = create_medium(&parent_path)
+        .size(4 * 1024 * 1024)
+        .block_size(1024 * 1024)
+        .logical_sector_size(4096)
+        .finish()
+        .expect("create parent");
+    drop(parent);
+
+    let child = create_differencing_medium(&child_path, &parent_path)
+        .size(4 * 1024 * 1024)
+        .block_size(1024 * 1024)
+        .logical_sector_size(4096)
+        .finish()
+        .expect("create child");
+    drop(child);
+
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let mut child = Medium::open(std::fs::File::open(&child_path).expect("open child VHDX medium"))
+        .with_parent_resolver(MismatchResolver {
+            calls: std::sync::Arc::clone(&calls),
+        })
+        .finish()
+        .expect("open child medium");
+    let mut child_io = child.io().expect("child IO context");
+
+    for _ in 0..2 {
+        let mut reader = child_io.sector(0, 1).expect("child missing sector");
+        let mut buf = vec![0u8; 4096];
+        match reader.read_exact(&mut buf) {
+            Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {}
+            other => panic!("expected ParentSectorSizeMismatch as InvalidData, got {other:?}"),
+        }
+    }
+
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::Relaxed),
+        2,
+        "parent with mismatched sector size must not be cached after rejection"
+    );
+}
+
+#[test]
 fn partial_write_to_zero_differencing_block_preserves_zero_bytes() {
     let dir = tempfile::tempdir().expect("tempdir");
     let parent_path = dir.path().join("parent.vhdx");
     let child_path = dir.path().join("child.vhdx");
 
-    let parent = File::create(&parent_path)
+    let parent = create_medium(&parent_path)
         .size(4 * 1024 * 1024)
         .block_size(1024 * 1024)
         .finish()
         .expect("create parent");
     drop(parent);
 
-    let parent = File::open(&parent_path)
-        .write()
-        .finish()
-        .expect("open writable parent");
-    let parent_io = parent.io().expect("parent IO context");
+    let mut parent = open_medium_writable(&parent_path);
+    let mut parent_io = parent.io().expect("parent IO context");
     parent_io
         .sector(0, 2)
         .expect("parent sectors 0-1")
@@ -519,10 +608,9 @@ fn partial_write_to_zero_differencing_block_preserves_zero_bytes() {
     drop(parent_io);
     drop(parent);
 
-    let child = File::create(&child_path)
+    let child = create_differencing_medium(&child_path, &parent_path)
         .size(4 * 1024 * 1024)
         .block_size(1024 * 1024)
-        .parent_path(&parent_path)
         .finish()
         .expect("create child");
     drop(child);
@@ -537,22 +625,20 @@ fn partial_write_to_zero_differencing_block_preserves_zero_bytes() {
         .expect("patch payload BAT entry to Zero");
     drop(raw);
 
-    let child = File::open(&child_path)
-        .write()
-        .finish()
-        .expect("open writable child");
-    let child_io = child.io().expect("child IO context");
-    let mut writer = child_io.sector(0, 1).expect("child sector 0");
-    writer.seek(SeekFrom::Start(512)).expect("seek into sector");
-    writer
-        .write_all(&[0x88u8; 16])
-        .expect("partial sparse child write should preserve zero bytes");
-    drop(writer);
+    let mut child = open_medium_writable(&child_path);
+    let mut child_io = child.io().expect("child IO context");
+    {
+        let mut writer = child_io.sector(0, 1).expect("child sector 0");
+        writer.seek(SeekFrom::Start(512)).expect("seek into sector");
+        writer
+            .write_all(&[0x88u8; 16])
+            .expect("partial sparse child write should preserve zero bytes");
+    }
     drop(child_io);
     drop(child);
 
-    let reopened = File::open(&child_path).finish().expect("reopen child");
-    let reopened_io = reopened.io().expect("reopened child IO");
+    let mut reopened = open_medium(&child_path);
+    let mut reopened_io = reopened.io().expect("reopened child IO");
     let mut buf = vec![0xFFu8; 8192];
     reopened_io
         .sector(0, 2)
@@ -572,7 +658,7 @@ fn write_and_read_back_fixed_disk() {
     let path = dir.path().join("writable.vhdx");
 
     // Create fixed disk (blocks are FullyPresent)
-    let f = File::create(&path)
+    let f = create_medium(&path)
         .size(4 * 1024 * 1024) // 4 MB
         .block_size(1024 * 1024) // 1 MB blocks
         .fixed(true)
@@ -581,9 +667,9 @@ fn write_and_read_back_fixed_disk() {
     drop(f);
 
     // Open writable
-    let f = File::open(&path).write().finish().expect("open writable");
+    let mut f = open_medium_writable(&path);
 
-    let io = f.io().expect("IO context");
+    let mut io = f.io().expect("IO context");
 
     // Write a pattern to sector 0
     let pattern = vec![0xABu8; 4096];
@@ -598,183 +684,6 @@ fn write_and_read_back_fixed_disk() {
 }
 
 // ---------------------------------------------------------------------------
-// 15. Policy conflict tests: write-incompatible policies
-// ---------------------------------------------------------------------------
 
-#[test]
-fn in_memory_on_read_only_with_write_is_error() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("policy_conflict_imr.vhdx");
-
-    let f = File::create(&path)
-        .size(64 * 1024 * 1024)
-        .block_size(8 * 1024 * 1024)
-        .finish()
-        .expect("create vhdx");
-    drop(f);
-
-    let result = File::open(&path)
-        .write()
-        .log_replay(LogReplayPolicy::InMemoryOnReadOnly)
-        .finish();
-    assert!(
-        result.is_err(),
-        "InMemoryOnReadOnly with write access should be rejected"
-    );
-    let _dir = dir;
-}
-
-#[test]
-fn read_only_no_replay_with_write_is_error() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("policy_conflict_rnr.vhdx");
-
-    let f = File::create(&path)
-        .size(64 * 1024 * 1024)
-        .block_size(8 * 1024 * 1024)
-        .finish()
-        .expect("create vhdx");
-    drop(f);
-
-    let result = File::open(&path)
-        .write()
-        .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
-        .finish();
-    assert!(
-        result.is_err(),
-        "ReadOnlyNoReplay with write access should be rejected"
-    );
-    let _dir = dir;
-}
-
-// ---------------------------------------------------------------------------
-// 16. Default Require behaviour
-// ---------------------------------------------------------------------------
-
-/// Verify that the default policy (Require, without calling `log_replay()`)
-/// rejects files with pending logs.
-#[test]
-fn default_require_rejects_pending_log() {
-    let (_dir, path) = ref_to_tmp("test-fs.vhdx");
-    let result = File::open(&path).finish();
-    match result {
-        Err(vhdx::Error::LogReplayRequired) => {
-            // Expected: default Require mode rejects files with pending logs
-        }
-        other => panic!("default Require should return LogReplayRequired, got: {other:?}"),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 17. CreateOptions validation tests
-// ---------------------------------------------------------------------------
-
-#[test]
-fn create_rejects_invalid_block_size() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("bad_block.vhdx");
-
-    // Block size must be between 1MB and 256MB
-    let result = File::create(&path)
-        .size(64 * 1024 * 1024)
-        .block_size(512 * 1024) // 512 KB — below minimum
-        .finish();
-    assert!(result.is_err(), "block size below 1MB should be rejected");
-
-    let result = File::create(&path)
-        .size(64 * 1024 * 1024)
-        .block_size(300 * 1024 * 1024) // 300 MB — above maximum
-        .finish();
-    assert!(result.is_err(), "block size above 256MB should be rejected");
-
-    // Block size must be a power of 2
-    let result = File::create(&path)
-        .size(64 * 1024 * 1024)
-        .block_size(10 * 1024 * 1024) // 10 MB — not a power of 2
-        .finish();
-    assert!(
-        result.is_err(),
-        "block size not a power of 2 should be rejected"
-    );
-
-    let _dir = dir;
-}
-
-#[test]
-fn create_rejects_invalid_sector_sizes() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("bad_sector.vhdx");
-
-    // Logical sector size must be 512 or 4096
-    let result = File::create(&path)
-        .size(64 * 1024 * 1024)
-        .logical_sector_size(1024)
-        .finish();
-    assert!(
-        result.is_err(),
-        "logical sector size 1024 should be rejected"
-    );
-
-    // Physical sector size must be 512 or 4096
-    let result = File::create(&path)
-        .size(64 * 1024 * 1024)
-        .physical_sector_size(2048)
-        .finish();
-    assert!(
-        result.is_err(),
-        "physical sector size 2048 should be rejected"
-    );
-
-    let _dir = dir;
-}
-
-#[test]
-fn create_rejects_fixed_with_parent() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("fixed_parent.vhdx");
-    let parent_path = dir.path().join("parent.vhdx");
-
-    // Create a parent so the path exists
-    let p = File::create(&parent_path)
-        .size(64 * 1024 * 1024)
-        .finish()
-        .expect("create parent");
-    drop(p);
-
-    // Fixed disk with parent should be rejected
-    let result = File::create(&path)
-        .size(64 * 1024 * 1024)
-        .fixed(true)
-        .parent_path(&parent_path)
-        .finish();
-    assert!(result.is_err(), "fixed disk with parent should be rejected");
-
-    let _dir = dir;
-}
-
-#[test]
-fn create_rejects_exceeds_64tb() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("huge.vhdx");
-
-    let result = File::create(&path)
-        .size(65 * 1024u64 * 1024 * 1024 * 1024) // 65 TB
-        .finish();
-    assert!(result.is_err(), "size > 64TB should be rejected");
-
-    let _dir = dir;
-}
-
-// ---------------------------------------------------------------------------
-// 18. Error type checks
-// ---------------------------------------------------------------------------
-
-#[test]
-fn open_nonexistent_returns_io_error() {
-    let result = File::open("tests/fixtures/does-not-exist-at-all.vhdx").finish();
-    let err = result.unwrap_err();
-    assert!(
-        matches!(err, vhdx::Error::Io(_)),
-        "nonexistent file should return Io error, got: {err:?}"
-    );
-}
+#[path = "late/policies.rs"]
+mod policies;

@@ -38,18 +38,21 @@ vhdx-rs = { version = "0.1", features = ["gpt"] }
 ## Library Usage
 
 ```rust
-use vhdx::{File, LogReplayPolicy};
+use vhdx::{LogReplayPolicy, Medium};
 
 fn main() -> vhdx::Result<()> {
-    let file = File::open("disk.vhdx")
+    let inner = std::fs::OpenOptions::new()
+        .read(true)
+        .open("disk.vhdx")?;
+    let mut file = Medium::open(inner)
         .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
         .finish()?;
 
-    let metadata = file.sections().metadata()?;
+    let metadata = file.sections()?.metadata()?;
     let size = metadata.items().virtual_disk_size()?;
     println!("virtual size: {size} bytes");
 
-    let issues = file.validator().validate_file()?;
+    let issues = file.validator()?.validate_file()?;
     for issue in issues {
         println!("[{}] {}: {}", issue.section(), issue.code(), issue.message());
     }
@@ -61,10 +64,17 @@ fn main() -> vhdx::Result<()> {
 Create a new dynamic disk:
 
 ```rust
-use vhdx::File;
+use vhdx::Medium;
 
 fn main() -> vhdx::Result<()> {
-    File::create("new.vhdx")
+    let inner = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open("new.vhdx")?;
+
+    Medium::create(inner)
         .size(10 * 1024 * 1024 * 1024)
         .finish()?;
 

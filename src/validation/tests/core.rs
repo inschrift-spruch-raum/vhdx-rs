@@ -1,5 +1,5 @@
+use super::super::{SpecValidator, ValidationIssue};
 use super::helpers::build_test_vhdx;
-use super::{SpecValidator, ValidationIssue};
 use crate::constants::{HEADER1_OFFSET, HEADER2_OFFSET, REGION_TABLE_SIZE, REGION_TABLE1_OFFSET};
 use crc32c::crc32c;
 

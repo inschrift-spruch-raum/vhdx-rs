@@ -1,5 +1,7 @@
 use crate::error::{Error, Result};
-use crate::file::File;
+use crate::medium::Medium;
+use std::io::{Read, Seek};
+use std::sync::{Arc, OnceLock};
 
 // Re-exports for convenience — `vhdx::section::*` mirrors the old section.rs API
 pub use crate::header::{
@@ -22,16 +24,30 @@ pub use crate::log::{
 
 /// Container for all VHDX sections.
 ///
-/// This struct holds a reference to a [`File`] and provides parsed views
-/// of the header, BAT, metadata, and log sections on every call.
-pub struct Sections<'a> {
-    file: &'a File,
+/// This struct holds lightweight views of cached section data and provides
+/// parsed views of the header, BAT, metadata, and log sections on every call.
+pub struct Sections<'a, T = std::fs::File> {
+    header: Arc<[u8]>,
+    medium: &'a Medium<T>,
+    bat: OnceLock<Arc<[u8]>>,
+    metadata: OnceLock<Arc<[u8]>>,
+    log: OnceLock<Arc<[u8]>>,
 }
 
-impl<'a> Sections<'a> {
-    /// Create a new Sections bound to a file reference.
-    pub(crate) fn new(file: &'a File) -> Self {
-        Self { file }
+impl<'a, T> Sections<'a, T>
+where
+    T: Read + Seek,
+{
+    /// Create a new Sections view from cached section buffers.
+    pub(crate) fn new(header: Arc<[u8]>, medium: &'a Medium<T>) -> Result<Self> {
+        Header::new(&header)?;
+        Ok(Self {
+            header,
+            medium,
+            bat: OnceLock::new(),
+            metadata: OnceLock::new(),
+            log: OnceLock::new(),
+        })
     }
 
     // ------------------------------------------------------------------
@@ -46,45 +62,72 @@ impl<'a> Sections<'a> {
     /// # Errors
     ///
     /// Returns an error if sections are uninitialized or header parsing fails.
-    pub fn header(&self) -> Result<Header<'a>> {
-        Header::new(self.file.header_buf())
+    pub fn header(&self) -> Result<Header<'_>> {
+        Header::new(&self.header)
     }
 
     /// Parse and return the BAT (Block Allocation Table) section view.
     ///
-    /// Lazily loads the BAT region from the file and computes the chunk ratio
-    /// from metadata.
+    /// Parses the cached BAT region and uses the chunk ratio computed from the
+    /// cached metadata buffer.
     ///
     /// # Errors
     ///
     /// Returns an error if sections are uninitialized, BAT loading fails,
     /// or metadata needed for chunk ratio is invalid.
-    pub fn bat(&self) -> Result<Bat<'a>> {
-        let bat_buf = self.file.bat_buf()?;
-        let chunk_ratio = Self::compute_chunk_ratio(self.file)?;
-        Ok(Bat::owned(bat_buf, chunk_ratio))
+    pub fn bat(&self) -> Result<Bat<'_>> {
+        if self.metadata.get().is_none() {
+            let _ = self.metadata.set(self.medium.metadata_buf()?);
+        }
+        if self.bat.get().is_none() {
+            let _ = self.bat.set(self.medium.bat_buf()?);
+        }
+        let metadata = self
+            .metadata
+            .get()
+            .ok_or_else(|| Error::InvalidMetadata("metadata cache not loaded".into()))?;
+        let chunk_ratio = Self::compute_chunk_ratio(metadata)?;
+        let bat = self
+            .bat
+            .get()
+            .ok_or_else(|| Error::InvalidFile("BAT cache not loaded".into()))?;
+        Ok(Bat::new(bat, chunk_ratio))
     }
 
     /// Parse and return the Metadata section view.
     ///
-    /// Lazily loads the metadata region from the file.
+    /// Parses the cached metadata region.
     ///
     /// # Errors
     ///
     /// Returns an error if sections are uninitialized or metadata parsing fails.
-    pub fn metadata(&self) -> Result<Metadata<'a>> {
-        Metadata::new(self.file.metadata_buf()?)
+    pub fn metadata(&self) -> Result<Metadata<'_>> {
+        if self.metadata.get().is_none() {
+            let _ = self.metadata.set(self.medium.metadata_buf()?);
+        }
+        let metadata = self
+            .metadata
+            .get()
+            .ok_or_else(|| Error::InvalidMetadata("metadata cache not loaded".into()))?;
+        Metadata::new(metadata)
     }
 
     /// Parse and return the Log section view.
     ///
-    /// Lazily loads the log region from the file.
+    /// Parses the cached log region.
     ///
     /// # Errors
     ///
     /// Returns an error if sections are uninitialized or log parsing fails.
-    pub fn log(&self) -> Result<Log<'a>> {
-        Log::new(self.file.log_buf()?)
+    pub fn log(&self) -> Result<Log<'_>> {
+        if self.log.get().is_none() {
+            let _ = self.log.set(self.medium.log_buf()?);
+        }
+        let log = self
+            .log
+            .get()
+            .ok_or_else(|| Error::InvalidFile("log cache not loaded".into()))?;
+        Log::new(log)
     }
 
     // ------------------------------------------------------------------
@@ -93,8 +136,7 @@ impl<'a> Sections<'a> {
 
     /// Compute the chunk ratio from metadata:
     /// `chunk_ratio = (2^23 * LogicalSectorSize) / BlockSize`.
-    fn compute_chunk_ratio(file: &File) -> Result<u64> {
-        let meta_buf = file.metadata_buf()?;
+    fn compute_chunk_ratio(meta_buf: &[u8]) -> Result<u64> {
         let metadata = Metadata::new(meta_buf)?;
         let items = metadata.items();
         let fp = items

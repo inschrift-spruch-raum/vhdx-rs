@@ -2,7 +2,6 @@ use super::*;
 use crate::constants::{
     KV_ENTRY_SIZE, LOCATOR_HEADER_SIZE, METADATA_TABLE_SIZE, TABLE_ENTRY_SIZE, TABLE_HEADER_SIZE,
 };
-use crate::error::Error;
 use crate::metadata::core::decode_utf16le;
 use crate::types::Guid;
 
@@ -224,7 +223,6 @@ fn utf16le_decoding() {
 #[test]
 fn parent_locator_with_entries() {
     // Build a parent locator with one key-value pair: relative_path -> "Cargo.toml"
-    // Use a real file so std::fs::metadata() succeeds in resolve_parent_path()
     let key = "relative_path";
     let value = "Cargo.toml";
     let key_utf16: Vec<u8> = key.encode_utf16().flat_map(u16::to_le_bytes).collect();
@@ -299,10 +297,6 @@ fn parent_locator_with_entries() {
     let kv = &kv_entries[0];
     assert_eq!(kv.key(locator.key_value_data()).unwrap(), "relative_path");
     assert_eq!(kv.value(locator.key_value_data()).unwrap(), "Cargo.toml");
-
-    // resolve_parent_path should return the path (Cargo.toml exists on disk)
-    let path = locator.resolve_parent_path().unwrap();
-    assert_eq!(path.to_str().unwrap(), "Cargo.toml");
 }
 
 #[test]
@@ -393,19 +387,69 @@ fn build_locator_buf(entries: &[(&str, &str)]) -> Vec<u8> {
 }
 
 #[test]
-fn resolve_parent_path_accessible() {
-    // relative_path points to Cargo.toml which exists
+fn parent_locator_decodes_relative_path_value() {
     let buf = build_locator_buf(&[("relative_path", "Cargo.toml")]);
     let meta = Metadata::new(&buf).unwrap();
     let locator = meta.items().parent_locator().unwrap();
 
-    let path = locator.resolve_parent_path().unwrap();
-    assert_eq!(path.to_str().unwrap(), "Cargo.toml");
+    let kv = locator.entries().next().expect("relative_path entry");
+    assert_eq!(kv.key(locator.key_value_data()).unwrap(), "relative_path");
+    assert_eq!(kv.value(locator.key_value_data()).unwrap(), "Cargo.toml");
 }
 
 #[test]
-fn resolve_parent_path_fallback() {
-    // relative_path is nonexistent, but volume_path points to Cargo.toml
+fn parent_locator_resolves_parent_path_by_spec_order() {
+    let buf = build_locator_buf(&[
+        ("absolute_win32_path", r"\\?\C:\absolute-parent.vhdx"),
+        (
+            "volume_path",
+            r"\\?\Volume{00000000-0000-0000-0000-000000000000}\volume-parent.vhdx",
+        ),
+        ("relative_path", r"..\relative-parent.vhdx"),
+    ]);
+    let meta = Metadata::new(&buf).unwrap();
+    let locator = meta.items().parent_locator().unwrap();
+
+    assert_eq!(
+        locator.resolve_parent_path().unwrap(),
+        std::path::PathBuf::from(r"..\relative-parent.vhdx")
+    );
+}
+
+#[test]
+fn parent_locator_resolves_parent_path_falls_back_to_volume_then_absolute() {
+    let buf = build_locator_buf(&[
+        ("absolute_win32_path", r"\\?\C:\absolute-parent.vhdx"),
+        (
+            "volume_path",
+            r"\\?\Volume{00000000-0000-0000-0000-000000000000}\volume-parent.vhdx",
+        ),
+    ]);
+    let meta = Metadata::new(&buf).unwrap();
+    let locator = meta.items().parent_locator().unwrap();
+
+    assert_eq!(
+        locator.resolve_parent_path().unwrap(),
+        std::path::PathBuf::from(
+            r"\\?\Volume{00000000-0000-0000-0000-000000000000}\volume-parent.vhdx"
+        )
+    );
+}
+
+#[test]
+fn parent_locator_resolve_parent_path_errors_when_no_path_key_exists() {
+    let buf = build_locator_buf(&[("parent_linkage", "{00000000-0000-0000-0000-000000000000}")]);
+    let meta = Metadata::new(&buf).unwrap();
+    let locator = meta.items().parent_locator().unwrap();
+
+    assert!(matches!(
+        locator.resolve_parent_path(),
+        Err(crate::error::Error::ParentNotFound)
+    ));
+}
+
+#[test]
+fn parent_locator_preserves_all_path_candidates_without_fallback() {
     let buf = build_locator_buf(&[
         ("relative_path", "nonexistent_file_xyz.vhdx"),
         ("volume_path", "Cargo.toml"),
@@ -413,24 +457,23 @@ fn resolve_parent_path_fallback() {
     let meta = Metadata::new(&buf).unwrap();
     let locator = meta.items().parent_locator().unwrap();
 
-    let path = locator.resolve_parent_path().unwrap();
-    assert_eq!(path.to_str().unwrap(), "Cargo.toml");
-}
-
-#[test]
-fn resolve_parent_path_all_inaccessible() {
-    // All three keys point to nonexistent paths
-    let buf = build_locator_buf(&[
-        ("relative_path", "no_such_rel.vhdx"),
-        ("volume_path", "no_such_vol.vhdx"),
-        ("absolute_win32_path", "no_such_abs.vhdx"),
-    ]);
-    let meta = Metadata::new(&buf).unwrap();
-    let locator = meta.items().parent_locator().unwrap();
-
-    let err = locator.resolve_parent_path().unwrap_err();
-    match &err {
-        Error::ParentNotFound => {}
-        _ => panic!("expected ParentNotFound, got: {err}"),
-    }
+    let entries: Vec<_> = locator
+        .entries()
+        .map(|kv| {
+            (
+                kv.key(locator.key_value_data()).unwrap(),
+                kv.value(locator.key_value_data()).unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        entries,
+        vec![
+            (
+                "relative_path".to_string(),
+                "nonexistent_file_xyz.vhdx".to_string()
+            ),
+            ("volume_path".to_string(), "Cargo.toml".to_string()),
+        ]
+    );
 }

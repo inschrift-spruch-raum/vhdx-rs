@@ -1,4 +1,4 @@
-use super::*;
+use super::prelude::*;
 
 // -----------------------------------------------------------------------
 // ReplayOverlay::apply_to_region() tests

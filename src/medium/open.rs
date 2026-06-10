@@ -2,9 +2,12 @@
 
 use bitvec::prelude::*;
 use crc32c::crc32c;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{ErrorKind, Read, Seek, Write};
 
-use super::{File, LogReplayPolicy, OpenOptions, is_known_metadata_guid, is_known_region_guid};
+use super::{
+    CacheEntry, Len, LogReplayPolicy, Medium, OpenOptions, ParentResolver, ReadOnly, ReadWrite,
+    SetLen, SyncData, is_known_metadata_guid, is_known_region_guid, read_exact_at, write_all_at,
+};
 use crate::constants::{
     HEADER_BUFFER_SIZE, HEADER_SIZE, HEADER1_OFFSET, HEADER2_OFFSET, METADATA_REGION_GUID, MIB,
     VHDX_SIGNATURE_BYTES,
@@ -14,14 +17,13 @@ use crate::header::Header;
 use crate::log::Log;
 use crate::log_replay;
 use crate::types::Guid;
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex, RwLock};
 
-impl OpenOptions {
-    fn validate_policy_compatibility(&self) -> Result<()> {
-        match self.log_replay_policy {
-            LogReplayPolicy::InMemoryOnReadOnly | LogReplayPolicy::ReadOnlyNoReplay
-                if self.write =>
-            {
+impl<T, Mode> OpenOptions<T, Mode> {
+    fn validate_policy_compatibility(write: bool, policy: LogReplayPolicy) -> Result<()> {
+        match policy {
+            LogReplayPolicy::InMemoryOnReadOnly | LogReplayPolicy::ReadOnlyNoReplay if write => {
                 Err(Error::InvalidParameter(
                     "log replay policy incompatible with write access".into(),
                 ))
@@ -30,22 +32,31 @@ impl OpenOptions {
         }
     }
 
-    fn open_file_and_read_header(&self) -> Result<(std::fs::File, Vec<u8>)> {
-        let mut opts = std::fs::OpenOptions::new();
-        opts.read(true);
-        if self.write {
-            opts.write(true);
-        }
-        let mut file = opts.open(&self.path)?;
+    fn read_header(inner: &mut T) -> Result<Vec<u8>>
+    where
+        T: Read + Seek,
+    {
         let mut header_buf = vec![0u8; HEADER_BUFFER_SIZE];
-        let bytes_read = file.read(&mut header_buf)?;
-        if bytes_read < VHDX_SIGNATURE_BYTES.len() / 8 {
-            return Err(Error::InvalidFile(
-                "file too small to contain VHDX signature".into(),
-            ));
+        let mut signature = [0u8; 8];
+        match read_exact_at(inner, 0, &mut signature) {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::UnexpectedEof => {
+                return Err(Error::InvalidFile(
+                    "file too small to contain VHDX signature".into(),
+                ));
+            }
+            Err(err) => return Err(err.into()),
         }
-        header_buf.truncate(bytes_read);
-        Ok((file, header_buf))
+        match read_exact_at(inner, 0, &mut header_buf) {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::UnexpectedEof => {
+                return Err(Error::InvalidFile(format!(
+                    "header section too small: need at least {HEADER_BUFFER_SIZE}"
+                )));
+            }
+            Err(err) => return Err(err.into()),
+        }
+        Ok(header_buf)
     }
 
     fn validate_file_signature(header_buf: &[u8]) -> Result<()> {
@@ -77,11 +88,14 @@ impl OpenOptions {
     }
 
     fn validate_region_table_and_metadata(
-        &self, file: &std::fs::File, header: &Header,
-    ) -> Result<()> {
+        inner: &mut T, header: &Header, strict: bool,
+    ) -> Result<()>
+    where
+        T: Read + Seek,
+    {
         let rt = header.region_table(0)?;
-        Self::validate_region_table_entries(&rt, self.strict)?;
-        Self::validate_unknown_metadata(file, &rt, self.strict)
+        Self::validate_region_table_entries(&rt, strict)?;
+        Self::validate_unknown_metadata(inner, &rt, strict)
     }
 
     fn validate_region_table_entries(
@@ -128,15 +142,17 @@ impl OpenOptions {
     }
 
     fn validate_unknown_metadata(
-        file: &std::fs::File, rt: &crate::header::RegionTable<'_>, strict: bool,
-    ) -> Result<()> {
+        inner: &mut T, rt: &crate::header::RegionTable<'_>, strict: bool,
+    ) -> Result<()>
+    where
+        T: Read + Seek,
+    {
         for entry in rt.entries() {
             if entry.guid() != METADATA_REGION_GUID {
                 continue;
             }
             let mut meta_data = vec![0u8; entry.length() as usize];
-            (&*file).seek(SeekFrom::Start(entry.file_offset()))?;
-            (&*file).read_exact(&mut meta_data)?;
+            read_exact_at(inner, entry.file_offset(), &mut meta_data)?;
             let meta = crate::metadata::Metadata::new(&meta_data)?;
             for table_entry in meta.table().entries() {
                 if table_entry.flags().is_required()
@@ -160,21 +176,22 @@ impl OpenOptions {
         Ok(())
     }
 
-    fn load_log_data(file: &std::fs::File, offset: u64, length: u32) -> Result<Vec<u8>> {
+    fn load_log_data(inner: &mut T, offset: u64, length: u32) -> Result<Vec<u8>>
+    where
+        T: Read + Seek,
+    {
         let mut log_data = vec![0u8; length as usize];
-        (&*file).seek(SeekFrom::Start(offset))?;
-        (&*file).read_exact(&mut log_data)?;
+        read_exact_at(inner, offset, &mut log_data)?;
         Ok(log_data)
     }
 
-    /// # Panics
-    ///
-    /// Panics if header offset conversions overflow `usize`.
-    /// This should not happen with well-formed VHDX files.
     fn apply_writable_header_update(
-        &self, file: &mut std::fs::File, header_buf: &mut Vec<u8>,
-    ) -> Result<()> {
-        if !self.write {
+        write: bool, inner: &mut T, header_buf: &mut Vec<u8>,
+    ) -> Result<()>
+    where
+        T: Write + Seek + SyncData,
+    {
+        if !write {
             return Ok(());
         }
         if header_buf.len() < HEADER_BUFFER_SIZE {
@@ -189,16 +206,15 @@ impl OpenOptions {
             2
         };
         let noncurrent_idx = if current_idx == 1 { 2 } else { 1 };
-        let noncurrent_offset: u64 = if noncurrent_idx == 1 {
+        let noncurrent_offset = if noncurrent_idx == 1 {
             u64::from(HEADER1_OFFSET)
         } else {
             u64::from(HEADER2_OFFSET)
         };
         let current_header = hdr.header(0)?;
         let updated_header = Self::build_updated_header(&current_header);
-        file.seek(SeekFrom::Start(noncurrent_offset))?;
-        file.write_all(&updated_header)?;
-        file.sync_all()?;
+        write_all_at(inner, noncurrent_offset, &updated_header)?;
+        inner.sync_data()?;
         let start = usize::try_from(noncurrent_offset).unwrap();
         header_buf[start..start + HEADER_SIZE as usize].copy_from_slice(&updated_header);
         Ok(())
@@ -224,74 +240,58 @@ impl OpenOptions {
         updated_header
     }
 
-    /// Enable write access (read-write mode).
-    ///
-    /// # Standard
-    ///
-    /// docs/Standard/MS-VHDX-只读扩展标准.md
-    #[must_use]
-    pub fn write(mut self) -> Self {
-        self.write = true;
-        self
-    }
-
-    /// Set strict validation mode.
-    ///
-    /// When `strict = true` (the default), all validation errors are treated
-    /// as hard errors. When `strict = false`, *optional* unknown fields are
-    /// tolerated, but *required* unknown fields still cause failure.
-    ///
-    /// # Standard
-    ///
-    /// docs/Standard/MS-VHDX-宽松扩展标准.md §3
     #[must_use]
     pub fn strict(mut self, strict: bool) -> Self {
         self.strict = strict;
         self
     }
 
-    /// Set the log replay policy (default: [`LogReplayPolicy::Require`]).
-    ///
-    /// # Standard
-    ///
-    /// MS-VHDX §2.3 + MS-VHDX-只读扩展标准.md §3/§4
     #[must_use]
     pub fn log_replay(mut self, policy: LogReplayPolicy) -> Self {
         self.log_replay_policy = policy;
         self
     }
 
-    /// Finish opening the VHDX file.
-    ///
-    /// Opens the file (read-only or read-write depending on configuration),
-    /// reads the first 1 MB into an internal buffer, validates the
-    /// "vhdxfile" signature, parses headers, loads the log region, and
-    /// applies the configured [`LogReplayPolicy`].
+    /// Configure the resolver used for differencing disk parent reads.
+    #[must_use]
+    pub fn with_parent_resolver<R>(mut self, resolver: R) -> Self
+    where
+        R: ParentResolver + Send + 'static,
+    {
+        self.parent_resolver = Some(Box::new(resolver));
+        self
+    }
+}
+
+impl<T> OpenOptions<T, ReadOnly> {
+    #[must_use]
+    pub fn write(self) -> OpenOptions<T, ReadWrite>
+    where
+        T: Read + Write + Seek + Len + SetLen + SyncData,
+    {
+        OpenOptions {
+            inner: self.inner,
+            strict: self.strict,
+            log_replay_policy: self.log_replay_policy,
+            parent_resolver: self.parent_resolver,
+            _mode: std::marker::PhantomData,
+        }
+    }
+
+    /// Open the medium in read-only mode.
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be opened, the signature is
-    /// invalid, headers are malformed, region tables are invalid, metadata
-    /// is missing required items, or log replay is required but not allowed.
-    ///
-    /// # Standard
-    ///
-    /// - MS-VHDX-只读扩展标准 §4.1: if a replayable log exists and the
-    ///   policy is `Require`, `finish()` returns [`Error::LogReplayRequired`].
-    /// - MS-VHDX-只读扩展标准 §4.2: `Auto` replays automatically (in-memory
-    ///   for read-only, to-file for read-write).
-    /// - MS-VHDX-只读扩展标准 §4.3: `InMemoryOnReadOnly` builds an overlay
-    ///   without writing to the file (read-only only).
-    /// - MS-VHDX-只读扩展标准 §4.4: `ReadOnlyNoReplay` allows structure
-    ///   reads only; payload data-plane consistency is not guaranteed.
-    ///
-    /// # Panics
-    ///
-    /// Panics if internal offset conversions from validated on-disk structures
-    /// overflow target integer sizes.
-    pub fn finish(self) -> Result<File> {
-        self.validate_policy_compatibility()?;
-        let (mut file, mut header_buf) = self.open_file_and_read_header()?;
+    /// Returns an error if the medium is not a valid VHDX file, validation fails,
+    /// or the selected log replay policy cannot be satisfied.
+    pub fn finish(mut self) -> Result<Medium<T>>
+    where
+        T: Read + Seek,
+    {
+        Self::validate_policy_compatibility(false, self.log_replay_policy)?;
+        let strict = self.strict;
+        let log_replay_policy = self.log_replay_policy;
+        let mut header_buf = Self::read_header(&mut self.inner)?;
         Self::validate_file_signature(&header_buf)?;
         let header = Header::new(&header_buf)?;
         let current = header.header(0)?;
@@ -299,11 +299,79 @@ impl OpenOptions {
         let log_offset = current.log_offset();
         let log_length = current.log_length();
         let log_guid = current.log_guid();
-        self.validate_region_table_and_metadata(&file, &header)?;
-        let log_data = Self::load_log_data(&file, log_offset, log_length)?;
+        Self::validate_region_table_and_metadata(&mut self.inner, &header, strict)?;
+        let log_data = Self::load_log_data(&mut self.inner, log_offset, log_length)?;
 
-        // -- Apply log replay policy -----------------------------------------
-        let replay_overlay = match self.log_replay_policy {
+        let replay_overlay = match log_replay_policy {
+            LogReplayPolicy::Require => {
+                let log = Log::new(&log_data)?;
+                if log_replay::has_pending_log(&log, &log_guid) {
+                    return Err(Error::LogReplayRequired);
+                }
+                None
+            }
+            LogReplayPolicy::Auto | LogReplayPolicy::InMemoryOnReadOnly => {
+                let log = Log::new(&log_data)?;
+                if log_replay::has_pending_log(&log, &log_guid) {
+                    let active = log_replay::detect_active_sequence(&log, &log_guid)?;
+                    Some(Arc::new(log_replay::build_replay_overlay(&active)?))
+                } else {
+                    None
+                }
+            }
+            LogReplayPolicy::ReadOnlyNoReplay => None,
+        };
+
+        if let Some(ref overlay) = replay_overlay {
+            if header_buf.len() < HEADER_BUFFER_SIZE {
+                header_buf.resize(HEADER_BUFFER_SIZE, 0);
+            }
+            overlay.apply_to_region(&mut header_buf, 0);
+        }
+
+        Ok(Medium {
+            inner: Mutex::new(self.inner),
+            header_buf: RwLock::new(Some(CacheEntry::new(0, Arc::from(header_buf)))),
+            bat_buf: RwLock::new(None),
+            metadata_buf: RwLock::new(None),
+            log_buf: RwLock::new(Some(CacheEntry::new(0, Arc::from(log_data)))),
+            generation: AtomicU64::new(0),
+            write: false,
+            strict,
+            log_replay_policy,
+            replay_overlay,
+            parent_resolver: Mutex::new(self.parent_resolver),
+            validator_buf: RwLock::new(None),
+        })
+    }
+}
+
+impl<T> OpenOptions<T, ReadWrite> {
+    /// Open the medium in read-write mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the medium is not a valid VHDX file, validation fails,
+    /// or the selected log replay policy is incompatible with write access.
+    pub fn finish(mut self) -> Result<Medium<T>>
+    where
+        T: Read + Write + Seek + Len + SetLen + SyncData,
+    {
+        Self::validate_policy_compatibility(true, self.log_replay_policy)?;
+        let strict = self.strict;
+        let log_replay_policy = self.log_replay_policy;
+        let mut header_buf = Self::read_header(&mut self.inner)?;
+        Self::validate_file_signature(&header_buf)?;
+        let header = Header::new(&header_buf)?;
+        let current = header.header(0)?;
+        Self::validate_current_header(&current)?;
+        let log_offset = current.log_offset();
+        let log_length = current.log_length();
+        let log_guid = current.log_guid();
+        Self::validate_region_table_and_metadata(&mut self.inner, &header, strict)?;
+        let log_data = Self::load_log_data(&mut self.inner, log_offset, log_length)?;
+
+        let replay_overlay = match log_replay_policy {
             LogReplayPolicy::Require => {
                 let log = Log::new(&log_data)?;
                 if log_replay::has_pending_log(&log, &log_guid) {
@@ -315,8 +383,7 @@ impl OpenOptions {
                 let log = Log::new(&log_data)?;
                 if log_replay::has_pending_log(&log, &log_guid) {
                     let active = log_replay::detect_active_sequence(&log, &log_guid)?;
-                    // Truncation check (MS-VHDX §2.3.3)
-                    let file_size = file.metadata()?.len();
+                    let file_size = self.inner.len()?;
                     if file_size < active.flushed_file_offset() {
                         return Err(Error::CorruptedHeader(format!(
                             "file truncated: size {} < FlushedFileOffset {}",
@@ -324,71 +391,30 @@ impl OpenOptions {
                             active.flushed_file_offset()
                         )));
                     }
-                    if self.write {
-                        log_replay::replay_to_file(&file, &active)?;
-                        None
-                    } else {
-                        Some(Arc::new(log_replay::build_replay_overlay(&active)?))
-                    }
-                } else {
-                    None
+                    log_replay::replay_to_file(&mut self.inner, &active)?;
                 }
-            }
-            LogReplayPolicy::InMemoryOnReadOnly => {
-                // write check already done above
-                let log = Log::new(&log_data)?;
-                if log_replay::has_pending_log(&log, &log_guid) {
-                    let active = log_replay::detect_active_sequence(&log, &log_guid)?;
-                    // Truncation check (MS-VHDX §2.3.3)
-                    let file_size = file.metadata()?.len();
-                    if file_size < active.flushed_file_offset() {
-                        return Err(Error::CorruptedHeader(format!(
-                            "file truncated: size {} < FlushedFileOffset {}",
-                            file_size,
-                            active.flushed_file_offset()
-                        )));
-                    }
-                    Some(Arc::new(log_replay::build_replay_overlay(&active)?))
-                } else {
-                    None
-                }
-            }
-            LogReplayPolicy::ReadOnlyNoReplay => {
-                // write check already done above; skip replay entirely
                 None
+            }
+            LogReplayPolicy::InMemoryOnReadOnly | LogReplayPolicy::ReadOnlyNoReplay => {
+                unreachable!()
             }
         };
 
-        // -- Patch header_buf with replay overlay data -------------------------
-        // header_buf was loaded earlier (before overlay was built).
-        // Per MS-VHDX-只读扩展标准 §4.3.4, structure reads must be based
-        // on the post-replay view. Apply overlay patches now.
-        if let Some(ref overlay) = replay_overlay {
-            // Ensure header_buf covers the full 1 MB header section
-            if header_buf.len() < HEADER_BUFFER_SIZE {
-                header_buf.resize(HEADER_BUFFER_SIZE, 0);
-            }
-            overlay.apply_to_region(&mut header_buf, 0);
-        }
+        Self::apply_writable_header_update(true, &mut self.inner, &mut header_buf)?;
 
-        // -- Cache log buffer ------------------------------------------------
-        let log_buf = OnceLock::new();
-        log_buf.set(log_data).unwrap_or_else(|_| unreachable!());
-
-        self.apply_writable_header_update(&mut file, &mut header_buf)?;
-
-        Ok(File {
-            inner: file,
-            path: self.path,
-            header_buf,
-            bat_buf: std::sync::RwLock::new(None),
-            metadata_buf: OnceLock::new(),
-            log_buf,
-            write: self.write,
-            strict: self.strict,
-            log_replay_policy: self.log_replay_policy,
+        Ok(Medium {
+            inner: Mutex::new(self.inner),
+            header_buf: RwLock::new(Some(CacheEntry::new(0, Arc::from(header_buf)))),
+            bat_buf: RwLock::new(None),
+            metadata_buf: RwLock::new(None),
+            log_buf: RwLock::new(Some(CacheEntry::new(0, Arc::from(log_data)))),
+            generation: AtomicU64::new(0),
+            write: true,
+            strict,
+            log_replay_policy,
             replay_overlay,
-            validator_buf: OnceLock::new(),
+            parent_resolver: Mutex::new(self.parent_resolver),
+            validator_buf: RwLock::new(None),
         })
     }
 }

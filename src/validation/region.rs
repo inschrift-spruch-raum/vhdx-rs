@@ -2,7 +2,7 @@ use super::{
     Error, MIB, Result, SignaturePosition, SpecValidator, ValidationIssue, is_known_region_guid,
 };
 
-impl<'a> SpecValidator<'a> {
+impl SpecValidator {
     /// Validate the region tables.
     ///
     /// Checks:
@@ -109,7 +109,7 @@ impl<'a> SpecValidator<'a> {
 
     /// Validate a region table's entries for alignment, overlap, and required-unknown.
     fn validate_region_entries(
-        &self, rt: &crate::header::RegionTable<'a>,
+        &self, rt: &crate::header::RegionTable<'_>,
     ) -> Result<Vec<ValidationIssue>> {
         let mut issues = Vec::new();
         let entries: Vec<_> = rt.entries().collect();
@@ -122,8 +122,8 @@ impl<'a> SpecValidator<'a> {
     }
 
     fn validate_region_entry(
-        &self, i: usize, entry: &crate::header::RegionTableEntry<'a>,
-        entries: &[crate::header::RegionTableEntry<'a>], issues: &mut Vec<ValidationIssue>,
+        &self, i: usize, entry: &crate::header::RegionTableEntry<'_>,
+        entries: &[crate::header::RegionTableEntry<'_>], issues: &mut Vec<ValidationIssue>,
     ) -> Result<()> {
         let file_offset = entry.file_offset();
         let length = entry.length();
@@ -176,7 +176,7 @@ impl<'a> SpecValidator<'a> {
     }
 
     fn validate_region_entry_overlap(
-        i: usize, file_offset: u64, length: u32, entries: &[crate::header::RegionTableEntry<'a>],
+        i: usize, file_offset: u64, length: u32, entries: &[crate::header::RegionTableEntry<'_>],
         issues: &mut Vec<ValidationIssue>,
     ) -> Result<()> {
         let end = file_offset + u64::from(length);
@@ -201,7 +201,7 @@ impl<'a> SpecValidator<'a> {
     }
 
     fn validate_region_entry_guid(
-        &self, entry: &crate::header::RegionTableEntry<'a>, issues: &mut Vec<ValidationIssue>,
+        &self, entry: &crate::header::RegionTableEntry<'_>, issues: &mut Vec<ValidationIssue>,
     ) -> Result<()> {
         if is_known_region_guid(&entry.guid()) {
             return Ok(());

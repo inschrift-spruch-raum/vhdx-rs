@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use bitvec::prelude::*;
 
 use crate::constants::{
@@ -568,49 +566,33 @@ impl<'a> ParentLocator<'a> {
         self.data
     }
 
-    /// Resolve the parent path, trying in order:
-    /// 1. `relative_path`
-    /// 2. `volume_path`
-    /// 3. `absolute_win32_path`
+    /// Resolve the preferred parent path candidate.
     ///
-    /// Note: UTF-16LE decoding requires allocation, so this returns owned `PathBuf`.
+    /// Path candidates are selected in VHDX order: `relative_path`, then
+    /// `volume_path`, then `absolute_win32_path`. Key and value strings are
+    /// decoded from the parent locator's UTF-16LE key-value data.
     ///
     /// # Errors
     ///
-    /// Returns an error if no usable locator key is found or no referenced path
-    /// exists.
-    ///
-    /// May also return [`Error::InvalidParentLocator`] if key-value decoding
-    /// fails, or [`Error::ParentNotFound`] if no accessible parent path is found.
-    pub fn resolve_parent_path(&self) -> Result<PathBuf> {
-        let keys = ["relative_path", "volume_path", "absolute_win32_path"];
-        let mut attempted = (None::<PathBuf>, None::<PathBuf>, None::<PathBuf>);
+    /// Returns an error if a key or value cannot be decoded, or if none of the
+    /// standard parent path keys is present.
+    pub fn resolve_parent_path(&self) -> Result<std::path::PathBuf> {
+        const PATH_KEYS: [&str; 3] = ["relative_path", "volume_path", "absolute_win32_path"];
 
-        for (ki, key_str) in keys.iter().enumerate() {
-            for kv in self.entries() {
-                let Ok(key) = kv.key(self.data) else {
-                    continue;
-                };
-                if key == *key_str {
-                    let value = kv.value(self.data)?;
-                    let path = PathBuf::from(value);
-                    // Record the attempted path
-                    match ki {
-                        0 => attempted.0 = Some(path.clone()),
-                        1 => attempted.1 = Some(path.clone()),
-                        2 => attempted.2 = Some(path.clone()),
-                        _ => {}
-                    }
-                    // Check accessibility
-                    if std::fs::metadata(&path).is_ok() {
-                        return Ok(path);
-                    }
-                    break; // Found this key, move to next key
-                }
+        let data = self.key_value_data();
+        let mut paths: [Option<std::path::PathBuf>; 3] = [None, None, None];
+        for entry in self.entries() {
+            let key = entry.key(data)?;
+            if let Some(index) = PATH_KEYS.iter().position(|candidate| *candidate == key) {
+                paths[index] = Some(std::path::PathBuf::from(entry.value(data)?));
             }
         }
 
-        Err(Error::ParentNotFound)
+        paths
+            .into_iter()
+            .flatten()
+            .next()
+            .ok_or(Error::ParentNotFound)
     }
 }
 

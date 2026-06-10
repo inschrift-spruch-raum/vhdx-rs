@@ -15,7 +15,7 @@ keywords.workspace = true
 categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
-vhdx-rs = { version = "0.1.0", path = ".." }
+vhdx-rs = { version = "0.2.0", path = ".." }
 clap = { version = "4.6.1", features = ["derive"] }
 byte-unit = { version = "5.2.0", features = ["byte"] }
 

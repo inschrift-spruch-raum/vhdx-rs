@@ -1,4 +1,5 @@
-use super::*;
+use super::core::create_fixed_test_io_writable;
+use super::support::*;
 
 // -----------------------------------------------------------------------
 // Byte-level read/write tests (T4)
@@ -9,7 +10,7 @@ fn create_fixed_test_io() -> TestContext {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("test-fixed-ro.vhdx");
 
-    VhdxFile::create(&path)
+    create_vhdx(&path)
         .size(4 * u64::from(MIB))
         .block_size(MIB)
         .logical_sector_size(4096)
@@ -17,7 +18,7 @@ fn create_fixed_test_io() -> TestContext {
         .finish()
         .expect("create fixed test vhdx");
 
-    let file = VhdxFile::open(&path).finish().expect("open read-only");
+    let file = open_vhdx(&path);
 
     TestContext {
         _dir: dir,
@@ -29,8 +30,8 @@ fn create_fixed_test_io() -> TestContext {
 // T4.1: byte_offset_zero_read_matches_full_sector
 #[test]
 fn byte_offset_zero_read_matches_full_sector() {
-    let ctx = create_fixed_test_io_writable();
-    let io = ctx.io();
+    let mut ctx = create_fixed_test_io_writable();
+    let mut io = ctx.io();
     // Write pattern to sector 0
     let mut sw = io.sector(0, 1).expect("sector 0");
     sw.seek(SeekFrom::Start(0)).expect("seek to 0");
@@ -58,8 +59,8 @@ fn byte_offset_zero_read_matches_full_sector() {
 // T4.2: byte_offset_non_aligned_read_extracts_correct_bytes
 #[test]
 fn byte_offset_non_aligned_read_extracts_correct_bytes() {
-    let ctx = create_fixed_test_io_writable();
-    let io = ctx.io();
+    let mut ctx = create_fixed_test_io_writable();
+    let mut io = ctx.io();
     let mut sw0 = io.sector(0, 1).expect("sector 0");
     sw0.seek(SeekFrom::Start(0)).expect("seek to 0");
     sw0.write_all(&[0x11u8; SECTOR_SIZE as usize])
@@ -91,8 +92,8 @@ fn byte_offset_non_aligned_read_extracts_correct_bytes() {
 // T4.3: byte_offset_rmw_write_preserves_surrounding_bytes
 #[test]
 fn byte_offset_rmw_write_preserves_surrounding_bytes() {
-    let ctx = create_fixed_test_io_writable();
-    let io = ctx.io();
+    let mut ctx = create_fixed_test_io_writable();
+    let mut io = ctx.io();
     let mut sector = io.sector(0, 1).expect("sector 0");
 
     // Write full sector 0 with 0xAA
@@ -127,8 +128,8 @@ fn byte_offset_rmw_write_preserves_surrounding_bytes() {
 // T4.4: byte_offset_cross_block_boundary_read
 #[test]
 fn byte_offset_cross_block_boundary_read() {
-    let ctx = create_fixed_test_io_writable();
-    let io = ctx.io();
+    let mut ctx = create_fixed_test_io_writable();
+    let mut io = ctx.io();
     // 1 MB / 4096 = 256 sectors per block
     // sector(254, 4) spans block 0 (sectors 0-255) and block 1 (sectors 256-511)
     let mut sector = io.sector(254, 4).expect("sector(254,4)");
@@ -155,8 +156,8 @@ fn byte_offset_cross_block_boundary_read() {
 // T4.5: byte_offset_cross_block_boundary_write_rmw
 #[test]
 fn byte_offset_cross_block_boundary_write_rmw() {
-    let ctx = create_fixed_test_io_writable();
-    let io = ctx.io();
+    let mut ctx = create_fixed_test_io_writable();
+    let mut io = ctx.io();
     // 1 MB / 4096 = 256 sectors per block
     let mut sector = io.sector(254, 4).expect("sector(254,4)");
 
@@ -190,8 +191,8 @@ fn byte_offset_cross_block_boundary_write_rmw() {
 // T4.6: byte_offset_validation_exceeds_range
 #[test]
 fn byte_offset_validation_exceeds_range() {
-    let ctx = create_fixed_test_io_writable();
-    let io = ctx.io();
+    let mut ctx = create_fixed_test_io_writable();
+    let mut io = ctx.io();
     let mut sector = io.sector(0, 1).expect("sector 0"); // 1 sector = 4096 bytes
 
     // Read at EOF
@@ -225,8 +226,8 @@ fn byte_offset_validation_exceeds_range() {
 // T4.7: byte_offset_empty_buf_is_noop
 #[test]
 fn byte_offset_empty_buf_is_noop() {
-    let ctx = create_fixed_test_io_writable();
-    let io = ctx.io();
+    let mut ctx = create_fixed_test_io_writable();
+    let mut io = ctx.io();
     let mut sector = io.sector(0, 1).expect("sector 0");
 
     // Empty read
@@ -246,8 +247,8 @@ fn byte_offset_empty_buf_is_noop() {
 // T4.8: byte_offset_write_to_read_only_returns_error
 #[test]
 fn byte_offset_write_to_read_only_returns_error() {
-    let ctx = create_fixed_test_io();
-    let io = ctx.io();
+    let mut ctx = create_fixed_test_io();
+    let mut io = ctx.io();
     let mut sector = io.sector(0, 1).expect("sector 0");
 
     let err = sector.write(&[0x42u8; 10]).unwrap_err();
@@ -264,23 +265,20 @@ fn byte_offset_write_to_not_present_block_allocates() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("test-dynamic-rw.vhdx");
 
-    VhdxFile::create(&path)
+    create_vhdx(&path)
         .size(256 * u64::from(MIB))
         .block_size(32 * MIB)
         .logical_sector_size(4096)
         .finish()
         .expect("create dynamic test vhdx");
 
-    let file = VhdxFile::open(&path)
-        .write()
-        .finish()
-        .expect("open writable dynamic");
-    let ctx = TestContext {
+    let file = open_vhdx_writable(&path);
+    let mut ctx = TestContext {
         _dir: dir,
         file,
         overlay: None,
     };
-    let io = ctx.io();
+    let mut io = ctx.io();
     let mut sector = io.sector(0, 1).expect("sector 0");
 
     let written = sector.write(&[0x42u8; 10]).expect("write allocates block");

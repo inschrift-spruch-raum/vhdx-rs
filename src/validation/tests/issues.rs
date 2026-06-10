@@ -1,5 +1,5 @@
+use super::super::{Error, SpecValidator, ValidationIssue};
 use super::helpers::build_test_vhdx;
-use super::{Error, SpecValidator};
 use crate::constants::{
     HEADER2_OFFSET, METADATA_TABLE_SIZE, REGION_TABLE_SIZE, REGION_TABLE1_OFFSET,
     REGION_TABLE2_OFFSET,
@@ -69,10 +69,7 @@ fn test_optional_unknown_region_pushes_issue() {
     assert!(
         found,
         "expected REGION_OPTIONAL_UNKNOWN issue, got: {:?}",
-        issues
-            .iter()
-            .map(super::ValidationIssue::code)
-            .collect::<Vec<_>>()
+        issues.iter().map(ValidationIssue::code).collect::<Vec<_>>()
     );
 
     // Verify issue fields
@@ -121,10 +118,7 @@ fn test_optional_unknown_metadata_pushes_issue() {
     assert!(
         found,
         "expected METADATA_OPTIONAL_UNKNOWN issue, got: {:?}",
-        issues
-            .iter()
-            .map(super::ValidationIssue::code)
-            .collect::<Vec<_>>()
+        issues.iter().map(ValidationIssue::code).collect::<Vec<_>>()
     );
 
     let issue = issues

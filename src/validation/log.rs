@@ -1,6 +1,6 @@
 use super::{Error, Guid, Header, Result, SignaturePosition, SpecValidator, ValidationIssue};
 
-impl SpecValidator<'_> {
+impl SpecValidator {
     /// Validate the log section.
     ///
     /// # Errors

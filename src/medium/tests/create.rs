@@ -1,101 +1,30 @@
 use bitvec::prelude::*;
 use crc32c::crc32c;
-use std::io::{Read, Write};
+use std::io::Read;
 
-use super::*;
 use crate::constants::{
     HEADER_SIZE, HEADER1_OFFSET, HEADER2_OFFSET, METADATA_REGION_SIZE, METADATA_TABLE_SIZE,
     REGION_TABLE_SIZE, REGION_TABLE1_OFFSET, REGION_TABLE2_OFFSET, TABLE_ENTRY_SIZE,
     TABLE_HEADER_SIZE,
 };
-use crate::error::Error;
 use crate::metadata::EntryFlags;
 use crate::types::{self, Guid};
+use crate::{CreateOptions, Medium, Result};
 
-/// Create a tempdir under `target/test/`, copy a reference file from misc/,
-/// return (`TempDir`, `PathBuf`). The `TempDir` keeps the copy alive.
-fn ref_to_tmp(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
-    let root = std::path::Path::new("target").join("test");
-    let _ = std::fs::create_dir_all(&root);
-    let dir = tempfile::Builder::new()
-        .prefix("test-")
-        .tempdir_in(&root)
-        .expect("tempdir");
-    let src = format!("misc/{name}");
-    let dst = dir.path().join(name);
-    std::fs::copy(&src, &dst).unwrap_or_else(|e| panic!("copy {src}: {e}"));
-    (dir, dst)
+fn open_test_medium(path: impl AsRef<std::path::Path>) -> Result<Medium> {
+    let inner = std::fs::File::open(path)?;
+    Medium::open(inner).finish()
 }
 
-// -- Open tests ---------------------------------------------------------
-
-#[test]
-fn open_void_vhdx() {
-    let (_dir, path) = ref_to_tmp("test-void.vhdx");
-    let f = File::open(&path).finish();
-    assert!(f.is_ok(), "failed to open test-void.vhdx: {:?}", f.err());
-    let f = f.unwrap();
-    assert!(!f.is_write());
-    assert!(f.is_strict());
-    assert_eq!(f.log_replay_policy(), LogReplayPolicy::Require);
-}
-
-#[test]
-fn open_options_builder_write() {
-    let (_dir, path) = ref_to_tmp("test-void.vhdx");
-    let f = File::open(&path).write().finish();
-    assert!(f.is_ok());
-    let f = f.unwrap();
-    assert!(f.is_write());
-}
-
-#[test]
-fn open_options_builder_log_replay() {
-    let (_dir, path) = ref_to_tmp("test-void.vhdx");
-    let f = File::open(&path).log_replay(LogReplayPolicy::Auto).finish();
-    assert!(f.is_ok());
-    assert_eq!(f.unwrap().log_replay_policy(), LogReplayPolicy::Auto);
-}
-
-#[test]
-fn open_options_builder_non_strict() {
-    let (_dir, path) = ref_to_tmp("test-void.vhdx");
-    let f = File::open(&path).strict(false).finish();
-    assert!(f.is_ok());
-    assert!(!f.unwrap().is_strict());
-}
-
-#[test]
-fn open_nonexistent_file() {
-    let f = File::open("misc/does-not-exist.vhdx").finish();
-    assert!(f.is_err());
-}
-
-#[test]
-fn open_invalid_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("bad.vhdx");
-    {
-        let mut tmp = std::fs::File::create(&path).unwrap();
-        tmp.write_all(b"not a vhdx file at all").unwrap();
-    }
-
-    let f = File::open(&path).finish();
-    assert!(f.is_err());
-    assert!(matches!(f.unwrap_err(), Error::InvalidSignature { .. }));
-}
-
-#[test]
-fn log_replay_default_is_require() {
-    assert_eq!(LogReplayPolicy::default(), LogReplayPolicy::Require);
-}
-
-#[test]
-fn read_semantics_default() {
-    assert_eq!(
-        ReadSemanticsPolicy::default(),
-        ReadSemanticsPolicy::EffectiveDataPreferred
-    );
+fn create_test_medium(path: impl AsRef<std::path::Path>) -> CreateOptions<std::fs::File> {
+    let inner = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .expect("prepare caller-owned create medium");
+    Medium::create(inner)
 }
 
 // -- Create tests -------------------------------------------------------
@@ -115,7 +44,14 @@ fn create_test_vhdx(size: u64) -> Vec<u8> {
     let test_dir = test_output.join(format!("vhdx-test-{test_id}"));
     std::fs::create_dir_all(&test_dir).expect("create test dir");
     let path = test_dir.join("test.vhdx");
-    File::create(&path)
+    let inner = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .expect("prepare caller-owned create medium");
+    Medium::create(inner)
         .size(size)
         .finish()
         .expect("create vhdx");
@@ -198,14 +134,14 @@ fn region_table_has_two_entries() {
 #[test]
 fn validation_rejects_zero_size() {
     let tf = tempfile::NamedTempFile::new().unwrap();
-    let result = File::create(tf.path()).finish();
+    let result = create_test_medium(tf.path()).finish();
     assert!(result.is_err());
 }
 
 #[test]
 fn validation_rejects_invalid_block_size() {
     let tf = tempfile::NamedTempFile::new().unwrap();
-    let result = File::create(tf.path())
+    let result = create_test_medium(tf.path())
             .size(1024 * 1024 * 1024)
             .block_size(3 * 1024 * 1024) // not power of 2
             .finish();
@@ -215,7 +151,7 @@ fn validation_rejects_invalid_block_size() {
 #[test]
 fn validation_rejects_invalid_sector_size() {
     let tf = tempfile::NamedTempFile::new().unwrap();
-    let result = File::create(tf.path())
+    let result = create_test_medium(tf.path())
         .size(1024 * 1024 * 1024)
         .logical_sector_size(1024)
         .finish();
@@ -225,7 +161,7 @@ fn validation_rejects_invalid_sector_size() {
 #[test]
 fn validation_allows_physical_lt_logical() {
     let tf = tempfile::NamedTempFile::new().unwrap();
-    let result = File::create(tf.path())
+    let result = create_test_medium(tf.path())
         .size(1024 * 1024 * 1024)
         .logical_sector_size(4096)
         .physical_sector_size(512)
@@ -258,7 +194,7 @@ fn create_test_vhdx_detailed(
     // If a parent path is specified, create a minimal parent VHDX first
     let actual_parent_path = if parent_path.is_some() {
         let parent_path_buf = test_dir.join("parent.vhdx");
-        File::create(&parent_path_buf)
+        create_test_medium(&parent_path_buf)
                 .size(10 * 1024 * 1024 * 1024u64) // 10 GB
                 .block_size(block_size)
                 .fixed(false)
@@ -270,12 +206,15 @@ fn create_test_vhdx_detailed(
     };
 
     let path = test_dir.join("test.vhdx");
-    let mut opts = File::create(&path)
+    let mut opts = create_test_medium(&path)
         .size(size)
         .block_size(block_size)
         .fixed(fixed);
     if let Some(ref p) = actual_parent_path {
-        opts = opts.parent_path(p);
+        let mut parent = open_test_medium(p).expect("open caller-owned parent");
+        opts = opts
+            .parent(&mut parent, p)
+            .expect("set caller-owned parent");
     }
     opts.finish().expect("create vhdx");
     let mut buf = Vec::new();
@@ -314,7 +253,11 @@ fn create_dynamic_metadata_table() {
     let (data, _path) =
         create_test_vhdx_detailed(1024 * 1024 * 1024, 32 * 1024 * 1024, false, None);
 
-    let bat_size = CreateOptions::calculate_bat_size(1024 * 1024 * 1024, 32 * 1024 * 1024, 4096);
+    let bat_size = CreateOptions::<std::fs::File>::calculate_bat_size(
+        1024 * 1024 * 1024,
+        32 * 1024 * 1024,
+        4096,
+    );
     let metadata_offset = 2 * 1024 * 1024 + u64::from(bat_size);
 
     // Signature "metadata"
@@ -336,7 +279,7 @@ fn create_dynamic_metadata_table() {
             offset >= METADATA_TABLE_SIZE,
             "entry {i} offset {offset} < 64KB"
         );
-        // Flags: IsRequired bit (2 per MS-VHDX §2.6.1.2) must be set
+        // Flags: IsRequired bit (2 per MS-VHDX 搂2.6.1.2) must be set
         let flags_bytes = flags.to_le_bytes();
         let ef = EntryFlags::new(&flags_bytes);
         assert!(
@@ -384,8 +327,11 @@ fn create_dynamic_metadata_items_values() {
     let (data, _path) =
         create_test_vhdx_detailed(10 * 1024 * 1024 * 1024u64, 32 * 1024 * 1024, false, None);
 
-    let bat_size =
-        CreateOptions::calculate_bat_size(10 * 1024 * 1024 * 1024, 32 * 1024 * 1024, 4096);
+    let bat_size = CreateOptions::<std::fs::File>::calculate_bat_size(
+        10 * 1024 * 1024 * 1024,
+        32 * 1024 * 1024,
+        4096,
+    );
     let metadata_offset = 2 * 1024 * 1024 + u64::from(bat_size);
 
     // Find each item by GUID and verify its value
@@ -397,7 +343,7 @@ fn create_dynamic_metadata_items_values() {
             [..usize::try_from(length).unwrap()];
 
         if guid == types::StandardItems::FILE_PARAMETERS {
-            // MS-VHDX §2.6.2.1: block_size (u32) + bit_fields (u32)
+            // MS-VHDX 搂2.6.2.1: block_size (u32) + bit_fields (u32)
             let fp_block = u32::from_le_bytes(item_data[..4].try_into().unwrap());
             assert_eq!(fp_block, 32 * 1024 * 1024, "block size mismatch");
             let fp = item_data[4..8].view_bits::<Lsb0>();
@@ -428,7 +374,7 @@ fn create_dynamic_bat_entries_not_present() {
 
     let bat_offset = 2 * 1024 * 1024; // BAT_REGION_OFFSET
     let (_num_payload, _num_sb, total_entries, _cr) =
-        CreateOptions::compute_bat_entry_counts(size, block_size, 4096);
+        CreateOptions::<std::fs::File>::compute_bat_entry_counts(size, block_size, 4096);
 
     for i in 0..usize::try_from(total_entries).unwrap() {
         let entry_bytes: [u8; 8] = data[bat_offset + i * 8..][..8].try_into().unwrap();
@@ -448,9 +394,9 @@ fn create_fixed_bat_entries_fully_present() {
 
     let bat_offset = 2 * 1024 * 1024;
     let (num_payload, num_sb, total_entries, chunk_ratio) =
-        CreateOptions::compute_bat_entry_counts(size, block_size, 4096);
+        CreateOptions::<std::fs::File>::compute_bat_entry_counts(size, block_size, 4096);
 
-    let bat_size = CreateOptions::calculate_bat_size(size, block_size, 4096);
+    let bat_size = CreateOptions::<std::fs::File>::calculate_bat_size(size, block_size, 4096);
     let metadata_offset = 2 * 1024 * 1024 + u64::from(bat_size);
     let raw_first_mb = (metadata_offset + u64::from(METADATA_REGION_SIZE)).div_ceil(1024 * 1024);
     let payload_align = u64::from(block_size) / (1024 * 1024);
@@ -517,7 +463,7 @@ fn create_fixed_file_size_includes_payloads() {
     let block_size = 32 * 1024 * 1024u32;
     let (data, _path) = create_test_vhdx_detailed(size, block_size, true, None);
 
-    let bat_size = CreateOptions::calculate_bat_size(size, block_size, 4096);
+    let bat_size = CreateOptions::<std::fs::File>::calculate_bat_size(size, block_size, 4096);
     let metadata_offset = 2 * 1024 * 1024 + u64::from(bat_size);
     let raw_first_mb = (metadata_offset + u64::from(METADATA_REGION_SIZE)).div_ceil(1024 * 1024);
     let payload_align = u64::from(block_size) / (1024 * 1024);
@@ -525,7 +471,7 @@ fn create_fixed_file_size_includes_payloads() {
     let first_payload = first_payload_mb * (1024 * 1024);
 
     let (num_payload, _num_sb, _total, _cr) =
-        CreateOptions::compute_bat_entry_counts(size, block_size, 4096);
+        CreateOptions::<std::fs::File>::compute_bat_entry_counts(size, block_size, 4096);
     let expected_end = first_payload + num_payload * u64::from(block_size);
 
     assert_eq!(
@@ -561,8 +507,11 @@ fn create_differencing_has_parent_locator() {
         Some(std::path::Path::new("parent.vhdx")),
     );
 
-    let bat_size =
-        CreateOptions::calculate_bat_size(10 * 1024 * 1024 * 1024, 32 * 1024 * 1024, 4096);
+    let bat_size = CreateOptions::<std::fs::File>::calculate_bat_size(
+        10 * 1024 * 1024 * 1024,
+        32 * 1024 * 1024,
+        4096,
+    );
     let metadata_offset = 2 * 1024 * 1024 + u64::from(bat_size);
 
     // Should have 6 entries (including ParentLocator)
@@ -613,7 +562,11 @@ fn create_differencing_file_parameters_has_parent_flag() {
         Some(std::path::Path::new("parent.vhdx")),
     );
 
-    let bat_size = CreateOptions::calculate_bat_size(1024 * 1024 * 1024, 32 * 1024 * 1024, 4096);
+    let bat_size = CreateOptions::<std::fs::File>::calculate_bat_size(
+        1024 * 1024 * 1024,
+        32 * 1024 * 1024,
+        4096,
+    );
     let metadata_offset = 2 * 1024 * 1024 + u64::from(bat_size);
 
     for i in 0..6 {
@@ -639,7 +592,11 @@ fn create_differencing_file_parameters_has_parent_flag() {
 fn create_fixed_file_parameters_leave_block_allocated() {
     let (data, _path) = create_test_vhdx_detailed(128 * 1024 * 1024, 32 * 1024 * 1024, true, None);
 
-    let bat_size = CreateOptions::calculate_bat_size(128 * 1024 * 1024, 32 * 1024 * 1024, 4096);
+    let bat_size = CreateOptions::<std::fs::File>::calculate_bat_size(
+        128 * 1024 * 1024,
+        32 * 1024 * 1024,
+        4096,
+    );
     let metadata_offset = 2 * 1024 * 1024 + u64::from(bat_size);
 
     for i in 0..5 {

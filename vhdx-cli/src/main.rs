@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use vhdx::{File, LogReplayPolicy};
+use vhdx::{LogReplayPolicy, Medium};
 
 #[derive(Parser)]
 #[command(
@@ -218,6 +218,11 @@ fn parse_size(s: &str) -> Result<u64, String> {
     })
 }
 
+fn open_medium(path: &Path) -> vhdx::Result<vhdx::OpenOptions<std::fs::File>> {
+    let inner = std::fs::File::open(path).map_err(vhdx::Error::Io)?;
+    Ok(Medium::<std::fs::File>::open(inner))
+}
+
 // ---------------------------------------------------------------------------
 // Create command implementation
 // ---------------------------------------------------------------------------
@@ -250,8 +255,15 @@ fn cmd_create(args: &CreateArgs) -> vhdx::Result<()> {
         }
     }
 
+    let inner = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&args.path)
+        .map_err(vhdx::Error::Io)?;
+
     // Build creation options.
-    let mut opts = File::create(&args.path).size(size_bytes);
+    let mut opts = Medium::create(inner).size(size_bytes);
 
     if matches!(args.disk_type, DiskType::Fixed) {
         opts = opts.fixed(true);
@@ -260,7 +272,10 @@ fn cmd_create(args: &CreateArgs) -> vhdx::Result<()> {
     opts = opts.block_size(args.block_size);
 
     if let Some(ref parent) = args.parent {
-        opts = opts.parent_path(parent);
+        let mut parent_medium = open_medium(parent)?
+            .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
+            .finish()?;
+        opts = opts.parent(&mut parent_medium, parent)?;
     }
 
     opts = opts
@@ -295,10 +310,8 @@ fn cmd_check(args: CheckArgs) {
     };
 
     // Open the file.
-    let file = match File::open(&file)
-        .log_replay(log_policy)
-        .strict(args.strict)
-        .finish()
+    let mut medium = match open_medium(&file)
+        .and_then(|opts| opts.log_replay(log_policy).strict(args.strict).finish())
     {
         Ok(f) => f,
         Err(e) => {
@@ -308,7 +321,13 @@ fn cmd_check(args: CheckArgs) {
     };
 
     // Run structural validation.
-    let validator = file.validator();
+    let validator = match medium.validator() {
+        Ok(validator) => validator,
+        Err(e) => {
+            report_error(&e);
+            process::exit(1);
+        }
+    };
     match validator.validate_file() {
         Ok(issues) => {
             if issues.is_empty() {
@@ -350,15 +369,24 @@ fn cmd_info(args: InfoArgs) {
 }
 
 fn run_info(path: &PathBuf, format: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Use File::open() standard path as per API.md
-    let file = File::open(path)
+    let medium = open_medium(path)?
         .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
         .finish()?;
 
-    let sections = file.sections();
-    let header = sections.header()?;
-    let ft = header.file_type();
-    let current = header.header(0)?;
+    let sections = medium.sections()?;
+    let (creator, sequence_number, file_write_guid, data_write_guid, version) = {
+        let header = sections.header()?;
+        let ft = header.file_type();
+        let creator = decode_utf16le_creator(&ft.creator()[..]);
+        let current = header.header(0)?;
+        (
+            creator,
+            current.sequence_number(),
+            current.file_write_guid(),
+            current.data_write_guid(),
+            current.version(),
+        )
+    };
 
     // Metadata
     let metadata = sections.metadata().ok();
@@ -394,11 +422,12 @@ fn run_info(path: &PathBuf, format: &str) -> Result<(), Box<dyn std::error::Erro
         disk_type = "Unknown";
     }
 
-    let creator = decode_utf16le_creator(&ft.creator()[..]);
-
     let info = InfoOutput {
         creator: &creator,
-        hdr: &current,
+        sequence_number,
+        file_write_guid,
+        data_write_guid,
+        version,
         block_size,
         logical_sector: logical_sec,
         physical_sector: physical_sec,
@@ -424,10 +453,10 @@ fn cmd_sections(args: SectionsArgs) -> vhdx::Result<()> {
         eprintln!("Error: no file specified");
         process::exit(1);
     };
-    let file = File::open(&file)
+    let medium = open_medium(&file)?
         .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
         .finish()?;
-    let sections = file.sections();
+    let sections = medium.sections()?;
 
     match args.command {
         SectionCommand::Header => show_header(&sections),
@@ -447,21 +476,21 @@ fn cmd_diff(args: DiffArgs) -> vhdx::Result<()> {
         process::exit(1);
     };
 
-    // Use the library's File API instead of raw bytes + constructors.
-    let file = File::open(&file_path)
+    // Use the library's Medium API instead of raw bytes + constructors.
+    let mut medium = open_medium(&file_path)?
         .log_replay(LogReplayPolicy::ReadOnlyNoReplay)
         .finish()?;
 
-    let sections = file.sections();
-    let fp = {
+    let has_parent = {
+        let sections = medium.sections()?;
         let metadata = sections.metadata()?;
-        metadata
-            .items()
-            .file_parameters()
-            .map_err(|_| vhdx::Error::InvalidFile("No FileParameters metadata item found".into()))?
+        let fp = metadata.items().file_parameters().map_err(|_| {
+            vhdx::Error::InvalidFile("No FileParameters metadata item found".into())
+        })?;
+        fp.has_parent()
     };
 
-    if !fp.has_parent() {
+    if !has_parent {
         return Err(vhdx::Error::InvalidFile(format!(
             "{} is not a differencing disk (has_parent flag is not set)",
             file_path.display()
@@ -470,42 +499,74 @@ fn cmd_diff(args: DiffArgs) -> vhdx::Result<()> {
 
     // Dispatch to the requested action.
     match args.action {
-        DiffAction::Parent => cmd_diff_parent(&file),
-        DiffAction::Chain => cmd_diff_chain(&file, &file_path),
+        DiffAction::Parent => cmd_diff_parent(&mut medium),
+        DiffAction::Chain => cmd_diff_chain(&mut medium, &file_path),
     }
 }
 
-/// Show the resolved parent disk path from the parent locator.
-fn cmd_diff_parent(file: &File) -> vhdx::Result<()> {
-    let metadata = file.sections().metadata()?;
+/// Show parent path entries from the parent locator.
+fn cmd_diff_parent(medium: &mut Medium) -> vhdx::Result<()> {
+    let sections = medium.sections()?;
+    let metadata = sections.metadata()?;
     let locator = metadata
         .items()
         .parent_locator()
         .map_err(|_| vhdx::Error::InvalidFile("No parent locator metadata item found".into()))?;
 
-    let parent_path = locator
-        .resolve_parent_path()
-        .map_err(|e| vhdx::Error::InvalidFile(format!("Failed to resolve parent path: {e}")))?;
-
-    println!("{}", parent_path.display());
+    let mut found_path_entry = false;
+    for entry in locator.entries() {
+        let data = locator.key_value_data();
+        let key = entry.key(data)?;
+        if matches!(
+            key.as_str(),
+            "relative_path" | "volume_path" | "absolute_win32_path"
+        ) {
+            println!("{key}: {}", entry.value(data)?);
+            found_path_entry = true;
+        }
+    }
+    if !found_path_entry {
+        return Err(vhdx::Error::InvalidFile(
+            "parent locator has no path entries".into(),
+        ));
+    }
     Ok(())
 }
 
 /// Show parent chain information for the differencing disk.
-fn cmd_diff_chain(file: &File, file_path: &Path) -> vhdx::Result<()> {
+fn cmd_diff_chain(medium: &mut Medium, file_path: &Path) -> vhdx::Result<()> {
     // 1. 执行 parent locator 校验（含 DataWriteGuid 比较）
-    let issues = file.validator().validate_parent_locator()?;
+    let issues = medium.validator()?.validate_parent_locator()?;
 
-    // 2. 获取父路径用于显示
-    let parent_path = {
-        let metadata = file.sections().metadata()?;
+    // 2. 获取父定位器路径候选项用于显示；不在 crate 内执行隐式文件系统解析。
+    let parent_path_entries = {
+        let sections = medium.sections()?;
+        let metadata = sections.metadata()?;
         let locator = metadata
             .items()
             .parent_locator()
             .map_err(|_| vhdx::Error::InvalidFile("no parent locator".into()))?;
-        locator
-            .resolve_parent_path()
-            .map_err(|_| vhdx::Error::InvalidFile("unresolvable parent path".into()))?
+        let data = locator.key_value_data();
+        let entries = locator
+            .entries()
+            .filter_map(|entry| {
+                let key = entry.key(data).ok()?;
+                if matches!(
+                    key.as_str(),
+                    "relative_path" | "volume_path" | "absolute_win32_path"
+                ) {
+                    Some((key, entry.value(data).ok()?))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        if entries.is_empty() {
+            return Err(vhdx::Error::InvalidFile(
+                "parent locator has no path entries".into(),
+            ));
+        }
+        entries
     };
 
     // 3. 判断 linkage 是否匹配（从校验结果中找 PARENT_LOCATOR_GUID_MISMATCH）
@@ -514,7 +575,9 @@ fn cmd_diff_chain(file: &File, file_path: &Path) -> vhdx::Result<()> {
         .any(|i| i.code() == "PARENT_LOCATOR_GUID_MISMATCH");
 
     println!("Child path:  {}", file_path.display());
-    println!("Parent path: {}", parent_path.display());
+    for (key, value) in parent_path_entries {
+        println!("Parent {key}: {value}");
+    }
     println!("Linkage matched: {linkage_matched}");
 
     // 4. 如果有其他 issues，也打印出来
@@ -531,240 +594,6 @@ fn cmd_diff_chain(file: &File, file_path: &Path) -> vhdx::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Section display functions
-// ---------------------------------------------------------------------------
-
-fn show_header(sections: &vhdx::section::Sections<'_>) -> vhdx::Result<()> {
-    let header = sections.header()?;
-
-    // -- File Type Identifier --
-    let ft = header.file_type();
-    println!("=== File Type Identifier ===");
-    println!(
-        "  Signature: {:?}",
-        std::str::from_utf8(ft.signature()).unwrap_or("<binary>")
-    );
-    println!("  Creator:    {} bytes", ft.creator().len());
-
-    // -- Current Header --
-    println!();
-    println!("=== Current Header (index 0) ===");
-    match header.header(0) {
-        Ok(h) => {
-            println!(
-                "  Signature:       {:?}",
-                std::str::from_utf8(h.signature()).unwrap_or("<binary>")
-            );
-            println!("  Sequence Number: {}", h.sequence_number());
-            println!("  CRC-32C:         {}", h.checksum());
-            println!("  Version:         {} (expected 1)", h.version());
-            println!("  Log Version:     {} (expected 0)", h.log_version());
-            println!("  Log Offset:      {}", h.log_offset());
-            println!("  Log Length:      {}", h.log_length());
-            println!("  File Write GUID: {}", h.file_write_guid());
-            println!("  Data Write GUID: {}", h.data_write_guid());
-            println!("  Log GUID:        {}", h.log_guid());
-        }
-        Err(ref e) => println!("  [Error: {e}]"),
-    }
-
-    // -- Header 1 --
-    println!();
-    println!("=== Header 1 ===");
-    print_header_summary(&header, 1);
-
-    // -- Header 2 --
-    println!();
-    println!("=== Header 2 ===");
-    print_header_summary(&header, 2);
-
-    // -- Region Table 1 --
-    println!();
-    println!("=== Region Table 1 ===");
-    print_region_table(&header, 1);
-
-    // -- Region Table 2 --
-    println!();
-    println!("=== Region Table 2 ===");
-    print_region_table(&header, 2);
-
-    Ok(())
-}
-
-fn print_header_summary(header: &vhdx::section::Header<'_>, index: usize) {
-    match header.header(index) {
-        Ok(h) => {
-            println!(
-                "  Signature:       {:?}",
-                std::str::from_utf8(h.signature()).unwrap_or("<binary>")
-            );
-            println!("  Sequence Number: {}", h.sequence_number());
-            println!("  CRC-32C:         {}", h.checksum());
-        }
-        Err(ref e) => println!("  [Error: {e}]"),
-    }
-}
-
-fn print_region_table(header: &vhdx::section::Header<'_>, index: usize) {
-    match header.region_table(index) {
-        Ok(rt) => {
-            let hdr = rt.header();
-            println!(
-                "  Signature:    {:?}",
-                std::str::from_utf8(hdr.signature()).unwrap_or("<binary>")
-            );
-            println!("  Entry Count:  {}", hdr.entry_count());
-            println!("  CRC-32C:      {}", hdr.checksum());
-            for (i, entry) in rt.entries().enumerate() {
-                println!("  Entry [{i}]:");
-                println!("    GUID:     {}", entry.guid());
-                println!("    Offset:   {}", entry.file_offset());
-                println!("    Length:   {}", entry.length());
-                println!("    Required: {}", entry.required());
-            }
-        }
-        Err(ref e) => println!("  [Error: {e}]"),
-    }
-}
-
-fn show_bat(sections: &vhdx::section::Sections<'_>) -> vhdx::Result<()> {
-    use vhdx::section::BatState;
-
-    let bat = sections.bat()?;
-
-    println!("=== Block Allocation Table (BAT) ===");
-
-    let mut total = 0u64;
-    let mut displayed = 0u64;
-    for (i, entry) in bat.entries().enumerate() {
-        total = i as u64 + 1;
-        if displayed < 20 {
-            if displayed == 0 {
-                println!();
-                println!("  First 20 entries:");
-            }
-            let state_str = match entry.state()? {
-                BatState::Payload(s) => format!("Payload({s:?})"),
-                BatState::SectorBitmap(s) => format!("SectorBitmap({s:?})"),
-            };
-            println!(
-                "  [{i:>4}] state={state_str}, offset_mb={}",
-                entry.file_offset_mb()
-            );
-            displayed += 1;
-        }
-    }
-
-    println!("  Total Entries: {total}");
-    if total > 20 {
-        println!("  ... ({} entries omitted)", total - 20);
-    }
-
-    Ok(())
-}
-
-fn show_metadata(sections: &vhdx::section::Sections<'_>) -> vhdx::Result<()> {
-    let meta = sections.metadata()?;
-    let table = meta.table();
-    let items = meta.items();
-
-    println!("=== Metadata ===");
-    if table.header().signature() == b"metadata" {
-        println!("  Signature: metadata (valid)");
-    } else {
-        println!(
-            "  Signature: [invalid: {:?}]",
-            std::str::from_utf8(table.header().signature()).unwrap_or("<binary>")
-        );
-    }
-    println!("  Entry Count: {}", table.header().entry_count());
-    println!();
-
-    // Show known metadata items
-    println!("  Known Metadata Items:");
-    if let Ok(fp) = items.file_parameters() {
-        println!("    FileParameters:");
-        println!("      Block Size:         {} bytes", fp.block_size());
-        println!("      Has Parent:         {}", fp.has_parent());
-        println!("      Leave Block Alloc:  {}", fp.leave_block_allocated());
-    } else {
-        println!("    FileParameters: not found");
-    }
-    if let Ok(size) = items.virtual_disk_size() {
-        println!("    VirtualDiskSize:     {size} bytes");
-    } else {
-        println!("    VirtualDiskSize: not found");
-    }
-    if let Ok(id) = items.virtual_disk_id() {
-        println!("    VirtualDiskId:       {id}");
-    } else {
-        println!("    VirtualDiskId: not found");
-    }
-    if let Ok(lss) = items.logical_sector_size() {
-        println!("    LogicalSectorSize:   {lss}");
-    } else {
-        println!("    LogicalSectorSize: not found");
-    }
-    if let Ok(pss) = items.physical_sector_size() {
-        println!("    PhysicalSectorSize:  {pss}");
-    } else {
-        println!("    PhysicalSectorSize: not found");
-    }
-    if let Ok(pl) = items.parent_locator() {
-        println!("    ParentLocator:");
-        println!("      Key-Value Entries: {}", pl.header().key_value_count());
-        for (i, kv) in pl.entries().enumerate() {
-            let key = kv
-                .key(pl.key_value_data())
-                .unwrap_or_else(|_| "<decode error>".into());
-            let val = kv
-                .value(pl.key_value_data())
-                .unwrap_or_else(|_| "<decode error>".into());
-            println!("      [{i}] \"{key}\" = \"{val}\"");
-        }
-    } else {
-        println!("    ParentLocator: not found");
-    }
-
-    // Show all table entries (including unknown GUIDs)
-    println!();
-    println!("  Raw Table Entries:");
-    for (i, entry) in table.entries().enumerate() {
-        println!(
-            "    [{i}] GUID={}, offset={}, length={}, flags={:#010x}",
-            entry.item_id(),
-            entry.offset(),
-            entry.length(),
-            entry.flags_bits(),
-        );
-    }
-
-    Ok(())
-}
-
-fn show_log(sections: &vhdx::section::Sections<'_>) -> vhdx::Result<()> {
-    let log = sections.log()?;
-
-    println!("=== Log ===");
-    let entries: Vec<_> = log.entries().collect();
-    println!("  Total Entries: {}", entries.len());
-    println!();
-    let display_count = entries.len().min(10);
-    for (i, entry) in entries.iter().take(display_count).enumerate() {
-        let hdr = entry.header();
-        println!("  Entry [{i}]:");
-        println!("    Sequence Number:  {}", hdr.sequence_number());
-        println!("    Descriptor Count: {}", hdr.descriptor_count());
-        println!("    Entry Length:     {} bytes", hdr.entry_length());
-        println!("    Tail:             {}", hdr.tail());
-        println!("    CRC-32C:          {}", hdr.checksum());
-    }
-    if entries.len() > 10 {
-        println!("  ... ({} entries omitted)", entries.len() - 10);
-    }
-
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // Output helpers – text
@@ -772,9 +601,11 @@ fn show_log(sections: &vhdx::section::Sections<'_>) -> vhdx::Result<()> {
 
 mod errors;
 mod output;
+mod sections;
 
 use errors::report_error;
 use output::{InfoOutput, decode_utf16le_creator, print_json, print_text};
+use sections::{show_bat, show_header, show_log, show_metadata};
 
 #[cfg(test)]
 mod tests;

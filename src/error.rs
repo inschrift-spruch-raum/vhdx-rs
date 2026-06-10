@@ -185,8 +185,17 @@ pub enum Error {
     #[error("parent disk not found")]
     ParentNotFound,
 
+    #[error("parent resolver required")]
+    ParentResolverRequired,
+
+    #[error("parent logical sector size mismatch: child={child}, parent={parent}")]
+    ParentSectorSizeMismatch { child: u32, parent: u32 },
+
     #[error("parent GUID mismatch: expected {expected}, found {actual}")]
     ParentMismatch { expected: Guid, actual: Guid },
+
+    #[error("parent locator GUID mismatch: expected {expected}, found {actual}")]
+    ParentLocatorGuidMismatch { expected: Guid, actual: Guid },
 
     #[error("parent linkage key missing")]
     ParentLocatorMissingLinkage,
@@ -247,6 +256,8 @@ impl From<Error> for std::io::Error {
             | Error::LogActiveSequenceEmpty
             | Error::ParentLocatorMissingLinkage
             | Error::ParentLocatorLinkage2Conflict
+            | Error::ParentSectorSizeMismatch { .. }
+            | Error::ParentLocatorGuidMismatch { .. }
             | Error::ParentMismatch { .. } => {
                 Self::new(std::io::ErrorKind::InvalidData, e.to_string())
             }
@@ -255,6 +266,7 @@ impl From<Error> for std::io::Error {
             Error::MetadataNotFound { .. }
             | Error::BatEntryNotFound { .. }
             | Error::BlockNotPresent { .. }
+            | Error::ParentResolverRequired
             | Error::ParentNotFound => Self::new(std::io::ErrorKind::NotFound, e.to_string()),
 
             // Permission

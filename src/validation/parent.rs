@@ -3,7 +3,7 @@ use super::{
     ValidationIssue,
 };
 
-impl SpecValidator<'_> {
+impl SpecValidator {
     /// Validate the parent locator for differencing disks.
     ///
     /// # Errors
@@ -19,8 +19,7 @@ impl SpecValidator<'_> {
         let Ok(locator) = meta.items().parent_locator() else {
             return Ok(issues);
         };
-        let parent_linkage_guid = Self::validate_parent_locator_keys(&locator, &mut issues)?;
-        Self::validate_parent_locator_data_write_guid(parent_linkage_guid, &locator, &mut issues)?;
+        Self::validate_parent_locator_keys(&locator, &mut issues)?;
 
         Ok(issues)
     }
@@ -71,6 +70,20 @@ impl SpecValidator<'_> {
             );
             return Err(Error::ParentLocatorMissingLinkage);
         }
+        if parent_linkage_guid.is_none() {
+            Self::push_issue(
+                issues,
+                ValidationIssue::new(
+                    "parent_locator",
+                    "PARENT_LOCATOR_FORMAT_ERROR",
+                    "parent_linkage value is not a valid GUID format",
+                    "VALEXT",
+                ),
+            );
+            return Err(Error::InvalidParentLocator(
+                "parent_linkage value is not a valid GUID format".into(),
+            ));
+        }
         if !has_path {
             Self::push_issue(
                 issues,
@@ -86,311 +99,13 @@ impl SpecValidator<'_> {
         Ok(parent_linkage_guid)
     }
 
-    fn validate_parent_locator_data_write_guid(
-        parent_linkage_guid: Option<Guid>, locator: &crate::metadata::ParentLocator<'_>,
-        issues: &mut Vec<ValidationIssue>,
-    ) -> Result<()> {
-        let Some(expected_linkage) = parent_linkage_guid else {
-            return Ok(());
-        };
-        let Ok(parent_path_buf) = locator.resolve_parent_path() else {
-            return Ok(());
-        };
-        let Some(parent_data_write_guid) = Self::read_parent_data_write_guid(&parent_path_buf)
-        else {
-            return Ok(());
-        };
-        if parent_data_write_guid != expected_linkage {
-            Self::push_issue(
-                issues,
-                ValidationIssue::new(
-                    "parent_locator",
-                    "PARENT_LOCATOR_GUID_MISMATCH",
-                    format!(
-                        "DataWriteGuid mismatch: expected {expected_linkage}, actual {parent_data_write_guid}"
-                    ),
-                    "MS-VHDX/2.6.2.6",
-                ),
-            );
-            return Err(Error::ParentMismatch {
-                expected: expected_linkage,
-                actual: parent_data_write_guid,
-            });
-        }
-        Ok(())
-    }
-
-    fn read_parent_data_write_guid(parent_path_buf: &std::path::Path) -> Option<Guid> {
-        use std::io::Read;
-        let mut parent_file = std::fs::File::open(parent_path_buf).ok()?;
-        let mut parent_header_buf = vec![0u8; 1024 * 1024];
-        let bytes_read = parent_file.read(&mut parent_header_buf).ok()?;
-        if bytes_read < 8 {
-            return None;
-        }
-        parent_header_buf.truncate(bytes_read);
-        let expected_sig: [u8; 8] = [0x76, 0x68, 0x64, 0x78, 0x66, 0x69, 0x6C, 0x65];
-        if parent_header_buf[..8] != expected_sig {
-            return None;
-        }
-        let parent_header = crate::header::Header::new(&parent_header_buf).ok()?;
-        let parent_current = parent_header.header(0).ok()?;
-        Some(parent_current.data_write_guid())
-    }
-
-    // -----------------------------------------------------------------------
-    // Parent chain validation
-    // -----------------------------------------------------------------------
-
-    /// Validate the parent chain (differencing disks).
-    ///
-    /// Opens the parent file, reads its `DataWriteGuid`, and compares it
-    /// with the child's expected `parent_linkage` GUID.
-    ///
-    /// Returns [`ParentChainInfo`](crate::ParentChainInfo) on success.
-    #[cfg(test)]
-    pub(crate) fn validate_parent_chain(&self) -> Result<crate::file::ParentChainInfo> {
-        let mut issues = Vec::new();
-        let locator = self.load_parent_chain_locator(&mut issues)?;
-        let expected_linkage = Self::extract_expected_parent_linkage(&locator, &mut issues)?;
-        let parent_path_buf = Self::resolve_parent_chain_path(&locator, &mut issues)?;
-        let parent_data_write_guid =
-            Self::read_parent_chain_data_write_guid(&parent_path_buf, &mut issues)?;
-        Self::validate_parent_chain_linkage(expected_linkage, parent_data_write_guid, &mut issues)?;
-
-        let child = self
-            .child_path
-            .clone()
-            .unwrap_or_else(|| std::path::PathBuf::from("<unknown>"));
-        Ok(crate::file::ParentChainInfo {
-            _child_path: child,
-            _parent_path: parent_path_buf,
-            _linkage_matched: true,
-        })
-    }
-
-    #[cfg(test)]
-    fn load_parent_chain_locator<'b>(
-        &'b self, issues: &mut Vec<ValidationIssue>,
-    ) -> Result<crate::metadata::ParentLocator<'b>> {
-        let Some(meta_data) = self.metadata_region() else {
-            Self::push_issue(
-                issues,
-                ValidationIssue::new(
-                    "parent_locator",
-                    "PARENT_LOCATOR_FORMAT_ERROR",
-                    "no metadata region",
-                    "VALEXT",
-                ),
-            );
-            return Err(Error::ParentNotFound);
-        };
-        let meta = crate::metadata::Metadata::new(meta_data)?;
-        let Ok(locator) = meta.items().parent_locator() else {
-            Self::push_issue(
-                issues,
-                ValidationIssue::new(
-                    "parent_locator",
-                    "PARENT_LOCATOR_MISSING_LINKAGE",
-                    "no parent locator",
-                    "MS-VHDX/2.6.2.6.3",
-                ),
-            );
-            return Err(Error::ParentLocatorMissingLinkage);
-        };
-        Ok(locator)
-    }
-
-    #[cfg(test)]
-    fn extract_expected_parent_linkage(
-        locator: &crate::metadata::ParentLocator<'_>, issues: &mut Vec<ValidationIssue>,
-    ) -> Result<Guid> {
-        let kv_data = locator.key_value_data();
-        let mut expected_linkage: Option<Guid> = None;
-        for kv in locator.entries() {
-            let Ok(key) = kv.key(kv_data) else { continue };
-            if key == "parent_linkage2" {
-                Self::push_issue(
-                    issues,
-                    ValidationIssue::new(
-                        "parent_locator",
-                        "PARENT_LOCATOR_LINKAGE2_CONFLICT",
-                        "parent_linkage2 present",
-                        "MS-VHDX/2.6.2.6.3",
-                    ),
-                );
-                return Err(Error::ParentLocatorLinkage2Conflict);
-            }
-            if key == "parent_linkage" {
-                let Ok(value) = kv.value(kv_data) else {
-                    continue;
-                };
-                expected_linkage = parse_guid_from_braced_string(&value);
-            }
-        }
-        let Some(expected_linkage) = expected_linkage else {
-            Self::push_issue(
-                issues,
-                ValidationIssue::new(
-                    "parent_locator",
-                    "PARENT_LOCATOR_FORMAT_ERROR",
-                    "parent_linkage value is not a valid GUID format",
-                    "VALEXT",
-                ),
-            );
-            return Err(Error::InvalidParentLocator(
-                "parent_linkage value is not a valid GUID format".into(),
-            ));
-        };
-        Ok(expected_linkage)
-    }
-
-    #[cfg(test)]
-    fn resolve_parent_chain_path(
-        locator: &crate::metadata::ParentLocator<'_>, issues: &mut Vec<ValidationIssue>,
-    ) -> Result<std::path::PathBuf> {
-        let Ok(parent_path_buf) = locator.resolve_parent_path() else {
-            Self::push_issue(
-                issues,
-                ValidationIssue::new(
-                    "parent_locator",
-                    "PARENT_LOCATOR_NO_VALID_PATH",
-                    "unresolvable parent path",
-                    "MS-VHDX/2.6.2.6.3",
-                ),
-            );
-            return Err(Error::ParentNotFound);
-        };
-        Ok(parent_path_buf)
-    }
-
-    #[cfg(test)]
-    fn read_parent_chain_data_write_guid(
-        parent_path_buf: &std::path::PathBuf, issues: &mut Vec<ValidationIssue>,
-    ) -> Result<Guid> {
-        use std::io::Read;
-        let Ok(mut parent_file) = std::fs::File::open(parent_path_buf) else {
-            Self::push_issue(
-                issues,
-                ValidationIssue::new(
-                    "parent_locator",
-                    "PARENT_LOCATOR_NO_VALID_PATH",
-                    format!("unable to open parent file: {}", parent_path_buf.display()),
-                    "MS-VHDX/2.6.2.6.3",
-                ),
-            );
-            return Err(Error::ParentNotFound);
-        };
-        let mut parent_header_buf = vec![0u8; 1024 * 1024];
-        let Ok(bytes_read) = parent_file.read(&mut parent_header_buf) else {
-            Self::push_issue(
-                issues,
-                ValidationIssue::new(
-                    "parent_locator",
-                    "PARENT_LOCATOR_FORMAT_ERROR",
-                    format!("failed to read parent file: {}", parent_path_buf.display()),
-                    "VALEXT",
-                ),
-            );
-            return Err(Error::ParentNotFound);
-        };
-        if bytes_read < 8 {
-            Self::push_issue(
-                issues,
-                ValidationIssue::new(
-                    "parent_locator",
-                    "PARENT_LOCATOR_FORMAT_ERROR",
-                    format!(
-                        "parent file too small ({} bytes): {}",
-                        bytes_read,
-                        parent_path_buf.display()
-                    ),
-                    "VALEXT",
-                ),
-            );
-            return Err(Error::ParentNotFound);
-        }
-        parent_header_buf.truncate(bytes_read);
-        let expected_sig: [u8; 8] = [0x76, 0x68, 0x64, 0x78, 0x66, 0x69, 0x6C, 0x65];
-        if parent_header_buf[..8] != expected_sig {
-            Self::push_issue(
-                issues,
-                ValidationIssue::new(
-                    "parent_locator",
-                    "PARENT_LOCATOR_FORMAT_ERROR",
-                    format!(
-                        "parent file is not a valid VHDX: {}",
-                        parent_path_buf.display()
-                    ),
-                    "VALEXT",
-                ),
-            );
-            return Err(Error::ParentNotFound);
-        }
-        let Ok(parent_header) = Header::new(&parent_header_buf) else {
-            Self::push_issue(
-                issues,
-                ValidationIssue::new(
-                    "parent_locator",
-                    "PARENT_LOCATOR_FORMAT_ERROR",
-                    format!(
-                        "failed to parse parent header: {}",
-                        parent_path_buf.display()
-                    ),
-                    "VALEXT",
-                ),
-            );
-            return Err(Error::ParentNotFound);
-        };
-        let Ok(parent_current) = parent_header.header(0) else {
-            Self::push_issue(
-                issues,
-                ValidationIssue::new(
-                    "parent_locator",
-                    "PARENT_LOCATOR_FORMAT_ERROR",
-                    format!(
-                        "failed to get current parent header: {}",
-                        parent_path_buf.display()
-                    ),
-                    "VALEXT",
-                ),
-            );
-            return Err(Error::ParentNotFound);
-        };
-        Ok(parent_current.data_write_guid())
-    }
-
-    #[cfg(test)]
-    fn validate_parent_chain_linkage(
-        expected_linkage: Guid, parent_data_write_guid: Guid, issues: &mut Vec<ValidationIssue>,
-    ) -> Result<()> {
-        if parent_data_write_guid != expected_linkage {
-            Self::push_issue(
-                issues,
-                ValidationIssue::new(
-                    "parent_locator",
-                    "PARENT_LOCATOR_GUID_MISMATCH",
-                    format!(
-                        "DataWriteGuid mismatch: expected {expected_linkage}, actual {parent_data_write_guid}"
-                    ),
-                    "MS-VHDX/2.6.2.6",
-                ),
-            );
-            return Err(Error::ParentMismatch {
-                expected: expected_linkage,
-                actual: parent_data_write_guid,
-            });
-        }
-        Ok(())
-    }
-
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
 
     /// Parse the header section from the data buffer.
     pub(super) fn parse_header(&self) -> Result<Header<'_>> {
-        Header::new(self.data)
+        Header::new(&self.data)
     }
 
     /// Resolve the log region slice from the data buffer.

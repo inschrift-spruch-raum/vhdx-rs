@@ -2,7 +2,7 @@ use super::{
     Error, Guid, Result, SpecValidator, StandardItems, ValidationIssue, is_known_metadata_guid,
 };
 
-impl SpecValidator<'_> {
+impl SpecValidator {
     /// Validate the metadata table and item structure.
     ///
     /// Checks:

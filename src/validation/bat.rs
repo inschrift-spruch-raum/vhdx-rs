@@ -1,6 +1,6 @@
 use super::{Error, PayloadBlockState, Result, SectorBitmapState, SpecValidator, ValidationIssue};
 
-impl SpecValidator<'_> {
+impl SpecValidator {
     /// Validate the Block Allocation Table.
     ///
     /// Checks:

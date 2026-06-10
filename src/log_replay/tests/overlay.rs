@@ -1,5 +1,5 @@
 use super::helpers::*;
-use super::*;
+use super::prelude::*;
 use crc32c::crc32c;
 use std::io::{Read, Seek, SeekFrom};
 
@@ -123,7 +123,7 @@ fn replay_to_file_writes_data() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("replay_test.vhdx");
-    let file = std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
@@ -134,7 +134,7 @@ fn replay_to_file_writes_data() {
     // Pre-size to avoid set_len on non-extended regions
     file.set_len(0x2_0000_0000).unwrap();
 
-    replay_to_file(&file, &active).unwrap();
+    replay_to_file(&mut file, &active).unwrap();
 
     // Read back the written sector
     let mut read_buf = [0u8; 4096];

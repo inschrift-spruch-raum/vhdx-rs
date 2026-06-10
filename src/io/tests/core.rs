@@ -1,55 +1,8 @@
-use super::*;
-use crate::constants::{MIB, SECTOR_SIZE};
-use crate::error::Error;
-use crate::file::File as VhdxFile;
-use crate::log_replay::ReplayOverlay;
-use bitvec::prelude::*;
-use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
-use std::sync::Arc;
-
-/// Owns the temp directory and the VHDX file, ensuring cleanup on drop.
-struct TestContext {
-    _dir: tempfile::TempDir,
-    file: VhdxFile,
-    overlay: Option<Arc<ReplayOverlay>>,
-}
-
-impl TestContext {
-    /// Create a new IO context borrowing the owned file.
-    fn io(&self) -> IO<'_> {
-        let mut io = IO::new(&self.file).expect("create IO");
-        io.overlay = self.overlay.clone();
-        io
-    }
-}
-
-/// Helper: create a small dynamic VHDX and return an IO for it.
-///
-/// Uses <File::create> to produce a known-good test file with
-/// `block_size=32MB`, `logical_sector_size=4096`.
-fn create_test_io() -> TestContext {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("test.vhdx");
-
-    VhdxFile::create(&path)
-            .size(256 * u64::from(MIB)) // 256 MB virtual
-            .block_size(32 * MIB)
-            .logical_sector_size(4096)
-            .finish()
-            .expect("create test vhdx");
-
-    let file = VhdxFile::open(&path).finish().expect("re-open test vhdx");
-
-    TestContext {
-        _dir: dir,
-        file,
-        overlay: None,
-    }
-}
+use super::support::*;
 
 #[test]
 fn io_creation_from_test_file() {
-    let ctx = create_test_io();
+    let mut ctx = create_test_io();
     let io = ctx.io();
     assert!(io.block_size > 0);
     assert_eq!(io.block_size, 32 * MIB);
@@ -59,8 +12,8 @@ fn io_creation_from_test_file() {
 
 #[test]
 fn sector_out_of_bounds() {
-    let ctx = create_test_io();
-    let io = ctx.io();
+    let mut ctx = create_test_io();
+    let mut io = ctx.io();
     // start + count overflow → InvalidParameter
     let result = io.sector(u64::MAX, 1);
     assert!(result.is_err());
@@ -69,16 +22,16 @@ fn sector_out_of_bounds() {
 
 #[test]
 fn sector_zero_is_valid() {
-    let ctx = create_test_io();
-    let io = ctx.io();
+    let mut ctx = create_test_io();
+    let mut io = ctx.io();
     let result = io.sector(0, 1);
     assert!(result.is_ok(), "sector 0 failed: {:?}", result.err());
 }
 
 #[test]
 fn sector_read_returns_logical_sector_size() {
-    let ctx = create_test_io();
-    let io = ctx.io();
+    let mut ctx = create_test_io();
+    let mut io = ctx.io();
     let mut sector = io.sector(0, 1).expect("get sector 0");
     let mut buf = vec![0u8; SECTOR_SIZE.into()];
     sector.read_exact(&mut buf).expect("read sector 0");
@@ -86,8 +39,8 @@ fn sector_read_returns_logical_sector_size() {
 
 #[test]
 fn sector_read_byte_range_exceeds_range() {
-    let ctx = create_test_io();
-    let io = ctx.io();
+    let mut ctx = create_test_io();
+    let mut io = ctx.io();
     let mut sector = io.sector(0, 1).expect("get sector 0");
     let mut buf = [0u8; 4097]; // 1 byte too many for a single 4096-byte sector
     let n = sector.read(&mut buf).expect("should read what's available");
@@ -96,8 +49,8 @@ fn sector_read_byte_range_exceeds_range() {
 
 #[test]
 fn sector_zero_read_is_all_zeros_for_dynamic_disk() {
-    let ctx = create_test_io();
-    let io = ctx.io();
+    let mut ctx = create_test_io();
+    let mut io = ctx.io();
     let mut sector = io.sector(0, 1).expect("sector 0");
     let mut buf = vec![0xFFu8; SECTOR_SIZE.into()];
     sector.read_exact(&mut buf).expect("read sector 0");
@@ -110,8 +63,8 @@ fn sector_zero_read_is_all_zeros_for_dynamic_disk() {
 
 #[test]
 fn sector_write_fails_on_read_only() {
-    let ctx = create_test_io();
-    let io = ctx.io();
+    let mut ctx = create_test_io();
+    let mut io = ctx.io();
     let mut sector = io.sector(0, 1).expect("sector 0");
     let data = vec![0x42u8; SECTOR_SIZE.into()];
     let result = sector.write(&data);
@@ -127,7 +80,7 @@ fn create_fixed_io_with_overlay(overlay: ReplayOverlay) -> TestContext {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("test-fixed.vhdx");
 
-    VhdxFile::create(&path)
+    create_vhdx(&path)
             .size(4 * u64::from(MIB)) // 4 MB virtual
             .block_size(MIB) // 1 MB blocks
             .logical_sector_size(4096)
@@ -135,7 +88,7 @@ fn create_fixed_io_with_overlay(overlay: ReplayOverlay) -> TestContext {
             .finish()
             .expect("create fixed test vhdx");
 
-    let file = VhdxFile::open(&path).finish().expect("re-open test vhdx");
+    let file = open_vhdx(&path);
 
     TestContext {
         _dir: dir,
@@ -145,8 +98,8 @@ fn create_fixed_io_with_overlay(overlay: ReplayOverlay) -> TestContext {
 }
 
 /// Helper: resolve the file offset for sector 0's payload data.
-fn sector_zero_file_offset(io: &IO<'_>) -> u64 {
-    let sector = io.sector(0, 1).expect("sector 0");
+fn sector_zero_file_offset(io: &mut IO<'_>) -> u64 {
+    let mut sector = io.sector(0, 1).expect("sector 0");
     let entry = sector.resolve_bat_entry().expect("resolve BAT");
     entry.file_offset_mb() * u64::from(MIB)
 }
@@ -158,7 +111,7 @@ fn overlay_data_served_through_sector_read() {
     // Build a minimal overlay with a known sector.
     let dir = tempfile::tempdir().expect("tempdir for baseline");
     let path = dir.path().join("base.vhdx");
-    VhdxFile::create(&path)
+    create_vhdx(&path)
         .size(4 * u64::from(MIB))
         .block_size(MIB)
         .logical_sector_size(4096)
@@ -166,22 +119,22 @@ fn overlay_data_served_through_sector_read() {
         .finish()
         .expect("create baseline fixed vhdx");
 
-    let baseline_file = VhdxFile::open(&path).finish().expect("open baseline");
-    let baseline_ctx = TestContext {
+    let baseline_file = open_vhdx(&path);
+    let mut baseline_ctx = TestContext {
         _dir: dir,
         file: baseline_file,
         overlay: None,
     };
-    let baseline_io = baseline_ctx.io();
-    let payload_offset = sector_zero_file_offset(&baseline_io);
+    let mut baseline_io = baseline_ctx.io();
+    let payload_offset = sector_zero_file_offset(&mut baseline_io);
 
     // Construct overlay with a sector full of 0xAA at the payload offset.
     let mut sectors = HashMap::new();
     sectors.insert(payload_offset, vec![0xAAu8; SECTOR_SIZE.into()]);
     let overlay = ReplayOverlay::from_raw(sectors, vec![]);
 
-    let ctx = create_fixed_io_with_overlay(overlay);
-    let io = ctx.io();
+    let mut ctx = create_fixed_io_with_overlay(overlay);
+    let mut io = ctx.io();
     let mut sector = io.sector(0, 1).expect("sector 0");
     let mut buf = vec![0u8; SECTOR_SIZE.into()];
     sector
@@ -199,7 +152,7 @@ fn no_overlay_falls_through_to_file() {
     // Create a fixed VHDX — all blocks are FullyPresent, filled with zeros.
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("no-overlay.vhdx");
-    VhdxFile::create(&path)
+    create_vhdx(&path)
         .size(4 * u64::from(MIB))
         .block_size(MIB)
         .logical_sector_size(4096)
@@ -207,13 +160,13 @@ fn no_overlay_falls_through_to_file() {
         .finish()
         .expect("create fixed vhdx");
 
-    let file = VhdxFile::open(&path).finish().expect("open fixed vhdx");
-    let ctx = TestContext {
+    let file = open_vhdx(&path);
+    let mut ctx = TestContext {
         _dir: dir,
         file,
         overlay: None,
     };
-    let io = ctx.io();
+    let mut io = ctx.io();
     // No overlay — should be None.
     assert!(io.overlay.is_none(), "expected no overlay");
 
@@ -234,7 +187,7 @@ fn overlay_zero_region_served_through_sector_read() {
     // Build baseline to find payload offset.
     let dir = tempfile::tempdir().expect("tempdir for baseline");
     let path = dir.path().join("base-zero.vhdx");
-    VhdxFile::create(&path)
+    create_vhdx(&path)
         .size(4 * u64::from(MIB))
         .block_size(MIB)
         .logical_sector_size(4096)
@@ -242,14 +195,14 @@ fn overlay_zero_region_served_through_sector_read() {
         .finish()
         .expect("create baseline fixed vhdx");
 
-    let baseline_file = VhdxFile::open(&path).finish().expect("open baseline");
-    let baseline_ctx = TestContext {
+    let baseline_file = open_vhdx(&path);
+    let mut baseline_ctx = TestContext {
         _dir: dir,
         file: baseline_file,
         overlay: None,
     };
-    let baseline_io = baseline_ctx.io();
-    let payload_offset = sector_zero_file_offset(&baseline_io);
+    let mut baseline_io = baseline_ctx.io();
+    let payload_offset = sector_zero_file_offset(&mut baseline_io);
 
     // Construct overlay with a zero region covering sector 0.
     let overlay = ReplayOverlay::from_raw(
@@ -257,8 +210,8 @@ fn overlay_zero_region_served_through_sector_read() {
         vec![(payload_offset, u64::from(SECTOR_SIZE))],
     );
 
-    let ctx = create_fixed_io_with_overlay(overlay);
-    let io = ctx.io();
+    let mut ctx = create_fixed_io_with_overlay(overlay);
+    let mut io = ctx.io();
     let mut sector = io.sector(0, 1).expect("sector 0");
     let mut buf = vec![0xFFu8; SECTOR_SIZE.into()];
     sector
@@ -278,11 +231,11 @@ fn overlay_zero_region_served_through_sector_read() {
 ///
 /// 4 MB virtual, 1 MB block, 4096 logical sector size.
 /// Blocks are `FullyPresent` and zero-initialized (fixed disk).
-fn create_fixed_test_io_writable() -> TestContext {
+pub(super) fn create_fixed_test_io_writable() -> TestContext {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("test-fixed-rw.vhdx");
 
-    VhdxFile::create(&path)
+    create_vhdx(&path)
         .size(4 * u64::from(MIB))
         .block_size(MIB)
         .logical_sector_size(4096)
@@ -290,10 +243,7 @@ fn create_fixed_test_io_writable() -> TestContext {
         .finish()
         .expect("create fixed test vhdx");
 
-    let file = VhdxFile::open(&path)
-        .write()
-        .finish()
-        .expect("open writable");
+    let file = open_vhdx_writable(&path);
 
     TestContext {
         _dir: dir,
@@ -304,8 +254,8 @@ fn create_fixed_test_io_writable() -> TestContext {
 
 #[test]
 fn multi_sector_read_within_single_block() {
-    let ctx = create_fixed_test_io_writable();
-    let io = ctx.io();
+    let mut ctx = create_fixed_test_io_writable();
+    let mut io = ctx.io();
     // 1 MB / 4096 = 256 sectors per block; 3 sectors fit in block 0.
     let mut sector = io.sector(0, 3).expect("sector(0,3)");
     let mut buf = vec![0u8; 3 * SECTOR_SIZE as usize];
@@ -317,8 +267,8 @@ fn multi_sector_read_within_single_block() {
 
 #[test]
 fn multi_sector_read_count_one_regression() {
-    let ctx = create_fixed_test_io_writable();
-    let io = ctx.io();
+    let mut ctx = create_fixed_test_io_writable();
+    let mut io = ctx.io();
     // Write a known pattern to sector 0.
     let mut sw = io.sector(0, 1).expect("sector 0");
     sw.seek(SeekFrom::Start(0)).expect("seek to 0");
@@ -337,8 +287,8 @@ fn multi_sector_read_count_one_regression() {
 
 #[test]
 fn multi_sector_write_count_one_regression() {
-    let ctx = create_fixed_test_io_writable();
-    let io = ctx.io();
+    let mut ctx = create_fixed_test_io_writable();
+    let mut io = ctx.io();
     let mut sw = io.sector(0, 1).expect("sector 0");
     sw.seek(SeekFrom::Start(0)).expect("seek to 0");
     sw.write_all(&[0xAAu8; SECTOR_SIZE as usize])
@@ -356,8 +306,8 @@ fn multi_sector_write_count_one_regression() {
 
 #[test]
 fn multi_sector_read_buffer_size_mismatch() {
-    let ctx = create_test_io();
-    let io = ctx.io();
+    let mut ctx = create_test_io();
+    let mut io = ctx.io();
     let mut sector = io.sector(0, 3).expect("sector(0,3)");
     let mut buf = vec![0u8; SECTOR_SIZE.into()]; // smaller than 3*4096
     let n = sector.read(&mut buf).expect("read from 3-sector range");
@@ -366,8 +316,8 @@ fn multi_sector_read_buffer_size_mismatch() {
 
 #[test]
 fn multi_sector_write_data_size_mismatch() {
-    let ctx = create_fixed_test_io_writable();
-    let io = ctx.io();
+    let mut ctx = create_fixed_test_io_writable();
+    let mut io = ctx.io();
     let mut sector = io.sector(0, 2).expect("sector(0,2)");
     let data = vec![0u8; SECTOR_SIZE.into()]; // smaller than 2*4096
     let n = sector.write(&data).expect("write to 2-sector range");
@@ -376,8 +326,8 @@ fn multi_sector_write_data_size_mismatch() {
 
 #[test]
 fn multi_sector_count_zero_is_error() {
-    let ctx = create_test_io();
-    let io = ctx.io();
+    let mut ctx = create_test_io();
+    let mut io = ctx.io();
     let result = io.sector(0, 0);
     assert!(result.is_err());
     assert!(
@@ -388,8 +338,8 @@ fn multi_sector_count_zero_is_error() {
 
 #[test]
 fn multi_sector_start_plus_count_overflow() {
-    let ctx = create_test_io();
-    let io = ctx.io();
+    let mut ctx = create_test_io();
+    let mut io = ctx.io();
     let result = io.sector(u64::MAX, 2);
     assert!(result.is_err());
     assert!(
@@ -400,8 +350,8 @@ fn multi_sector_start_plus_count_overflow() {
 
 #[test]
 fn multi_sector_out_of_bounds_range() {
-    let ctx = create_test_io();
-    let io = ctx.io();
+    let mut ctx = create_test_io();
+    let mut io = ctx.io();
     // dynamic VHDX: 256 MB / 4096 = 65536 sectors, max_sector = 65535
     // requesting 70000 sectors from start=0 exceeds range
     let result = io.sector(0, 70000);
@@ -414,8 +364,8 @@ fn multi_sector_out_of_bounds_range() {
 
 #[test]
 fn multi_sector_read_spanning_block_boundary() {
-    let ctx = create_fixed_test_io_writable();
-    let io = ctx.io();
+    let mut ctx = create_fixed_test_io_writable();
+    let mut io = ctx.io();
     // 1 MB / 4096 = 256 sectors per block
     // Read sectors 254-257: spans block 0 (sectors 0-255) → block 1 (sectors 256-511)
     let mut sector = io.sector(254, 4).expect("sector(254,4)");
@@ -430,8 +380,8 @@ fn multi_sector_read_spanning_block_boundary() {
 
 #[test]
 fn multi_sector_write_spanning_block_boundary() {
-    let ctx = create_fixed_test_io_writable();
-    let io = ctx.io();
+    let mut ctx = create_fixed_test_io_writable();
+    let mut io = ctx.io();
     // 1 MB / 4096 = 256 sectors per block
     // Write to sectors 254-257: spans block 0 → block 1
     let data = vec![0x42u8; 4 * SECTOR_SIZE as usize];
@@ -566,5 +516,3 @@ fn sector_bitmap_bit_lookup_correctness() {
     assert_eq!(chunk_idx_2, 1);
     assert_eq!(sb_bat_idx_2, 2049);
 }
-
-mod byte;

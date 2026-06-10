@@ -1,8 +1,26 @@
+use super::super::{Result, SpecValidator, StandardItems};
 use super::helpers::{Encoded, build_test_vhdx};
-use super::{Result, SpecValidator, StandardItems};
 use crate::constants::{METADATA_TABLE_SIZE, REGION_TABLE1_OFFSET};
 use bitvec::prelude::*;
 use crc32c::crc32c;
+
+fn create_vhdx(path: &std::path::Path) -> crate::medium::CreateOptions<std::fs::File> {
+    let inner = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .expect("prepare caller-owned create medium");
+    crate::medium::Medium::create(inner)
+}
+
+fn open_vhdx(path: &std::path::Path) -> crate::medium::Medium {
+    let inner = std::fs::File::open(path).expect("open caller-owned medium");
+    crate::medium::Medium::open(inner)
+        .finish()
+        .expect("open vhdx")
+}
 
 /// Build a VHDX buffer whose parent locator contains the given KV pairs.
 ///
@@ -132,9 +150,9 @@ fn test_validate_parent_locator_corrupt_key() {
 }
 
 #[test]
-fn test_validate_parent_chain_rejects_linkage2() {
+fn test_validate_parent_locator_rejects_linkage2() {
     // Parent locator with both parent_linkage and parent_linkage2.
-    // validate_parent_chain should reject parent_linkage2 before file I/O.
+    // validate_parent_locator should reject parent_linkage2 without file I/O.
     let buf = build_vhdx_with_parent_locator(&[
         ("parent_linkage", "{01234567-89ab-cdef-0123-456789abcdef}"),
         ("parent_linkage2", "{00000000-0000-0000-0000-000000000000}"),
@@ -142,7 +160,7 @@ fn test_validate_parent_chain_rejects_linkage2() {
     ]);
 
     let validator = SpecValidator::new(&buf, true);
-    let result = validator.validate_parent_chain();
+    let result = validator.validate_parent_locator();
     assert!(result.is_err());
     let msg = format!("{:?}", result.err().unwrap());
     assert!(
@@ -152,7 +170,7 @@ fn test_validate_parent_chain_rejects_linkage2() {
 }
 
 #[test]
-fn test_validate_parent_chain_unparseable_linkage() {
+fn test_validate_parent_locator_rejects_unparseable_linkage() {
     // Parent locator with parent_linkage value that is not a valid GUID.
     let buf = build_vhdx_with_parent_locator(&[
         ("parent_linkage", "not-a-guid"),
@@ -160,7 +178,7 @@ fn test_validate_parent_chain_unparseable_linkage() {
     ]);
 
     let validator = SpecValidator::new(&buf, true);
-    let result = validator.validate_parent_chain();
+    let result = validator.validate_parent_locator();
     assert!(result.is_err());
     let msg = format!("{:?}", result.err().unwrap());
     assert!(
@@ -175,17 +193,17 @@ fn test_from_file_constructor() -> Result<()> {
     let path = dir.path().join("test-from-file.vhdx");
 
     // Create a valid dynamic VHDX file.
-    crate::file::File::create(&path)
+    create_vhdx(&path)
             .size(256 * 1024 * 1024) // 256 MB
             .block_size(32 * 1024 * 1024)
             .logical_sector_size(4096)
             .finish()?;
 
     // Open it.
-    let file = crate::file::File::open(&path).finish()?;
+    let mut file = open_vhdx(&path);
 
     // Construct SpecValidator via from_file.
-    let validator = SpecValidator::from_file(&file);
+    let validator = SpecValidator::from_file(&mut file)?;
 
     // Verify that sub-validators actually execute (don't silently skip).
     validator.validate_bat()?;
@@ -195,7 +213,7 @@ fn test_from_file_constructor() -> Result<()> {
     Ok(())
 }
 
-/// `File::create()` writes the same sequence number (0) to both headers,
+/// `Medium::create()` writes the same sequence number (0) to both headers,
 /// which the validator rejects. Patch header 2 to have seq=1 so validation
 /// can proceed.
 fn patch_header2_sequence(path: &std::path::Path) -> std::io::Result<()> {
@@ -230,16 +248,14 @@ fn test_validate_file_covers_parent_chain() -> Result<()> {
     let path = dir.path().join("test-parent-chain.vhdx");
 
     // Create a dynamic disk (no parent — not a differencing disk).
-    crate::file::File::create(&path)
-        .size(256 * 1024 * 1024)
-        .finish()?;
+    create_vhdx(&path).size(256 * 1024 * 1024).finish()?;
 
     // Patch header 2 sequence number so the validator passes.
     patch_header2_sequence(&path)?;
 
-    let file = crate::file::File::open(&path).finish()?;
+    let mut file = open_vhdx(&path);
     // validate_file should pass (no parent chain for a non-differencing disk).
-    file.validator().validate_file()?;
+    file.validator()?.validate_file()?;
 
     Ok(())
 }
@@ -250,7 +266,7 @@ fn test_file_validator_integration() -> Result<()> {
     let path = dir.path().join("test-validator-int.vhdx");
 
     // Create a valid dynamic VHDX.
-    crate::file::File::create(&path)
+    create_vhdx(&path)
         .size(256 * 1024 * 1024)
         .block_size(32 * 1024 * 1024)
         .logical_sector_size(4096)
@@ -261,8 +277,8 @@ fn test_file_validator_integration() -> Result<()> {
     patch_header2_sequence(&path)?;
 
     // Open and validate.
-    let file = crate::file::File::open(&path).finish()?;
-    file.validator().validate_file()?;
+    let mut file = open_vhdx(&path);
+    file.validator()?.validate_file()?;
 
     Ok(())
 }

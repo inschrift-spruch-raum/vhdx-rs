@@ -12,6 +12,7 @@
 //! - MS-VHDX-`只读扩展标准` (read-only semantics, ROEXT)
 
 use crate::error::{Error, Result, SignaturePosition};
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // ValidationIssue – structured diagnostic output
@@ -79,51 +80,48 @@ impl ValidationIssue {
 
 /// VHDX specification compliance validator.
 ///
-/// Holds a reference to the file data buffer and performs read-only
+/// Holds a snapshot of the file data buffer and performs read-only
 /// structural checks against MS-VHDX and companion standards.
 ///
 /// # Construction
 ///
 /// Typically constructed with the file's full data buffer and configuration
 /// flags (strict mode, whether the disk is differencing).
-pub struct SpecValidator<'a> {
+pub struct SpecValidator {
     /// Full file data buffer (must include header, log, BAT, metadata regions).
-    pub(super) data: &'a [u8],
+    pub(super) data: Arc<[u8]>,
     /// Whether strict validation mode is enabled.
     pub(super) strict: bool,
-    /// Optional path to the child file (used in parent chain validation).
-    pub(super) child_path: Option<std::path::PathBuf>,
 }
 
-impl<'a> SpecValidator<'a> {
+impl SpecValidator {
     /// Create a new `SpecValidator`.
     ///
     /// `data` must be at least 1 MB (the header section). For full validation
     /// it should include the log, BAT, and metadata regions.
-    pub(crate) fn new(data: &'a [u8], strict: bool) -> Self {
+    #[cfg(test)]
+    pub(crate) fn new(data: &[u8], strict: bool) -> Self {
         Self {
-            data,
+            data: Arc::from(data),
             strict,
-            child_path: None,
         }
     }
 
-    /// Create a `SpecValidator` from a `File` reference.
+    /// Create a `SpecValidator` from a `Medium` reference.
     ///
     /// Collects all cached region buffers (header, log, BAT, metadata) from the
     /// file and assembles them into a contiguous view at their correct file offsets,
     /// so that region lookups by absolute offset work correctly.
     ///
-    /// The returned validator borrows from the `File`'s internal `validator_buf`
-    /// cache, which is built lazily on first access.
-    pub(crate) fn from_file(file: &'a crate::file::File) -> Self {
-        Self::new(file.validator_buf(), file.is_strict()).with_child_path(file.path().to_path_buf())
-    }
-
-    /// Set the child file path for parent chain validation.
-    pub(crate) fn with_child_path(mut self, path: std::path::PathBuf) -> Self {
-        self.child_path = Some(path);
-        self
+    /// The returned validator owns an `Arc<[u8]>` snapshot cloned from the
+    /// `Medium`'s internal `validator_buf` cache, which is built lazily on first access.
+    pub(crate) fn from_file<T>(file: &mut crate::medium::Medium<T>) -> Result<Self>
+    where
+        T: std::io::Read + std::io::Seek,
+    {
+        let strict = file.is_strict();
+        let data = file.validator_buf()?;
+        Ok(Self { data, strict })
     }
 
     /// Push a non-fatal validation issue into the collection.

@@ -1,23 +1,27 @@
 //! `gpt_disk_io` compatibility layer (optional, behind `gpt` feature).
 //!
-//! Provides [`VhdxBlockDevice`], a wrapper that adapts a [`crate::File`] to the
+//! Provides [`VhdxBlockDevice`], a wrapper that adapts a [`crate::Medium`] to the
 //! [`gpt_disk_io::BlockIo`] trait. This allows using the VHDX virtual disk as
 //! a block device for GPT partition table operations via `gpt_disk_io`.
 //!
 //! # Usage
 //!
 //! ```ignore
-//! use vhdx::{File, LogReplayPolicy};
+//! use vhdx::{LogReplayPolicy, Medium};
 //! use vhdx::gpt::VhdxBlockDevice;
 //! use gpt_disk_io::BlockIo;
 //!
-//! // Open VHDX file
-//! let file = File::open("disk.vhdx")
+//! // Open VHDX Medium
+//! let inner = std::fs::OpenOptions::new()
+//!     .read(true)
+//!     .write(true)
+//!     .open("disk.vhdx")?;
+//! let medium = Medium::open(inner)
 //!     .log_replay(LogReplayPolicy::Auto)
 //!     .finish()?;
 //!
 //! // Wrap as block device
-//! let mut block_dev = VhdxBlockDevice::new(file)?;
+//! let mut block_dev = VhdxBlockDevice::new(medium)?;
 //!
 //! // Now use with gpt_disk_io
 //! println!("Block size: {:?}", block_dev.block_size());
@@ -25,12 +29,14 @@
 //! ```
 
 use std::fmt;
+use std::io::{Read, Seek, Write};
 
 use gpt_disk_io::BlockIo;
 use gpt_disk_types::{BlockSize, Lba};
 
-use crate::File;
+use crate::Medium;
 use crate::error::Error;
+use crate::medium::{Len, SetLen, SyncData};
 
 // ---------------------------------------------------------------------------
 // VhdxBlockIoError
@@ -59,7 +65,7 @@ impl std::error::Error for VhdxBlockIoError {
 // VhdxBlockDevice
 // ---------------------------------------------------------------------------
 
-/// A block device adapter that wraps a VHDX [`File`] and implements
+/// A block device adapter that wraps a VHDX [`Medium`] and implements
 /// [`BlockIo`] from `gpt_disk_io`.
 ///
 /// The block size reported to GPT is the VHDX **logical sector size**
@@ -77,15 +83,15 @@ impl std::error::Error for VhdxBlockIoError {
 /// All reads and writes go through the VHDX library's sector-level IO
 /// pipeline, which handles BAT resolution, block allocation, differencing
 /// disk parent fallback, sector bitmap processing, and log replay overlay.
-pub struct VhdxBlockDevice {
-    file: File,
+pub struct VhdxBlockDevice<T = std::fs::File> {
+    medium: Medium<T>,
     sector_size: u32,
     block_size: BlockSize,
     num_blocks: u64,
 }
 
-impl VhdxBlockDevice {
-    /// Create a new block device adapter from an opened VHDX file.
+impl<T> VhdxBlockDevice<T> {
+    /// Create a new block device adapter from an opened VHDX Medium.
     ///
     /// Extracts the logical sector size and virtual disk size from the VHDX
     /// metadata to determine block geometry.
@@ -93,10 +99,17 @@ impl VhdxBlockDevice {
     /// # Errors
     ///
     /// Returns an error if the VHDX metadata cannot be read or parsed.
-    pub fn new(file: File) -> Result<Self, Error> {
-        let io = file.io()?;
+    pub fn new(medium: Medium<T>) -> Result<Self, Error>
+    where
+        T: Read + Seek,
+    {
+        let (sector_size, virtual_size) = {
+            let sections = medium.sections()?;
+            let metadata = sections.metadata()?;
+            let items = metadata.items();
+            (items.logical_sector_size()?, items.virtual_disk_size()?)
+        };
 
-        let sector_size = io.logical_sector_size();
         let block_size = BlockSize::new(sector_size).ok_or_else(|| {
             Error::InvalidMetadata(format!(
                 "logical sector size {sector_size} is not a valid GPT block size (minimum 512)"
@@ -104,41 +117,41 @@ impl VhdxBlockDevice {
         })?;
 
         // Compute total logical blocks from virtual disk size.
-        let sections = file.sections();
-        let metadata = sections.metadata()?;
-        let virtual_size = metadata.items().virtual_disk_size()?;
         let num_blocks = virtual_size / u64::from(sector_size);
 
         Ok(Self {
-            file,
+            medium,
             sector_size,
             block_size,
             num_blocks,
         })
     }
 
-    /// Access the underlying VHDX [`File`].
+    /// Access the underlying VHDX [`Medium`].
     ///
     /// Useful for VHDX-specific operations (validation, section inspection,
     /// etc.) that are not exposed through the `BlockIo` trait.
     #[must_use]
-    pub fn file(&self) -> &File {
-        &self.file
+    pub fn medium(&self) -> &Medium<T> {
+        &self.medium
     }
 
-    /// Access the underlying VHDX [`File`] mutably.
-    pub fn file_mut(&mut self) -> &mut File {
-        &mut self.file
+    /// Access the underlying VHDX [`Medium`] mutably.
+    pub fn medium_mut(&mut self) -> &mut Medium<T> {
+        &mut self.medium
     }
 
-    /// Unwrap into the underlying VHDX [`File`].
+    /// Unwrap into the underlying VHDX [`Medium`].
     #[must_use]
-    pub fn into_file(self) -> File {
-        self.file
+    pub fn into_medium(self) -> Medium<T> {
+        self.medium
     }
 }
 
-impl BlockIo for VhdxBlockDevice {
+impl<T> BlockIo for VhdxBlockDevice<T>
+where
+    T: Read + Write + Seek + Len + SetLen + SyncData,
+{
     type Error = VhdxBlockIoError;
 
     fn block_size(&self) -> BlockSize {
@@ -167,7 +180,7 @@ impl BlockIo for VhdxBlockDevice {
 
         // Create a temporary IO context (reads from cached buffers, cheap after
         // the first access) and use its sector-level read pipeline.
-        let io = self.file.io().map_err(VhdxBlockIoError)?;
+        let mut io = self.medium.io().map_err(VhdxBlockIoError)?;
         let mut sector = io.sector(lba, count).map_err(VhdxBlockIoError)?;
 
         sector
@@ -193,7 +206,7 @@ impl BlockIo for VhdxBlockDevice {
 
         let count = (src.len() / sector_size) as u64;
 
-        let io = self.file.io().map_err(VhdxBlockIoError)?;
+        let mut io = self.medium.io().map_err(VhdxBlockIoError)?;
         let mut sector = io.sector(lba, count).map_err(VhdxBlockIoError)?;
 
         sector
@@ -205,10 +218,28 @@ impl BlockIo for VhdxBlockDevice {
     }
 
     fn flush(&mut self) -> Result<(), Self::Error> {
-        self.file
-            .inner()
-            .sync_all()
+        self.medium
+            .inner_mut()
+            .sync_data()
             .map_err(|e| VhdxBlockIoError(Error::Io(e)))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_device_accepts_cursor_backed_medium() {
+        let cursor = std::io::Cursor::new(Vec::new());
+        let medium = Medium::create(cursor)
+            .size(16 * 1024 * 1024)
+            .finish()
+            .expect("create cursor-backed medium");
+
+        let block_device = VhdxBlockDevice::new(medium).expect("wrap cursor-backed medium");
+        let medium = block_device.into_medium();
+        let _cursor = medium.into_inner();
     }
 }

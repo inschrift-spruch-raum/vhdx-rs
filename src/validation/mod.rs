@@ -2,8 +2,8 @@
 
 use crate::constants::{BAT_REGION_GUID, METADATA_REGION_GUID, MIB};
 use crate::error::{Error, Result, SignaturePosition};
-use crate::file::{is_known_metadata_guid, is_known_region_guid};
 use crate::header::{Header, HeaderStructure};
+use crate::medium::{is_known_metadata_guid, is_known_region_guid};
 use crate::types::{Guid, StandardItems};
 use crate::{bat::PayloadBlockState, bat::SectorBitmapState};
 

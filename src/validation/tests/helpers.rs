@@ -1,4 +1,4 @@
-use super::*;
+use super::super::{Guid, StandardItems};
 use crate::constants::{
     HEADER_SIZE, HEADER1_OFFSET, HEADER2_OFFSET, METADATA_TABLE_SIZE, MIB, REGION_TABLE_SIZE,
     REGION_TABLE1_OFFSET, REGION_TABLE2_OFFSET,

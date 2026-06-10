@@ -4,7 +4,10 @@ use bitvec::prelude::*;
 use crc32c::crc32c;
 use std::io::{BufWriter, Read, Seek, Write};
 
-use super::{CreateOptions, File, LogReplayPolicy};
+use super::{
+    CreateOptions, Len, LogReplayPolicy, Medium, ParentCreateInfo, ParentMedium, SetLen, SyncData,
+    read_exact_at, write_all_at,
+};
 use crate::constants::{
     BAT_REGION_GUID, HEADER_BUFFER_SIZE, HEADER_SIZE, HEADER1_OFFSET, HEADER2_OFFSET, LOG_OFFSET,
     METADATA_REGION_GUID, MIB, VHDX_SIGNATURE_BYTES,
@@ -15,10 +18,8 @@ use crate::constants::{
     TABLE_ENTRY_SIZE, TABLE_HEADER_SIZE, TIB,
 };
 use crate::error::{Error, Result};
-use crate::header::Header;
 use crate::types::{self, Guid};
-use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::atomic::AtomicU64;
 
 struct MetadataEntryMeta {
     guid: Guid,
@@ -27,7 +28,7 @@ struct MetadataEntryMeta {
     flags: u32,
 }
 
-impl CreateOptions {
+impl<T> CreateOptions<T> {
     // -- Builder methods ----------------------------------------------------
 
     /// Set the virtual disk size in bytes (required).
@@ -73,11 +74,22 @@ impl CreateOptions {
         self
     }
 
-    /// Set the parent disk path (creates a differencing disk).
-    #[must_use]
-    pub fn parent_path(mut self, path: impl AsRef<Path>) -> Self {
-        self.parent_path = Some(path.as_ref().to_path_buf());
-        self
+    /// Set caller-provided parent metadata for a differencing disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the parent medium's Data Write GUID cannot be read.
+    pub fn parent<P>(
+        mut self, parent: &mut Medium<P>, relative_path: impl AsRef<std::path::Path>,
+    ) -> Result<Self>
+    where
+        P: Read + Seek,
+    {
+        self.parent = Some(ParentCreateInfo {
+            relative_path: relative_path.as_ref().to_path_buf(),
+            data_write_guid: parent.data_write_guid()?,
+        });
+        Ok(self)
     }
 
     // -- Validation ---------------------------------------------------------
@@ -127,7 +139,7 @@ impl CreateOptions {
             ));
         }
 
-        if self.fixed && self.parent_path.is_some() {
+        if self.fixed && self.parent.is_some() {
             return Err(Error::InvalidParameter(
                 "fixed disk cannot have a parent".into(),
             ));
@@ -138,7 +150,7 @@ impl CreateOptions {
 
     // -- Finalisation -------------------------------------------------------
 
-    /// Create the VHDX file on disk.
+    /// Create the VHDX on the caller-provided medium.
     ///
     /// Writes the File Type Identifier, both Headers, both Region Tables,
     /// the BAT region (initialised per disk type), the full Metadata table
@@ -149,18 +161,21 @@ impl CreateOptions {
     ///
     /// Returns an error if validation fails, the file cannot be created,
     /// or any write operation fails.
-    pub fn finish(self) -> Result<File> {
+    ///
+    /// # Panics
+    ///
+    /// Panics if this builder has already had its inner medium taken.
+    pub fn finish(mut self) -> Result<Medium<T>>
+    where
+        T: Read + Write + Seek + Len + SetLen + SyncData,
+    {
         self.validate()?;
 
-        // Must open with read+write access: on Windows, File::create is
-        // write-only, which would deny the re-read below.
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&self.path)?;
-        let mut w = BufWriter::new(file);
+        let inner = self
+            .inner
+            .take()
+            .expect("CreateOptions always owns a medium before finish");
+        let mut w = BufWriter::new(inner);
 
         let bat_size =
             Self::calculate_bat_size(self.virtual_size, self.block_size, self.logical_sector_size);
@@ -176,28 +191,18 @@ impl CreateOptions {
 
         // Header 1 with sequence number 0
         let header1 = Self::build_header(0, &file_write_guid, &data_write_guid, &log_guid);
-        std::io::Seek::seek(&mut w, std::io::SeekFrom::Start(u64::from(HEADER1_OFFSET)))?;
-        w.write_all(&header1)?;
+        write_all_at(&mut w, u64::from(HEADER1_OFFSET), &header1)?;
 
         // Header 2 with sequence number 1 (different from header1 to satisfy §2.2.2)
         let header2 = Self::build_header(1, &file_write_guid, &data_write_guid, &log_guid);
-        std::io::Seek::seek(&mut w, std::io::SeekFrom::Start(u64::from(HEADER2_OFFSET)))?;
-        w.write_all(&header2)?;
+        write_all_at(&mut w, u64::from(HEADER2_OFFSET), &header2)?;
 
         // 3. Region Tables (offsets 192 KB and 256 KB)
         let region = Self::build_region_table(bat_size, metadata_offset);
 
-        std::io::Seek::seek(
-            &mut w,
-            std::io::SeekFrom::Start(u64::from(REGION_TABLE1_OFFSET)),
-        )?;
-        w.write_all(&region)?;
+        write_all_at(&mut w, u64::from(REGION_TABLE1_OFFSET), &region)?;
 
-        std::io::Seek::seek(
-            &mut w,
-            std::io::SeekFrom::Start(u64::from(REGION_TABLE2_OFFSET)),
-        )?;
-        w.write_all(&region)?;
+        write_all_at(&mut w, u64::from(REGION_TABLE2_OFFSET), &region)?;
 
         // 4. Extend file to cover log + BAT + metadata (zero-filled)
         //    For fixed disks, also pre-allocate all payload blocks.
@@ -217,19 +222,18 @@ impl CreateOptions {
             let total_payload = num_payload * u64::from(self.block_size);
             let end = first_payload_offset_mb * u64::from(MIB) + total_payload;
             w.flush()?;
-            w.get_ref().set_len(end)?;
+            w.get_mut().set_len(end)?;
             first_payload_offset_mb
         } else {
             let end = metadata_offset + u64::from(METADATA_REGION_SIZE);
             w.flush()?;
-            w.get_ref().set_len(end)?;
+            w.get_mut().set_len(end)?;
             0
         };
 
         // 5. Write BAT entries
         Self::write_bat_entries(
             &mut w,
-            bat_size,
             self.virtual_size,
             self.block_size,
             self.logical_sector_size,
@@ -237,39 +241,37 @@ impl CreateOptions {
             metadata_offset,
         )?;
 
-        // Read parent's DataWriteGuid if this is a differencing disk
-        let parent_data_write_guid = if let Some(parent_path) = &self.parent_path {
-            Some(Self::read_parent_data_write_guid(parent_path)?)
-        } else {
-            None
-        };
+        let parent_data_write_guid = self.parent.as_ref().map(|parent| parent.data_write_guid);
 
         // 6. Write metadata table + items
         self.write_metadata(&mut w, metadata_offset, parent_data_write_guid)?;
 
         w.flush()?;
+        w.get_mut().sync_data()?;
         let mut inner = w
             .into_inner()
             .map_err(std::io::IntoInnerError::into_error)?;
 
-        // Re-read header buffer from the start of the file.
-        inner.seek(std::io::SeekFrom::Start(0))?;
+        // Re-read header buffer from the start of the medium.
         let mut header_buf = vec![0u8; HEADER_BUFFER_SIZE];
-        let bytes_read = inner.read(&mut header_buf)?;
-        header_buf.truncate(bytes_read);
+        read_exact_at(&mut inner, 0, &mut header_buf)?;
 
-        Ok(File {
-            inner,
-            path: self.path,
-            header_buf,
+        Ok(Medium {
+            inner: std::sync::Mutex::new(inner),
+            header_buf: std::sync::RwLock::new(Some(super::CacheEntry::new(
+                0,
+                std::sync::Arc::from(header_buf),
+            ))),
             bat_buf: std::sync::RwLock::new(None),
-            metadata_buf: OnceLock::new(),
-            log_buf: OnceLock::new(),
+            metadata_buf: std::sync::RwLock::new(None),
+            log_buf: std::sync::RwLock::new(None),
+            generation: AtomicU64::new(0),
             write: true,
             strict: true,
             log_replay_policy: LogReplayPolicy::Require,
             replay_overlay: None,
-            validator_buf: OnceLock::new(),
+            parent_resolver: std::sync::Mutex::new(None),
+            validator_buf: std::sync::RwLock::new(None),
         })
     }
 
@@ -285,9 +287,7 @@ impl CreateOptions {
         u32::try_from(bat_mb).unwrap() * (1024 * 1024)
     }
 
-    fn write_file_type_identifier(w: &mut (impl Write + ?Sized)) -> Result<()> {
-        w.write_all(&VHDX_SIGNATURE_BYTES.into_inner().to_le_bytes())?;
-
+    fn write_file_type_identifier(w: &mut (impl Write + Seek)) -> Result<()> {
         let mut creator = [0u8; 512];
         let ident = "vhdx-rs\0";
         for (i, ch) in ident.encode_utf16().enumerate() {
@@ -296,7 +296,8 @@ impl CreateOptions {
                 creator[off..off + 2].copy_from_slice(&ch.to_le_bytes());
             }
         }
-        w.write_all(&creator)?;
+        write_all_at(w, 0, &VHDX_SIGNATURE_BYTES.into_inner().to_le_bytes())?;
+        write_all_at(w, 8, &creator)?;
         Ok(())
     }
 
@@ -363,19 +364,14 @@ impl CreateOptions {
     /// - Fixed disk: payload entries = `FullyPresent` with sequential
     ///   `FileOffsetMB`; sector-bitmap entries = 0.
     fn write_bat_entries(
-        w: &mut (impl Write + std::io::Seek), bat_size: u32, virtual_size: u64, block_size: u32,
-        logical_sector_size: u32, fixed: bool, metadata_offset: u64,
+        w: &mut (impl Write + Seek), virtual_size: u64, block_size: u32, logical_sector_size: u32,
+        fixed: bool, metadata_offset: u64,
     ) -> Result<()> {
         let (_num_payload, num_sb, total_entries, chunk_ratio) =
             Self::compute_bat_entry_counts(virtual_size, block_size, logical_sector_size);
 
         if !fixed {
             // Dynamic disk: BAT region is already zero-filled by set_len.
-            // Still ensure the minimum BAT region exists by seeking to its end.
-            std::io::Seek::seek(
-                w,
-                std::io::SeekFrom::Start(u64::from(BAT_REGION_OFFSET + bat_size)),
-            )?;
             return Ok(());
         }
 
@@ -387,10 +383,11 @@ impl CreateOptions {
             (metadata_offset + u64::from(METADATA_REGION_SIZE)).div_ceil(u64::from(MIB));
         let first_payload_offset_mb = raw_first_payload_mb.div_ceil(payload_align) * payload_align;
 
-        std::io::Seek::seek(w, std::io::SeekFrom::Start(BAT_REGION_OFFSET.into()))?;
-
         let mut sb_written: u64 = 0;
         for i in 0..total_entries {
+            let entry_offset = u64::from(BAT_REGION_OFFSET)
+                .checked_add(i.checked_mul(8).expect("BAT entry offset fits u64"))
+                .expect("BAT entry offset fits u64");
             // Determine if this entry is a sector bitmap based on how many
             // payload entries have been written since the last SB entry.
             // SB entries appear after every chunk_ratio payload entries.
@@ -400,7 +397,7 @@ impl CreateOptions {
                 && sb_written < num_sb;
             if is_sb {
                 // Sector bitmap entry: NotPresent
-                w.write_all(&0u64.to_le_bytes())?;
+                write_all_at(w, entry_offset, &0u64.to_le_bytes())?;
                 sb_written += 1;
             } else {
                 // Payload entry: FullyPresent at sequential offset
@@ -410,7 +407,7 @@ impl CreateOptions {
                 let bits = raw_bytes.view_bits_mut::<Lsb0>();
                 bits[0..3].store::<u8>(6u8); // FullyPresent
                 bits[20..64].store::<u64>(offset_mb);
-                w.write_all(&raw_bytes)?;
+                write_all_at(w, entry_offset, &raw_bytes)?;
             }
         }
 
@@ -420,16 +417,19 @@ impl CreateOptions {
     /// Write the full metadata table (64 KB header + entries) followed by all
     /// required metadata items at `metadata_offset`.
     fn write_metadata(
-        &self, w: &mut (impl Write + std::io::Seek), metadata_offset: u64,
+        &self, w: &mut (impl Write + Seek), metadata_offset: u64,
         parent_data_write_guid: Option<Guid>,
     ) -> Result<()> {
-        let has_parent = self.parent_path.is_some();
+        let has_parent = self.parent.is_some();
         let (items_buf, item_metas) =
             self.build_metadata_items(has_parent, parent_data_write_guid)?;
         let table = Self::build_metadata_table(if has_parent { 6 } else { 5 }, &item_metas);
-        std::io::Seek::seek(w, std::io::SeekFrom::Start(metadata_offset))?;
-        w.write_all(&table)?;
-        w.write_all(&items_buf)?;
+        write_all_at(w, metadata_offset, &table)?;
+        write_all_at(
+            w,
+            metadata_offset + u64::from(METADATA_TABLE_SIZE),
+            &items_buf,
+        )?;
         Ok(())
     }
 
@@ -580,9 +580,9 @@ impl CreateOptions {
         let guid_str = parent_data_write_guid.to_uuid().hyphenated().to_string();
         let parent_linkage_str = format!("{{{guid_str}}}");
         let relative_path = self
-            .parent_path
+            .parent
             .as_ref()
-            .map(|p| p.to_string_lossy().to_string())
+            .map(|p| p.relative_path.to_string_lossy().to_string())
             .unwrap_or_default();
 
         let key1 = "parent_linkage";
@@ -641,33 +641,5 @@ impl CreateOptions {
         buf[val2_off..val2_off + val2_utf16.len()].copy_from_slice(&val2_utf16);
 
         buf
-    }
-
-    /// Open the parent file, read its first 1 MB, parse the header, and return
-    /// the `DataWriteGuid`. Used during differencing disk creation to populate
-    /// the `parent_linkage` field.
-    fn read_parent_data_write_guid(parent_path: &std::path::Path) -> Result<Guid> {
-        use std::io::Read;
-
-        let mut pf = std::fs::File::open(parent_path).map_err(|_| Error::ParentNotFound)?;
-
-        let mut buf = vec![0u8; HEADER_BUFFER_SIZE];
-        let bytes_read = pf.read(&mut buf).map_err(|_| Error::ParentNotFound)?;
-
-        if bytes_read < 8 {
-            return Err(Error::ParentNotFound);
-        }
-        buf.truncate(bytes_read);
-
-        // Validate parent's VHDX signature
-        if buf[..8].view_bits::<Lsb0>() != *VHDX_SIGNATURE_BYTES {
-            return Err(Error::ParentNotFound);
-        }
-
-        let header = Header::new(&buf).map_err(|_| Error::ParentNotFound)?;
-
-        let current = header.header(0).map_err(|_| Error::ParentNotFound)?;
-
-        Ok(current.data_write_guid())
     }
 }

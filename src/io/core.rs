@@ -3,7 +3,7 @@
 //! This is the **sole data-plane entry point**. All virtual disk payload reads
 //! and writes must go through [`IO::sector`] → [`Sector`] implementing
 //! [`std::io::Read`], [`std::io::Write`], and [`std::io::Seek`].
-//! Direct reads via [`File::inner`](crate::file::File::inner) are forbidden
+//! Direct reads via [`Medium::get_ref`](crate::medium::Medium::get_ref) are forbidden
 //! for payload data-plane access.
 //!
 //! # Differencing disk support
@@ -11,7 +11,7 @@
 //! For differencing (child) disks:
 //! - Sector bitmap blocks are checked for [`PayloadBlockState::PartiallyPresent`].
 //! - Sectors not present in the child fall back to the parent disk.
-//! - The parent file is opened lazily and cached.
+//! - The parent medium is resolved lazily and cached.
 //!
 //! # Standard
 //!
@@ -19,20 +19,19 @@
 
 use bitvec::prelude::*;
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use std::io::{self, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 
 use crate::bat::{Bat, BatState, PayloadBlockState, SectorBitmapState};
 use crate::constants::MIB;
 use crate::error::{Error, Result};
-use crate::file::File;
-use crate::file::ReadSemanticsPolicy;
 use crate::log_replay::ReplayOverlay;
+use crate::medium::ReadSemanticsPolicy;
+use crate::medium::{
+    Len, Medium, ParentMedium, ParentRequest, ParentResolver, SetLen, SyncData, read_exact_at,
+};
 use crate::metadata::Metadata;
-
-use super::platform::{read_at, write_at};
 
 // ---------------------------------------------------------------------------
 // IO
@@ -40,32 +39,28 @@ use super::platform::{read_at, write_at};
 
 /// Virtual disk sector-level I/O.
 ///
-/// Constructed internally from a file reference.
+/// Constructed internally from a mutable medium reference.
 /// The IO struct resolves BAT entries, manages block offsets, and provides
 /// the only path to sector-level reads and writes.
 ///
 /// # Standard
 ///
 /// MS-VHDX §2.5.1 — BAT entry state semantics for sector reads.
-#[derive(Debug)]
-pub struct IO<'a> {
-    file: &'a File,
+pub struct IO<'a, T = std::fs::File> {
+    pub(super) file: &'a mut Medium<T>,
     pub(super) block_size: u32,
     pub(super) logical_sector_size: u32,
-    chunk_ratio: u64,
+    pub(super) chunk_ratio: u64,
     max_sector: u64,
-    has_parent: bool,
+    pub(super) has_parent: bool,
     /// In-memory replay overlay for serving post-replay data through the read path.
     pub(super) overlay: Option<Arc<ReplayOverlay>>,
-    /// Cached parent VHDX file (lazily opened for differencing disks).
-    parent_file: RefCell<Option<File>>,
-    /// Resolved parent path (cached after first resolution).
-    parent_path: RefCell<Option<PathBuf>>,
+    parent_medium: RefCell<Option<Box<dyn ParentMedium>>>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ResolvedBatEntry {
-    state: BatState,
+    pub(super) state: BatState,
     file_offset_mb: u64,
 }
 
@@ -75,14 +70,18 @@ impl ResolvedBatEntry {
     }
 }
 
-impl<'a> IO<'a> {
-    /// Create a new IO context from a file reference.
+impl<'a, T> IO<'a, T>
+where
+    T: Read + Seek,
+{
+    /// Create a new IO context from a medium reference.
     ///
     /// Loads metadata from the file to extract block size, sector sizes,
     /// parent status, and chunk ratio.
-    pub(crate) fn new(file: &'a File) -> Result<Self> {
-        let meta_buf = file.metadata_buf()?;
-        let metadata = Metadata::new(meta_buf)?;
+    pub(crate) fn new(file: &'a mut Medium<T>) -> Result<Self> {
+        let overlay = file.replay_overlay_arc().cloned();
+        let meta_buf = file.metadata_buf()?.to_vec();
+        let metadata = Metadata::new(&meta_buf)?;
         let items = metadata.items();
 
         let fp = items
@@ -117,20 +116,9 @@ impl<'a> IO<'a> {
             chunk_ratio,
             max_sector: max_sector.saturating_sub(1),
             has_parent,
-            overlay: file.replay_overlay_arc().cloned(),
-            parent_file: RefCell::new(None),
-            parent_path: RefCell::new(None),
+            overlay,
+            parent_medium: RefCell::new(None),
         })
-    }
-
-    /// The size of one logical sector in bytes.
-    pub fn logical_sector_size(&self) -> u32 {
-        self.logical_sector_size
-    }
-
-    /// The payload block size in bytes.
-    pub fn block_size(&self) -> u32 {
-        self.block_size
     }
 
     /// Locate and return a [`Sector`] spanning `count` sectors starting at
@@ -141,7 +129,7 @@ impl<'a> IO<'a> {
     /// - [`Error::InvalidParameter`] if `count == 0`, `start + count` overflows,
     ///   or `count * logical_sector_size` overflows.
     /// - [`Error::SectorOutOfBounds`] if the range exceeds the virtual disk.
-    pub fn sector(&self, start: u64, count: u64) -> Result<Sector<'_>> {
+    pub fn sector<'io>(&'io mut self, start: u64, count: u64) -> Result<Sector<'io, 'a, T>> {
         if count == 0 {
             return Err(Error::InvalidParameter("count must be >= 1".into()));
         }
@@ -157,18 +145,22 @@ impl<'a> IO<'a> {
             });
         }
 
+        let logical_sector_size = self.logical_sector_size;
+        let block_size = self.block_size;
+        let chunk_ratio = self.chunk_ratio;
+        let range_bytes = count
+            .checked_mul(u64::from(logical_sector_size))
+            .ok_or_else(|| Error::InvalidParameter("sector_count * lss overflow".into()))?;
+
         Ok(Sector {
             io: self,
-            file: self.file,
             start,
             count,
-            logical_sector_size: self.logical_sector_size,
-            block_size: self.block_size,
-            chunk_ratio: self.chunk_ratio,
+            logical_sector_size,
+            block_size,
+            chunk_ratio,
             pos: 0,
-            range_bytes: count
-                .checked_mul(u64::from(self.logical_sector_size))
-                .ok_or_else(|| Error::InvalidParameter("sector_count * lss overflow".into()))?,
+            range_bytes,
             semantics: ReadSemanticsPolicy::default(),
         })
     }
@@ -181,21 +173,30 @@ impl<'a> IO<'a> {
 /// A handle to one or more logical sectors within a virtual disk block.
 ///
 /// Created by [`IO::sector`].
-#[derive(Clone, Debug)]
-pub struct Sector<'a> {
-    io: &'a IO<'a>,
-    file: &'a File,
-    start: u64,
-    count: u64,
-    logical_sector_size: u32,
-    block_size: u32,
-    chunk_ratio: u64,
-    pos: u64,
-    range_bytes: u64,
-    semantics: ReadSemanticsPolicy,
+pub struct Sector<'io, 'medium, T = std::fs::File> {
+    pub(super) io: &'io mut IO<'medium, T>,
+    pub(super) start: u64,
+    pub(super) count: u64,
+    pub(super) logical_sector_size: u32,
+    pub(super) block_size: u32,
+    pub(super) chunk_ratio: u64,
+    pub(super) pos: u64,
+    pub(super) range_bytes: u64,
+    pub(super) semantics: ReadSemanticsPolicy,
 }
 
-impl Sector<'_> {
+impl<'medium, T> Sector<'_, 'medium, T>
+where
+    T: Read + Seek,
+{
+    pub(super) fn io(&self) -> &IO<'medium, T> {
+        self.io
+    }
+
+    pub(super) fn io_mut(&mut self) -> &mut IO<'medium, T> {
+        self.io
+    }
+
     /// Set the read semantics policy for this sector range.
     ///
     /// Controls how Unmapped blocks are handled during reads:
@@ -220,7 +221,7 @@ impl Sector<'_> {
     ///
     /// Panics if arithmetic overflow occurs during sector/offset conversion.
     /// This should not happen with well-formed VHDX files.
-    fn read_at(&self, buf: &mut [u8], byte_offset: u64) -> Result<()> {
+    fn read_at(&mut self, buf: &mut [u8], byte_offset: u64) -> Result<()> {
         let lss = self.logical_sector_size as usize;
         let range_bytes = self.count * lss as u64;
 
@@ -278,8 +279,8 @@ impl Sector<'_> {
     ///
     /// Panics if arithmetic overflow occurs during sector/offset conversion.
     /// This should not happen with well-formed VHDX files.
-    fn read_full_sectors(
-        &self, buf: &mut [u8], start_sector: u64, sector_count: u64,
+    pub(super) fn read_full_sectors(
+        &mut self, buf: &mut [u8], start_sector: u64, sector_count: u64,
     ) -> Result<()> {
         let lss = self.logical_sector_size as usize;
         let spb = self.sectors_per_block();
@@ -334,7 +335,7 @@ impl Sector<'_> {
                             buf[buf_offset..buf_offset + bytes_this_round].fill(0);
                         }
                     }
-                    PayloadBlockState::NotPresent if self.io.has_parent => {
+                    PayloadBlockState::NotPresent if self.io().has_parent => {
                         self.read_parent_range(
                             block_idx,
                             sector_in_block,
@@ -364,346 +365,21 @@ impl Sector<'_> {
         Ok(())
     }
 
-    /// Write data to this sector range at the given byte offset.
-    ///
-    /// `byte_offset` is relative to the first sector in this range (0-based).
-    /// The resulting byte range `[byte_offset, byte_offset + data.len())` must
-    /// fit within `sector_count * logical_sector_size`. Dynamic sparse payload
-    /// blocks are allocated as needed.
-    ///
-    /// # Panics
-    ///
-    /// Panics if arithmetic overflow occurs during sector/offset conversion.
-    /// This should not happen with well-formed VHDX files.
-    fn write_at(&self, data: &[u8], byte_offset: u64) -> Result<()> {
-        if !self.file.is_write() {
-            return Err(Error::ReadOnly);
-        }
-
-        let lss = self.logical_sector_size as usize;
-        let range_bytes = self.count * lss as u64;
-
-        // Empty write is a no-op
-        if data.is_empty() {
-            return Ok(());
-        }
-
-        // Validate byte range
-        let byte_end = byte_offset
-            .checked_add(data.len() as u64)
-            .ok_or_else(|| Error::InvalidParameter("byte_offset + data.len() overflow".into()))?;
-        if byte_end > range_bytes {
-            return Err(Error::InvalidParameter(format!(
-                "byte range [{byte_offset}, {byte_end}) exceeds sector range of {range_bytes} bytes"
-            )));
-        }
-
-        let start_byte = usize::try_from(byte_offset)
-            .map_err(|_| Error::InvalidParameter("byte_offset does not fit usize".into()))?;
-        let end_byte = start_byte + data.len();
-
-        let first_sector_rel = start_byte / lss;
-        let first_skip = start_byte % lss;
-        let aligned_end = end_byte.is_multiple_of(lss);
-
-        // Fast path: sector-aligned start AND sector-aligned end
-        if first_skip == 0 && aligned_end {
-            let sectors_to_write = data.len() / lss;
-            return self.write_full_sectors(
-                data,
-                self.start + u64::try_from(first_sector_rel).expect("sector index fits u64"),
-                u64::try_from(sectors_to_write).expect("sector count fits u64"),
-            );
-        }
-
-        // Slow path: read-modify-write
-        let last_sector_rel = (end_byte - 1) / lss;
-        let affected_count = last_sector_rel - first_sector_rel + 1;
-
-        // 1. Read current data for affected sectors
-        let mut temp = vec![0u8; affected_count * lss];
-        self.read_full_sectors(
-            &mut temp,
-            self.start + u64::try_from(first_sector_rel).expect("sector index fits u64"),
-            u64::try_from(affected_count).expect("sector count fits u64"),
-        )?;
-
-        // 2. Patch the byte range
-        temp[first_skip..first_skip + data.len()].copy_from_slice(data);
-
-        // 3. Write back all affected sectors
-        self.write_full_sectors(
-            &temp,
-            self.start + u64::try_from(first_sector_rel).expect("sector index fits u64"),
-            u64::try_from(affected_count).expect("sector count fits u64"),
-        )?;
-
-        Ok(())
-    }
-
-    /// Write `sector_count` full sectors starting at absolute `start_sector`.
-    /// `data.len()` must equal `sector_count * logical_sector_size`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if arithmetic overflow occurs during sector/offset conversion.
-    /// This should not happen with well-formed VHDX files.
-    fn write_full_sectors(&self, data: &[u8], start_sector: u64, sector_count: u64) -> Result<()> {
-        let lss = self.logical_sector_size as usize;
-        let spb = self.sectors_per_block();
-        let mut buf_offset = 0usize;
-        let mut current_sector = start_sector;
-        let mut remaining = sector_count;
-
-        while remaining > 0 {
-            let block_idx = current_sector / spb;
-            let sector_in_block = current_sector % spb;
-            let remaining_in_block = spb - sector_in_block;
-            let sectors_this_round = remaining.min(remaining_in_block);
-            let bytes_this_round =
-                usize::try_from(sectors_this_round).expect("sector count fits usize") * lss;
-
-            let entry = self.resolve_bat_entry_for_block(block_idx)?;
-            let state = entry.state;
-
-            match state {
-                BatState::Payload(payload_state) => match payload_state {
-                    PayloadBlockState::FullyPresent => {
-                        let file_offset =
-                            entry.file_offset_mb() * u64::from(MIB) + sector_in_block * lss as u64;
-                        Self::write_all_at(
-                            self.file.inner(),
-                            &data[buf_offset..buf_offset + bytes_this_round],
-                            file_offset,
-                        )?;
-                    }
-                    PayloadBlockState::PartiallyPresent => {
-                        self.require_sector_bitmap_present(block_idx)?;
-                        let file_offset =
-                            entry.file_offset_mb() * u64::from(MIB) + sector_in_block * lss as u64;
-                        Self::write_all_at(
-                            self.file.inner(),
-                            &data[buf_offset..buf_offset + bytes_this_round],
-                            file_offset,
-                        )?;
-                        self.file.inner().sync_data()?;
-                        self.mark_child_sectors_present(
-                            block_idx,
-                            sector_in_block,
-                            sectors_this_round,
-                        )?;
-                        self.file.inner().sync_data()?;
-                    }
-                    PayloadBlockState::NotPresent if self.io.has_parent => {
-                        let file_offset_mb = self.reserve_payload_block()?;
-                        let file_offset =
-                            file_offset_mb * u64::from(MIB) + sector_in_block * lss as u64;
-                        Self::write_all_at(
-                            self.file.inner(),
-                            &data[buf_offset..buf_offset + bytes_this_round],
-                            file_offset,
-                        )?;
-                        self.file.inner().sync_data()?;
-                        self.ensure_sector_bitmap_present(block_idx)?;
-                        self.mark_child_sectors_present(
-                            block_idx,
-                            sector_in_block,
-                            sectors_this_round,
-                        )?;
-                        self.file.inner().sync_data()?;
-                        self.publish_payload_block(
-                            block_idx,
-                            file_offset_mb,
-                            PayloadBlockState::PartiallyPresent,
-                        )?;
-                    }
-                    PayloadBlockState::NotPresent
-                    | PayloadBlockState::Zero
-                    | PayloadBlockState::Unmapped
-                    | PayloadBlockState::Undefined => {
-                        let file_offset_mb = self.reserve_payload_block()?;
-                        let file_offset =
-                            file_offset_mb * u64::from(MIB) + sector_in_block * lss as u64;
-                        Self::write_all_at(
-                            self.file.inner(),
-                            &data[buf_offset..buf_offset + bytes_this_round],
-                            file_offset,
-                        )?;
-                        self.file.inner().sync_data()?;
-                        self.publish_payload_block(
-                            block_idx,
-                            file_offset_mb,
-                            PayloadBlockState::FullyPresent,
-                        )?;
-                    }
-                },
-                BatState::SectorBitmap(_) => {
-                    return Err(Error::BlockNotPresent {
-                        block_idx,
-                        state: "sector bitmap entry (expected payload)".into(),
-                    });
-                }
-            }
-
-            buf_offset += bytes_this_round;
-            current_sector += sectors_this_round;
-            remaining -= sectors_this_round;
-        }
-
-        Ok(())
-    }
-
     // -- Internal helpers ---------------------------------------------------
 
     /// Number of logical sectors per payload block.
-    fn sectors_per_block(&self) -> u64 {
+    pub(super) fn sectors_per_block(&self) -> u64 {
         u64::from(self.block_size) / u64::from(self.logical_sector_size)
     }
 
-    fn reserve_payload_block(&self) -> Result<u64> {
-        self.reserve_block(u64::from(self.block_size))
-    }
-
-    fn reserve_sector_bitmap_block(&self) -> Result<u64> {
-        self.reserve_block(u64::from(MIB))
-    }
-
-    fn reserve_block(&self, block_size: u64) -> Result<u64> {
-        let file_len = self.file.inner().metadata()?.len();
-        let payload_offset = file_len.div_ceil(block_size) * block_size;
-        let payload_end = payload_offset
-            .checked_add(block_size)
-            .ok_or_else(|| Error::InvalidParameter("payload block end overflow".into()))?;
-        self.file.inner().set_len(payload_end)?;
-
-        Ok(payload_offset / u64::from(MIB))
-    }
-
-    fn publish_payload_block(
-        &self, block_idx: u64, file_offset_mb: u64, state: PayloadBlockState,
-    ) -> Result<()> {
-        let mut raw_entry = [0u8; 8];
-        let bits = raw_entry.view_bits_mut::<Lsb0>();
-        bits[0..3].store::<u8>(state as u8);
-        bits[20..64].store::<u64>(file_offset_mb);
-
-        let bat_array_idx = block_idx + block_idx / self.chunk_ratio;
-        self.file.write_bat_entry(bat_array_idx, raw_entry)
-    }
-
-    fn ensure_sector_bitmap_present(&self, block_idx: u64) -> Result<u64> {
-        let sb_bat_idx = self.sector_bitmap_bat_index(block_idx);
-        let bat_buf = self.file.bat_buf()?;
-        let bat = Bat::new(&bat_buf, self.chunk_ratio);
-        let sb_entry = bat.entry(sb_bat_idx)?;
-
-        match sb_entry.sector_bitmap_state() {
-            Some(SectorBitmapState::Present) => Ok(sb_entry.file_offset_mb()),
-            Some(SectorBitmapState::NotPresent) => {
-                let file_offset_mb = self.reserve_sector_bitmap_block()?;
-                let zero_bitmap = vec![0u8; MIB as usize];
-                Self::write_all_at(
-                    self.file.inner(),
-                    &zero_bitmap,
-                    file_offset_mb * u64::from(MIB),
-                )?;
-                self.file.inner().sync_data()?;
-                self.publish_sector_bitmap_block(sb_bat_idx, file_offset_mb)?;
-                Ok(file_offset_mb)
-            }
-            None => Err(Error::InvalidSectorBitmapState(sb_entry.raw_state())),
-        }
-    }
-
-    fn publish_sector_bitmap_block(&self, bat_array_idx: u64, file_offset_mb: u64) -> Result<()> {
-        let mut raw_entry = [0u8; 8];
-        let bits = raw_entry.view_bits_mut::<Lsb0>();
-        bits[0..3].store::<u8>(SectorBitmapState::Present as u8);
-        bits[20..64].store::<u64>(file_offset_mb);
-
-        self.file.write_bat_entry(bat_array_idx, raw_entry)
-    }
-
-    fn mark_child_sectors_present(
-        &self, block_idx: u64, sector_in_block: u64, sector_count: u64,
-    ) -> Result<()> {
-        let sb_bat_idx = self.sector_bitmap_bat_index(block_idx);
-        let bat_buf = self.file.bat_buf()?;
-        let bat = Bat::new(&bat_buf, self.chunk_ratio);
-        let sb_entry = bat.entry(sb_bat_idx)?;
-        let sb_state = sb_entry
-            .sector_bitmap_state()
-            .ok_or(Error::InvalidSectorBitmapState(sb_entry.raw_state()))?;
-        if sb_state != SectorBitmapState::Present {
-            return Err(Error::StateMismatch {
-                state: sb_entry.raw_state(),
-                description: "sector bitmap not Present for differencing write".into(),
-            });
-        }
-
-        let bitmap_offset = sb_entry.file_offset_mb() * u64::from(MIB);
-        let mut bitmap = vec![0u8; MIB as usize];
-        read_at(self.file.inner(), &mut bitmap, bitmap_offset)?;
-
-        let spb = self.sectors_per_block();
-        let block_in_chunk = block_idx % self.chunk_ratio;
-        let bits = bitmap.view_bits_mut::<Lsb0>();
-        for i in 0..sector_count {
-            let sector_in_chunk = block_in_chunk * spb + sector_in_block + i;
-            let bit_idx = usize::try_from(sector_in_chunk).expect("bitmap bit index fits usize");
-            if bit_idx >= bits.len() {
-                return Err(Error::InvalidMetadata(format!(
-                    "sector bitmap index out of range: bit {bit_idx}"
-                )));
-            }
-            bits.set(bit_idx, true);
-        }
-
-        Self::write_all_at(self.file.inner(), &bitmap, bitmap_offset)?;
-        Ok(())
-    }
-
-    fn require_sector_bitmap_present(&self, block_idx: u64) -> Result<()> {
-        let sb_bat_idx = self.sector_bitmap_bat_index(block_idx);
-        let bat_buf = self.file.bat_buf()?;
-        let bat = Bat::new(&bat_buf, self.chunk_ratio);
-        let sb_entry = bat.entry(sb_bat_idx)?;
-        let sb_state = sb_entry
-            .sector_bitmap_state()
-            .ok_or(Error::InvalidSectorBitmapState(sb_entry.raw_state()))?;
-        if sb_state == SectorBitmapState::Present {
-            Ok(())
-        } else {
-            Err(Error::StateMismatch {
-                state: sb_entry.raw_state(),
-                description: "sector bitmap not Present for PartiallyPresent payload".into(),
-            })
-        }
-    }
-
-    fn sector_bitmap_bat_index(&self, block_idx: u64) -> u64 {
+    pub(super) fn sector_bitmap_bat_index(&self, block_idx: u64) -> u64 {
         let stride = self.chunk_ratio + 1;
         let chunk_idx = block_idx / self.chunk_ratio;
         chunk_idx * stride + self.chunk_ratio
     }
 
-    fn write_all_at(file: &std::fs::File, mut buf: &[u8], mut offset: u64) -> Result<()> {
-        while !buf.is_empty() {
-            let written = write_at(file, buf, offset)?;
-            if written == 0 {
-                return Err(Error::Io(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "failed to write complete buffer",
-                )));
-            }
-            offset += u64::try_from(written).expect("written byte count fits u64");
-            buf = &buf[written..];
-        }
-        Ok(())
-    }
-
     fn read_parent_range(
-        &self, block_idx: u64, start_sector_in_block: u64, sector_count: u64, buf: &mut [u8],
+        &mut self, block_idx: u64, start_sector_in_block: u64, sector_count: u64, buf: &mut [u8],
     ) -> Result<()> {
         let lss = self.logical_sector_size as usize;
         let spb = self.sectors_per_block();
@@ -719,14 +395,16 @@ impl Sector<'_> {
 
     /// Resolve the BAT entry for this sector's block.
     #[cfg(test)]
-    pub(super) fn resolve_bat_entry(&self) -> Result<ResolvedBatEntry> {
+    pub(super) fn resolve_bat_entry(&mut self) -> Result<ResolvedBatEntry> {
         let block_idx = self.start / self.sectors_per_block();
         self.resolve_bat_entry_for_block(block_idx)
     }
 
     /// Resolve the BAT entry for a specific block index.
-    fn resolve_bat_entry_for_block(&self, block_idx: u64) -> Result<ResolvedBatEntry> {
-        let bat_buf = self.file.bat_buf()?;
+    pub(super) fn resolve_bat_entry_for_block(
+        &mut self, block_idx: u64,
+    ) -> Result<ResolvedBatEntry> {
+        let bat_buf = self.io_mut().file.bat_buf()?;
         let bat = Bat::new(&bat_buf, self.chunk_ratio);
         let bat_array_idx = block_idx + block_idx / self.chunk_ratio;
         let entry = bat.entry(bat_array_idx)?;
@@ -742,33 +420,27 @@ impl Sector<'_> {
     /// `buf` determines the amount of data to read (its length sets the read size),
     /// and `_sector_count` is currently unused.
     fn read_block_range_from_file(
-        &self, file_offset_mb: u64, sector_in_block: u64, _sector_count: u64, buf: &mut [u8],
+        &mut self, file_offset_mb: u64, sector_in_block: u64, _sector_count: u64, buf: &mut [u8],
     ) -> Result<()> {
         let lss = self.logical_sector_size as usize;
         let file_offset = file_offset_mb * u64::from(MIB) + sector_in_block * lss as u64;
 
         // Consult replay overlay first (per-block-span)
-        if let Some(ref overlay) = self.io.overlay {
-            let n = overlay.read(self.file.inner(), file_offset, buf);
+        if let Some(ref overlay) = self.io().overlay {
+            let n = overlay.read(file_offset, buf);
             if n > 0 {
                 return Ok(());
             }
 
             // T20: check physical file size gap
             let last_file_offset = overlay.last_file_offset();
-            if last_file_offset > 0
-                && file_offset < last_file_offset
-                && let Ok(metadata) = self.file.inner().metadata()
-            {
-                let physical_size = metadata.len();
-                if file_offset >= physical_size {
-                    buf.fill(0);
-                    return Ok(());
-                }
+            if last_file_offset > 0 && file_offset < last_file_offset {
+                buf.fill(0);
+                return Ok(());
             }
         }
 
-        read_at(self.file.inner(), buf, file_offset)?;
+        read_exact_at(self.io_mut().file.inner_mut(), file_offset, buf)?;
         Ok(())
     }
 
@@ -782,7 +454,7 @@ impl Sector<'_> {
     /// Panics if arithmetic overflow occurs during sector/offset conversion.
     /// This should not happen with well-formed VHDX files.
     fn read_partially_present_range(
-        &self, entry: ResolvedBatEntry, block_idx: u64, start_sector_in_block: u64,
+        &mut self, entry: ResolvedBatEntry, block_idx: u64, start_sector_in_block: u64,
         sector_count: u64, buf: &mut [u8],
     ) -> Result<()> {
         let lss = self.logical_sector_size as usize;
@@ -792,7 +464,7 @@ impl Sector<'_> {
         let chunk_idx = block_idx / self.chunk_ratio;
         let sb_bat_idx = chunk_idx * stride + self.chunk_ratio;
 
-        let bat_buf = self.file.bat_buf()?;
+        let bat_buf = self.io_mut().file.bat_buf()?;
         let bat = Bat::new(&bat_buf, self.chunk_ratio);
         let sb_entry = bat.entry(sb_bat_idx)?;
 
@@ -809,7 +481,7 @@ impl Sector<'_> {
         let sb_file_offset = sb_entry.file_offset_mb() * u64::from(MIB);
         let bitmap_size = MIB as usize;
         let mut bitmap = vec![0u8; bitmap_size];
-        read_at(self.file.inner(), &mut bitmap, sb_file_offset)?;
+        read_exact_at(self.io_mut().file.inner_mut(), sb_file_offset, &mut bitmap)?;
 
         let spb = self.sectors_per_block();
         let block_in_chunk = block_idx % self.chunk_ratio;
@@ -850,112 +522,142 @@ impl Sector<'_> {
 
     /// Read a single sector from the parent disk at the given global sector number.
     ///
-    /// Opens and caches the parent file on first access. Falls back to zeros
-    /// if the sector is not available in the parent.
+    /// Resolves and caches the parent medium on first access.
     ///
     /// # Panics
     ///
     /// Panics if arithmetic overflow occurs during sector/offset conversion.
     /// This should not happen with well-formed VHDX files.
-    fn read_from_parent_sector(&self, global_sector: u64, buf: &mut [u8]) -> Result<()> {
-        let parent_path = self.resolve_parent_path()?;
-        self.ensure_parent_open(&parent_path)?;
-
-        let lss = self.logical_sector_size as usize;
-        let parent_ref = self.io.parent_file.borrow();
-        let parent = parent_ref.as_ref().ok_or(Error::ParentNotFound)?;
-
-        let meta_buf = parent.metadata_buf()?;
-        let meta = Metadata::new(meta_buf)?;
-        let items = meta.items();
-        let p_block_size = items
-            .file_parameters()
-            .map_or(32 * MIB, |fp| fp.block_size());
-        let p_lss = items.logical_sector_size().ok().unwrap_or(4096);
-        let p_chunk_ratio = (1u64 << 23) * u64::from(p_lss) / u64::from(p_block_size);
-        let p_sectors_per_block = u64::from(p_block_size) / u64::from(p_lss);
-
-        let p_block_idx = global_sector / p_sectors_per_block;
-        let p_sector_in_block = u32::try_from(global_sector % p_sectors_per_block)
-            .expect("parent sector offset fits u32");
-
-        let p_bat_buf = parent.bat_buf()?;
-        let p_bat = Bat::new(&p_bat_buf, p_chunk_ratio);
-        let p_bat_array_idx = p_block_idx + p_block_idx / p_chunk_ratio;
-
-        let result: Result<()> = (|| {
-            let p_entry = p_bat.entry(p_bat_array_idx)?;
-            if p_entry.is_sector_bitmap() {
-                buf.fill(0);
-                return Ok(());
-            }
-            match p_entry.state()? {
-                BatState::Payload(PayloadBlockState::FullyPresent) => {
-                    let file_offset = p_entry.file_offset_mb() * u64::from(MIB)
-                        + u64::from(p_sector_in_block) * lss as u64;
-                    read_at(parent.inner(), buf, file_offset)?;
-                }
-                _ => {
-                    buf.fill(0);
-                }
-            }
-            Ok(())
-        })();
-
-        if let Ok(()) = result {
-            Ok(())
-        } else {
-            buf.fill(0);
-            Ok(())
+    fn read_from_parent_sector(&mut self, global_sector: u64, buf: &mut [u8]) -> Result<()> {
+        self.ensure_parent_resolved()?;
+        let mut parent_ref = self.io().parent_medium.borrow_mut();
+        let parent = parent_ref.as_mut().ok_or(Error::ParentResolverRequired)?;
+        let parent_lss = parent.logical_sector_size()?;
+        if parent_lss != self.logical_sector_size {
+            return Err(Error::ParentSectorSizeMismatch {
+                child: self.logical_sector_size,
+                parent: parent_lss,
+            });
         }
+        parent.read_sector(global_sector, buf)
     }
 
-    /// Resolve the parent path from the child's parent locator metadata.
-    fn resolve_parent_path(&self) -> Result<PathBuf> {
-        {
-            let cached = self.io.parent_path.borrow();
-            if let Some(ref p) = *cached {
-                return Ok(p.clone());
-            }
-        }
-
-        let meta_buf = self.io.file.metadata_buf()?;
-        let meta = Metadata::new(meta_buf)?;
-        let items = meta.items();
-        let locator = items.parent_locator().map_err(|_| Error::ParentNotFound)?;
-
-        let Ok(parent_path) = locator.resolve_parent_path() else {
-            return Err(Error::ParentNotFound);
-        };
-
-        *self.io.parent_path.borrow_mut() = Some(parent_path.clone());
-        Ok(parent_path)
-    }
-
-    /// Open the parent VHDX file if not already cached.
-    fn ensure_parent_open(&self, parent_path: &PathBuf) -> Result<()> {
-        if self.io.parent_file.borrow().is_some() {
+    fn ensure_parent_resolved(&mut self) -> Result<()> {
+        if self.io().parent_medium.borrow().is_some() {
             return Ok(());
         }
 
-        let parent_file = crate::file::File::open(parent_path)
-            .log_replay(crate::file::LogReplayPolicy::Require)
-            .finish()
-            .map_err(|_| Error::ParentNotFound)?;
-
-        *self.io.parent_file.borrow_mut() = Some(parent_file);
+        let meta_buf = self.io_mut().file.metadata_buf()?.to_vec();
+        let meta = Metadata::new(&meta_buf)?;
+        let items = meta.items();
+        let locator = items.parent_locator().map_err(|_| Error::ParentNotFound)?;
+        let expected_data_write_guid = locator
+            .entries()
+            .find_map(|entry| {
+                let kv_data = locator.key_value_data();
+                let key = entry.key(kv_data).ok()?;
+                if key == "parent_linkage" {
+                    let value = entry.value(kv_data).ok()?;
+                    crate::types::Guid::parse_braced(&value).ok()
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                Error::InvalidParentLocator("parent_linkage missing or invalid".into())
+            })?;
+        let child_virtual_disk_size = items.virtual_disk_size()?;
+        let request = ParentRequest {
+            locator,
+            expected_data_write_guid,
+            child_logical_sector_size: self.logical_sector_size,
+            child_virtual_disk_size,
+        };
+        let mut resolver_ref = self
+            .io()
+            .file
+            .parent_resolver
+            .lock()
+            .map_err(|_| Error::InvalidFile("parent resolver lock poisoned".into()))?;
+        let resolver = resolver_ref.as_mut().ok_or(Error::ParentResolverRequired)?;
+        let mut parent = resolver.resolve_parent(request)?;
+        if parent.data_write_guid()? != expected_data_write_guid {
+            return Err(Error::ParentLocatorGuidMismatch {
+                expected: expected_data_write_guid,
+                actual: parent.data_write_guid()?,
+            });
+        }
+        let parent_lss = parent.logical_sector_size()?;
+        if parent_lss != self.logical_sector_size {
+            return Err(Error::ParentSectorSizeMismatch {
+                child: self.logical_sector_size,
+                parent: parent_lss,
+            });
+        }
+        *self.io().parent_medium.borrow_mut() = Some(parent);
         Ok(())
     }
 }
 
-// PartialEq cannot be derived because File does not implement PartialEq.
-impl PartialEq for Sector<'_> {
+impl<T> ParentMedium for Medium<T>
+where
+    T: Read + Seek,
+{
+    fn data_write_guid(&mut self) -> Result<crate::types::Guid> {
+        let header_buf = self.header_buf_arc()?;
+        let header = crate::header::Header::new(&header_buf)?;
+        Ok(header.header(0)?.data_write_guid())
+    }
+
+    fn logical_sector_size(&mut self) -> Result<u32> {
+        let meta_buf = self.metadata_buf()?;
+        let meta = Metadata::new(&meta_buf)?;
+        meta.items().logical_sector_size()
+    }
+
+    fn read_sector(&mut self, sector: u64, buf: &mut [u8]) -> Result<()> {
+        let logical_sector_size = self.logical_sector_size()?;
+        if buf.len() != logical_sector_size as usize {
+            return Err(Error::InvalidParameter(format!(
+                "parent sector buffer length must equal logical sector size: got {}, expected {logical_sector_size}",
+                buf.len()
+            )));
+        }
+        let mut io = self.io()?;
+        io.sector(sector, 1)?.read_exact(buf)?;
+        Ok(())
+    }
+}
+
+impl<F, T> ParentResolver for F
+where
+    F: Fn(ParentRequest<'_>) -> Result<Medium<T>> + 'static,
+    T: Read + Seek + 'static,
+{
+    fn resolve_parent(&mut self, request: ParentRequest<'_>) -> Result<Box<dyn ParentMedium>> {
+        Ok(Box::new(std::cell::RefCell::new(self(request)?)))
+    }
+}
+
+impl<T> std::fmt::Debug for Sector<'_, '_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Sector")
+            .field("start", &self.start)
+            .field("count", &self.count)
+            .field("logical_sector_size", &self.logical_sector_size)
+            .field("block_size", &self.block_size)
+            .field("chunk_ratio", &self.chunk_ratio)
+            .field("pos", &self.pos)
+            .field("range_bytes", &self.range_bytes)
+            .field("semantics", &self.semantics)
+            .finish_non_exhaustive()
+    }
+}
+
+// PartialEq cannot be derived because Medium does not implement PartialEq.
+impl<T> PartialEq for Sector<'_, '_, T> {
     fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(
-            std::ptr::from_ref::<File>(self.file),
-            std::ptr::from_ref::<File>(other.file),
-        ) && self.start == other.start
-            && self.count == other.count
+        std::ptr::eq(self.io, other.io) && self.start == other.start && self.count == other.count
     }
 }
 
@@ -963,7 +665,10 @@ impl PartialEq for Sector<'_> {
 // std::io trait implementations — cursor-based I/O
 // ---------------------------------------------------------------------------
 
-impl io::Read for Sector<'_> {
+impl<T> io::Read for Sector<'_, '_, T>
+where
+    T: Read + Seek,
+{
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.pos >= self.range_bytes {
             return Ok(0); // EOF
@@ -976,7 +681,10 @@ impl io::Read for Sector<'_> {
     }
 }
 
-impl io::Write for Sector<'_> {
+impl<T> io::Write for Sector<'_, '_, T>
+where
+    T: Read + Write + Seek + Len + SetLen + SyncData,
+{
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.pos >= self.range_bytes {
             return Ok(0); // EOF
@@ -992,7 +700,7 @@ impl io::Write for Sector<'_> {
     }
 }
 
-impl io::Seek for Sector<'_> {
+impl<T> io::Seek for Sector<'_, '_, T> {
     fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
         let new_pos = match from {
             SeekFrom::Start(offset) => offset,

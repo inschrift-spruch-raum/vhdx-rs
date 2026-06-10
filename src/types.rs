@@ -74,6 +74,22 @@ impl Guid {
     pub fn to_uuid(&self) -> uuid::Uuid {
         uuid::Uuid::from_bytes(self.bytes)
     }
+
+    /// Parse a hyphenated GUID string, with or without surrounding braces.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the input is not a valid GUID string.
+    pub fn parse_braced(input: &str) -> std::result::Result<Self, uuid::Error> {
+        let trimmed = input.trim();
+        let guid = trimmed
+            .strip_prefix('{')
+            .and_then(|value| value.strip_suffix('}'))
+            .unwrap_or(trimmed);
+        uuid::Uuid::parse_str(guid).map(|uuid| Self {
+            bytes: *uuid.as_bytes(),
+        })
+    }
 }
 
 impl fmt::Debug for Guid {

@@ -169,13 +169,6 @@ impl<'a> Bat<'a> {
         }
     }
 
-    pub(crate) fn owned(data: Vec<u8>, chunk_ratio: u64) -> Self {
-        Self {
-            data: Cow::Owned(data),
-            chunk_ratio,
-        }
-    }
-
     /// Total number of 64-bit entries in the BAT buffer.
     #[must_use]
     pub(crate) fn len(&self) -> usize {

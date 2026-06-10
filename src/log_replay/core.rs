@@ -6,11 +6,12 @@
 //! sequence (the "active sequence") and replay it before any payload I/O.
 
 use std::collections::HashMap;
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Seek, Write};
 
 use crate::constants::SECTOR_SIZE;
 use crate::error::{Error, Result};
 use crate::log::{Descriptor, Entry, Log};
+use crate::medium::write_all_at;
 use crate::types::Guid;
 
 // ---------------------------------------------------------------------------
@@ -112,7 +113,7 @@ impl ReplayOverlay {
     ///
     /// Panics if arithmetic overflow occurs during sector/offset conversion.
     /// This should not happen with well-formed VHDX files.
-    pub fn read(&self, _file: &std::fs::File, offset: u64, buf: &mut [u8]) -> usize {
+    pub fn read(&self, offset: u64, buf: &mut [u8]) -> usize {
         if buf.is_empty() {
             return 0;
         }
@@ -483,7 +484,10 @@ pub fn build_replay_overlay(active: &ActiveSequence<'_>) -> Result<ReplayOverlay
 ///
 /// Panics if arithmetic overflow occurs during sector/offset conversion.
 /// This should not happen with well-formed VHDX files.
-pub fn replay_to_file(file: &std::fs::File, active: &ActiveSequence<'_>) -> Result<()> {
+pub fn replay_to_file<T>(file: &mut T, active: &ActiveSequence<'_>) -> Result<()>
+where
+    T: Seek + Write + crate::medium::SetLen,
+{
     // Replay each entry in tail-to-head order
     for located in active.entries() {
         let entry = &located.entry;
@@ -505,10 +509,7 @@ pub fn replay_to_file(file: &std::fs::File, active: &ActiveSequence<'_>) -> Resu
                     let sector = &data_sectors[data_idx];
                     let file_offset = data_desc.file_offset();
 
-                    // Seek and write the assembled sector
-                    let f = file;
-                    (&mut &*f).seek(SeekFrom::Start(file_offset))?;
-                    (&mut &*f).write_all(&sector.data())?;
+                    write_all_at(file, file_offset, &sector.data())?;
                     data_idx += 1;
                 }
                 Descriptor::Zero(zero_desc) => {
@@ -519,11 +520,11 @@ pub fn replay_to_file(file: &std::fs::File, active: &ActiveSequence<'_>) -> Resu
                     let mut written: usize = 0;
                     while written < zero_length {
                         let chunk = zero_buf.len().min(zero_length - written);
-                        let f = file;
-                        (&mut &*f).seek(SeekFrom::Start(
+                        write_all_at(
+                            file,
                             file_offset + u64::try_from(written).expect("written count fits u64"),
-                        ))?;
-                        (&mut &*f).write_all(&zero_buf[..chunk])?;
+                            &zero_buf[..chunk],
+                        )?;
                         written += chunk;
                     }
                 }
@@ -532,7 +533,7 @@ pub fn replay_to_file(file: &std::fs::File, active: &ActiveSequence<'_>) -> Resu
     }
 
     // Extend file to at least LastFileOffset
-    file.set_len(active.last_file_offset())?;
+    crate::medium::SetLen::set_len(file, active.last_file_offset())?;
 
     Ok(())
 }
