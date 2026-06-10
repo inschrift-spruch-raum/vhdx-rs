@@ -173,7 +173,7 @@ MS-VHDX/{chapter}.{section}[.{subsection}[.{sub}]]
 | `PARENT_LOCATOR_MISSING_LINKAGE` | `MS-VHDX/2.6.2.6.3` | parent_linkage key 不存在（规范要求 MUST be present） |
 | `PARENT_LOCATOR_LINKAGE2_CONFLICT` | `MS-VHDX/2.6.2.6.3` | parent_linkage2 存在（规范要求 parent_linkage2 can't be present）。注：Microsoft 产品实现在 merge 过渡期会暂时写入该字段，本扩展标准将其判定为冲突。因此不支持校验 merge 过渡期的 VHDX 文件，参见 MS-VHDX.md重点解读.md §8 |
 | `PARENT_LOCATOR_NO_VALID_PATH` | `MS-VHDX/2.6.2.6.3` | relative_path / volume_path / absolute_win32_path 均不可访问（按规范顺序解析：relative_path → volume_path → absolute_win32_path） |
-| `PARENT_LOCATOR_GUID_MISMATCH` | `MS-VHDX/2.6.2.6` | 子盘 parent_linkage 记录的父盘 DataWriteGuid 与实际父盘不一致。注：该错误由 `validate_parent_locator()` 在父磁盘可访问时触发（合并了结构校验与运行时链校验），区别于单纯的 `PARENT_LOCATOR_NO_VALID_PATH`（路径不可达） |
+| `PARENT_LOCATOR_GUID_MISMATCH` | `MS-VHDX/2.6.2.6` | 子盘 parent_linkage 记录的父盘 DataWriteGuid 与显式解析出的父介质不一致。该错误属于需要 `ParentResolver` 的父链/数据面校验，不由默认 `validate_parent_locator()` 隐式打开父路径触发。 |
 | `PARENT_LOCATOR_FORMAT_ERROR` | `VALEXT` | Parent Locator 内部 KeyValueEntry 解析失败（UTF-16LE 解码或数据切片越界）。专用于 `KeyValueEntry::key()` 和 `value()` 运行时解析错误，区别于 `InvalidMetadata`（ Metadata Table / Entry 的格式错误） |
 
 ---

@@ -1,4 +1,4 @@
-﻿# VHDX Rust 库 API 设计分析
+# VHDX Rust 库 API 设计分析
 
 ## 基于 MS-VHDX v20240423 规范的导出设计
 
@@ -8,31 +8,34 @@
 
 ```
 vhdx::
-├── File                                    # 核心 API
-│   ├── open(path) -> File::OpenOptions     # 链式打开
-│   ├── create(path) -> File::CreateOptions # 链式创建
-│   ├── sections(&self) -> Sections<'_>    # 获取所有sections
-│   ├── io(&self) -> Result<IO<'_>>         # 获取IO模块
-│   ├── validator(&self) -> validation::SpecValidator<'_>  # 获取规范校验器
-│   └── inner(&self) -> &std::fs::File
+├── Medium<T = std::fs::File>              # 核心 API
+│   ├── open(inner: T) -> OpenOptions<T, ReadOnly>   # 链式打开
+│   ├── create(inner: T) -> CreateOptions<T>         # 链式创建
+│   ├── sections(&self) -> Result<Sections<'_, T>>   # 获取懒加载sections快照
+│   ├── io(&mut self) -> Result<IO<'_, T>>            # 获取IO模块
+│   ├── validator(&mut self) -> Result<validation::SpecValidator>      # 获取规范校验器快照
+│   ├── get_ref(&self) -> InnerRef<'_, T>
+│   ├── get_mut(&mut self) -> &mut T
+│   └── into_inner(self) -> T
 │
-│   └── OpenOptions                         # 关联类型：打开选项
-│       ├── write(self) -> Self             # 启用写权限（RW）
+│   └── OpenOptions<T, Mode = ReadOnly>     # 打开选项
+│       ├── write(self) -> OpenOptions<T, ReadWrite> # 启用写权限（RW）
 │       ├── strict(self, bool) -> Self      # 是否启用严格模式（默认 true，所有 unknown 始终失败）
 │       ├── log_replay(self, LogReplayPolicy) -> Self # 日志回放策略
-│       └── finish(self) -> Result<File>    # 完成打开
+│       ├── with_parent_resolver<R>(self, resolver: R) -> Self where R: ParentResolver + Send + 'static # 配置差分盘父介质解析器
+│       └── finish(self) -> Result<Medium<T>> # 完成打开
 │
-│   └── CreateOptions                          # 关联类型：创建选项
+│   └── CreateOptions<T = std::fs::File>       # 创建选项
 │       ├── size(self, u64) -> Self            # 必需：虚拟磁盘大小
 │       ├── fixed(self, bool) -> Self          # 可选：固定磁盘
 │       ├── block_size(self, u32) -> Self      # 可选：块大小
 │       ├── logical_sector_size(self, u32) -> Self   # 可选：逻辑扇区大小(512/4096)
 │       ├── physical_sector_size(self, u32) -> Self  # 可选：物理扇区大小(512/4096)
-│       ├── parent_path(self, impl AsRef<Path>) -> Self # 差分盘父路径
-│       └── finish(self) -> Result<File>       # 完成创建
+│       ├── parent(self, &mut Medium<P>, impl AsRef<Path>) -> Result<Self> # 差分盘父介质
+│       └── finish(self) -> Result<Medium<T>>  # 完成创建
 │
 ├── validation::                             # 规范一致性校验模块（只读）
-│   ├── SpecValidator<'a>                    # 规范校验器
+│   ├── SpecValidator                        # 规范校验器（持有 Arc-backed 快照）
 │   │   ├── validate_file(&self) -> Result<Vec<ValidationIssue>> # 总入口
 │   │   ├── validate_header(&self) -> Result<Vec<ValidationIssue>>
 │   │   ├── validate_region_table(&self) -> Result<Vec<ValidationIssue>>
@@ -40,11 +43,11 @@ vhdx::
 │   │   ├── validate_metadata(&self) -> Result<Vec<ValidationIssue>>
 │   │   ├── validate_required_metadata_items(&self) -> Result<Vec<ValidationIssue>>
 │   │   ├── validate_log(&self) -> Result<Vec<ValidationIssue>>
-│   │   └── validate_parent_locator(&self) -> Result<Vec<ValidationIssue>> # 含 parent_linkage2 检查 + 差分链 GUID 校验
+│   │   └── validate_parent_locator(&self) -> Result<Vec<ValidationIssue>> # 含 parent_linkage/path/linkage2 格式检查
 │   └── ValidationIssue                      # 结构化校验问题
 │
 ├── section::                               # Section模块 - 物理文件结构映射
-│   ├── Sections<'a>                        # 容器，管理所有sections (懒加载)
+│   ├── Sections<'a, T>                     # 容器，按需加载 Arc-backed section snapshots
 │   │   ├── header(&self) -> Result<Header<'_>>
 │   │   ├── bat(&self) -> Result<Bat<'_>>
 │   │   ├── metadata(&self) -> Result<Metadata<'_>>
@@ -131,9 +134,9 @@ vhdx::
 │   │           ├── length(&self) -> u32
 │   │           ├── flags_bits(&self) -> u32
 │   │           ├── reserved(&self) -> u32
-│   │           └── flags(&self) -> EntryFlags
+│   │           └── flags(&self) -> EntryFlags<'_>
 │   │
-│   │           └── EntryFlags
+│   │           └── EntryFlags<'a>
 │   │               ├── is_user(&self) -> bool
 │   │               ├── is_virtual_disk(&self) -> bool
 │   │               └── is_required(&self) -> bool
@@ -188,7 +191,7 @@ vhdx::
 │           ├── header(&self) -> LogEntryHeader<'_>
 │           ├── descriptor(&self, index: usize) -> Result<Descriptor<'_>>
 │           ├── descriptors(&self) -> impl Iterator<Item = Result<Descriptor<'_>>> + '_ # 强制：零拷贝视图迭代
-│           └── data(&self) -> impl Iterator<Item = DataSector<'_>> + '_ # 强制：零拷贝视图迭代
+│           └── data(&self) -> impl Iterator<Item = DataSector<'_>> + '_ # 借用视图；内部维护 descriptor 索引与扇区缓存
 │    
 │           └── Descriptor<'a>              # Descriptor 枚举
 │               ├── Data(DataDescriptor<'a>)    # Data Descriptor 变体
@@ -226,10 +229,10 @@ vhdx::
 │               ├── sequence_number(&self) -> u64
 │               └── data(&self) -> Cow<'a, [u8]>    # Cow：拼接 LeadingBytes+中间段+TrailingBytes 无法零拷贝
 │    
-├── IO<'a>                                  # IO模块 (扇区级操作)
-│   └── sector(&self, start: u64, count: u64) -> Result<Sector<'_>>   # 输入: 起始扇区号 + 连续扇区数
+├── IO<'a, T = std::fs::File>              # IO模块 (扇区级操作)
+│   └── sector(&mut self, start: u64, count: u64) -> Result<Sector<'_, 'a, T>> # 输入: 起始扇区号 + 连续扇区数
 │
-│   └── Sector<'a>                          # 扇区级定位与操作（游标式）
+│   └── Sector<'io, 'medium, T = std::fs::File> # 扇区级定位与操作（游标式）
 │       ├── semantics(self, ReadSemanticsPolicy) -> Self  # 设置读语义策略（链式，默认 EffectiveDataPreferred）
 │       ├── impl Read   → fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>
 │       ├── impl Write  → fn write(&mut self, buf: &[u8]) -> io::Result<usize>
@@ -241,11 +244,11 @@ vhdx::
 ├── Guid                                    # GUID 类型
 │
 ├── gpt::                                   # gpt_disk_io 兼容层（可选，需启用 `gpt` feature）
-│   ├── VhdxBlockDevice                     # VHDX → BlockIo 适配器
-│   │   ├── new(File) -> Result<Self, Error>  # 从已打开的 VHDX 文件构造
-│   │   ├── file(&self) -> &File            # 访问底层 VHDX File（只读）
-│   │   ├── file_mut(&mut self) -> &mut File # 访问底层 VHDX File（可变）
-│   │   └── into_file(self) -> File         # 解包为底层 VHDX File
+│   ├── VhdxBlockDevice<T = std::fs::File>  # VHDX → BlockIo 适配器
+│   │   ├── new(Medium<T>) -> Result<Self, Error> # 从已打开的 VHDX medium 构造
+│   │   ├── medium(&self) -> &Medium<T>     # 访问底层 VHDX Medium（只读）
+│   │   ├── medium_mut(&mut self) -> &mut Medium<T> # 访问底层 VHDX Medium（可变）
+│   │   └── into_medium(self) -> Medium<T>  # 解包为底层 VHDX Medium
 │   │
 │   └── VhdxBlockIoError                    # BlockIo 的 Error 适配类型
 │       └── VhdxBlockIoError(pub Error)    # 透明包装 crate::Error
@@ -257,7 +260,7 @@ vhdx::
 │       fn num_blocks(&mut self) -> Result<u64>       # 虚拟磁盘大小 / 扇区大小
 │       fn read_blocks(&mut self, Lba, &mut [u8]) -> Result<()>   # 通过 Sector 管道读取
 │       fn write_blocks(&mut self, Lba, &[u8]) -> Result<()>      # 通过 Sector 管道写入
-│       fn flush(&mut self) -> Result<()>              # sync_all 刷盘
+│       fn flush(&mut self) -> Result<()>              # 调用 SyncData::sync_data 刷盘
 │
 ├── LogReplayPolicy                         # 日志回放策略
 │   ├── Require                             # 若存在日志则返回 LogReplayRequired
@@ -291,6 +294,8 @@ vhdx::
     │   { sequence_number_1: u64, sequence_number_2: u64 }
     ├── UnsupportedVersion { version: u16 } # 不支持的 VHDX 版本（Version != 1）
     ├── UnsupportedLogVersion { version: u16 } # 不支持的 Log 版本（LogVersion != 0）
+    ├── HeaderLogNotAligned                 # Header LogLength/LogOffset 未按 1MB 对齐
+    │   { field: String, value: u64 }
     ├── InvalidChecksum                     # CRC32C 校验和不匹配
     │   { expected: u32, actual: u32 }
     ├── InvalidBlockState(u8)               # 无效的 Payload Block 状态值
@@ -319,6 +324,10 @@ vhdx::
     │   { guid: Guid }
     ├── MetadataReservedFlagsSet            # Metadata 保留标志位被设置
     │   { flags: u32 }
+    ├── MetadataEntryReservedNonzero        # Metadata Table Entry Reserved 字段不为 0
+    │   { reserved: u32 }
+    ├── FileParametersReservedFlags         # FileParameters 保留标志位被设置
+    │   { flags: u32 }
     ├── InvalidParentLocator(String)        # 父定位器格式错误
     ├── MetadataNotFound { guid: Guid }     # 元数据项未找到
     ├── LogReplayRequired                   # 需要日志回放
@@ -333,8 +342,13 @@ vhdx::
     │   { block_idx: u64, state: String }
     ├── SectorOutOfBounds                   # 扇区索引越界
     │   { sector: u64, max: u64 }
-    ├── ParentNotFound                      # 父磁盘未找到（三个路径均不可访问）
-    ├── ParentMismatch                      # 父磁盘 GUID 不匹配
+    ├── ParentNotFound                      # 父磁盘未找到或 ParentLocator 无路径候选
+    ├── ParentResolverRequired              # 差分盘读取缺少父介质 resolver
+    ├── ParentSectorSizeMismatch            # 父子盘逻辑扇区大小不一致
+    │   { child: u32, parent: u32 }
+    ├── ParentMismatch                      # 父磁盘 GUID 不匹配（保留错误变体）
+    │   { expected: Guid, actual: Guid }
+    ├── ParentLocatorGuidMismatch           # parent_linkage 与已解析父盘 DataWriteGuid 不匹配
     │   { expected: Guid, actual: Guid }
     ├── ParentLocatorMissingLinkage         # parent_linkage key 不存在
     ├── ParentLocatorLinkage2Conflict       # parent_linkage2 存在（merge 冲突）
@@ -379,62 +393,66 @@ vhdx-tool::
 
 ### 零拷贝实现约束（强制）
 
-- 所有 `entries()/descriptors()/data()` 必须实现为**零拷贝视图迭代器**。
+- 所有 `entries()/descriptors()` 与可零拷贝的 `data()` 必须实现为**零拷贝视图迭代器**。
 - 所有定长字节数组返回（如 signature/reserved）必须返回**借用视图**（`&[u8; N]`），禁止按值返回（`[u8; N]`）。
 - 迭代返回项必须借用底层 section 缓冲区（带生命周期），不得在迭代路径中复制 entry/descriptor/sector 原始字节。
 - 除以下极少数特殊情况外，禁止在上述 API 内部构造中间 `Vec` / `String` / `Box` 作为返回流水线：
-  1. `DataSector::data()`：拼接 `LeadingBytes(DataDescriptor) + 中间段(DataSector) + TrailingBytes(DataDescriptor)` 为完整 4KB 扇区，无法零拷贝完成（见 DataSector FIXME）。
-  2. `ParentLocator::resolve_parent_path()`：UTF-16LE 解码为 `PathBuf`，需要分配内存，无法返回借用视图。
-  3. `KeyValueEntry::key()` / `value()`：UTF-16LE 解码为 `String`，需要分配内存，无法返回借用视图。
+  1. `DataSector::data()`：拼接 `LeadingBytes(DataDescriptor) + 中间段(DataSector) + TrailingBytes(DataDescriptor)` 为完整 4KB 扇区，首次访问时写入每扇区缓存，后续返回借用视图。
+  2. `KeyValueEntry::key()` / `value()`：UTF-16LE 解码为 `String`，需要分配内存，无法返回借用视图。
+  3. `Entry::data()`：内部建立 DATA descriptor 索引与按扇区缓存，返回的 `DataSector` 仍借用底层 entry 数据。
 - 文档中“按需解析”为惰性解析语义，不得退化为“先整体拷贝再迭代”。
 
-### 1. File - 核心 API
+### 1. Medium - 核心 API
 
 ```rust
-pub struct File;
+pub struct Medium<T = std::fs::File>;
 
-impl File {
-    /// 打开现有 VHDX 文件（只读默认）
+impl<T> Medium<T> {
+    /// 打开现有 VHDX medium（只读默认）
     ///
     /// 标准：docs/Standard/MS-VHDX-只读扩展标准.md（只读语义边界）
     /// 返回 OpenOptions 用于链式配置
-    pub fn open(path: impl AsRef<Path>) -> File::OpenOptions;
+    pub fn open(inner: T) -> OpenOptions<T, ReadOnly>;
     
-    /// 创建新 VHDX 文件
+    /// 创建新 VHDX medium
     /// 返回 CreateOptions 用于链式配置
-    pub fn create(path: impl AsRef<Path>) -> File::CreateOptions;
+    pub fn create(inner: T) -> CreateOptions<T>;
     
-    /// 获取所有Section的容器（懒加载）
-    pub fn sections(&self) -> Sections<'_>;
+    /// 获取底层 medium 引用
+    /// 可用于诊断或结构导出；不得用于虚拟磁盘 payload 数据面读写。
+    pub fn get_ref(&self) -> vhdx::InnerRef<'_, T>;
+
+    /// 获取底层 medium 可变引用。
+    /// 直接修改底层介质可能使 Medium<T> 的缓存、BAT、Metadata 或 Log 视图失效。
+    pub fn get_mut(&mut self) -> &mut T;
+
+    /// 消费包装器并返回底层 medium。
+    pub fn into_inner(self) -> T;
+}
+
+impl<T: std::io::Read + std::io::Seek> Medium<T> {
+    /// 获取所有Section的懒加载快照容器
+    pub fn sections(&self) -> Result<Sections<'_, T>>;
     
     /// 获取IO模块（用于扇区级读写）
-    /// 懒加载：内部Sector缓存按需从文件读取
+    /// 懒加载：通过缓存的 section 快照、日志回放 overlay 与 BAT/父盘解析按需读取
     /// 前置条件：文件已成功打开（只读即满足）
-    /// IO 创建可能失败（如元数据不完整），因此返回 `Result<IO<'_>>`。
-    pub fn io(&self) -> Result<IO<'_>>;
+    /// IO 创建可能失败（如元数据不完整），因此返回 `Result<IO<'_, T>>`。
+    pub fn io(&mut self) -> Result<IO<'_, T>>;
 
     /// 获取规范校验器（只读）
     ///
-    /// 说明：校验逻辑被独立到 validation 模块，避免与 File 的打开/创建职责耦合。
-    pub fn validator(&self) -> validation::SpecValidator<'_>;
-    
-    /// 获取底层文件句柄（std::fs::File）
-    /// 可用于诊断或结构导出；不得用于虚拟磁盘 payload 数据面读写。
-    pub fn inner(&self) -> &std::fs::File;
+    /// 说明：校验逻辑被独立到 validation 模块，避免与 Medium 的打开/创建职责耦合。
+    pub fn validator(&mut self) -> Result<validation::SpecValidator>;
 }
 ```
 
-### 2. File::OpenOptions - 打开选项（关联类型）
+### 2. OpenOptions - 打开选项
 
 ```rust
-pub struct OpenOptions;
+pub struct OpenOptions<T, Mode = ReadOnly>;
 
-impl OpenOptions {
-    /// 启用写权限（默认为只读）
-    ///
-    /// 标准：docs/Standard/MS-VHDX-只读扩展标准.md
-    pub fn write(self) -> Self;
-
+impl<T, Mode> OpenOptions<T, Mode> {
     /// 设置严格模式（默认 true）
     ///
     /// 标准：docs/Standard/MS-VHDX-宽松扩展标准.md §3
@@ -449,6 +467,20 @@ impl OpenOptions {
     /// 标准：docs/Standard/MS-VHDX.md §2.3 + docs/Standard/MS-VHDX-只读扩展标准.md §3/§4
     pub fn log_replay(self, policy: LogReplayPolicy) -> Self;
 
+    /// 配置按需加载差分盘父介质的 resolver。
+    pub fn with_parent_resolver<R>(self, resolver: R) -> Self
+    where
+        R: ParentResolver + Send + 'static;
+}
+
+impl<T> OpenOptions<T, ReadOnly> {
+    /// 启用写权限（默认为只读）
+    ///
+    /// 标准：docs/Standard/MS-VHDX-只读扩展标准.md
+    pub fn write(self) -> OpenOptions<T, ReadWrite>
+    where
+        T: Read + Write + Seek + Len + SetLen + SyncData;
+
     /// 完成打开操作
     ///
     /// 规范约束：
@@ -457,7 +489,16 @@ impl OpenOptions {
     /// - 标准：MS-VHDX-只读扩展标准 §4.4
     ///   若策略为 `ReadOnlyNoReplay`，允许只读打开但不回放日志；
     ///   此时仅保证结构读取（Header/Region/Metadata 等），不保证 payload 数据面一致性。
-    pub fn finish(self) -> Result<File>;
+    pub fn finish(self) -> Result<Medium<T>>
+    where
+        T: Read + Seek;
+}
+
+impl<T> OpenOptions<T, ReadWrite> {
+    /// 完成可写打开操作。
+    pub fn finish(self) -> Result<Medium<T>>
+    where
+        T: Read + Write + Seek + Len + SetLen + SyncData;
 }
 ```
 
@@ -513,17 +554,58 @@ pub enum ReadSemanticsPolicy {
     RawDataPreferred,
 }
 
-// 默认行为说明：
-// 标准：docs/Standard/MS-VHDX-只读扩展标准.md §3
-// File::open(path).finish() 在未显式调用 .log_replay(...) 时，
-// 等价于使用 LogReplayPolicy::Require。
+/// 底层介质长度能力。
+pub trait Len {
+    fn len(&mut self) -> std::io::Result<u64>;
+    fn is_empty(&mut self) -> std::io::Result<bool>;
+}
 
-### 3. File::CreateOptions - 创建选项
+/// 底层介质设置长度能力。
+pub trait SetLen: Len {
+    fn set_len(&mut self, len: u64) -> std::io::Result<()>;
+}
+
+/// 底层介质刷盘能力。
+pub trait SyncData {
+    fn sync_data(&mut self) -> std::io::Result<()>;
+}
+
+/// 差分盘按需解析父介质时传给 resolver 的请求。
+pub struct ParentRequest<'a> {
+    pub locator: ParentLocator<'a>,
+    pub expected_data_write_guid: Guid,
+    pub child_logical_sector_size: u32,
+    pub child_virtual_disk_size: u64,
+}
+
+impl ParentRequest<'_> {
+    pub fn locator(&self) -> &ParentLocator<'_>;
+    pub fn child_logical_sector_size(&self) -> u32;
+    pub fn expected_data_write_guid(&self) -> Guid;
+    pub fn child_virtual_disk_size(&self) -> u64;
+}
+
+/// 已解析的父介质，提供父盘 GUID、扇区大小和有效扇区读取。
+pub trait ParentMedium {
+    fn data_write_guid(&mut self) -> Result<Guid>;
+    fn logical_sector_size(&mut self) -> Result<u32>;
+    fn read_sector(&mut self, sector: u64, buf: &mut [u8]) -> Result<()>;
+}
+
+/// 调用方提供的差分盘父介质解析器。
+pub trait ParentResolver {
+    fn resolve_parent(&mut self, request: ParentRequest<'_>) -> Result<Box<dyn ParentMedium>>;
+}
+```
+
+默认行为说明：`Medium::open(inner).finish()` 在未显式调用 `.log_replay(...)` 时，等价于使用 `LogReplayPolicy::Require`（标准：docs/Standard/MS-VHDX-只读扩展标准.md §3）。
+
+### 3. CreateOptions - 创建选项
 
 ```rust
-pub struct CreateOptions;
+pub struct CreateOptions<T = std::fs::File>;
 
-impl CreateOptions {
+impl<T> CreateOptions<T> {
     /// 设置虚拟磁盘大小（必需）
     ///
     /// 约束：必须是 logical_sector_size 的整数倍，且 <= 64TB。
@@ -547,15 +629,19 @@ impl CreateOptions {
     /// 约束：只能为 512 或 4096。
     pub fn physical_sector_size(self, size: u32) -> Self;
 
-    /// 设置父磁盘路径（设置后即创建差分盘）
-    pub fn parent_path(self, path: impl AsRef<Path>) -> Self;
+    /// 设置父磁盘介质和相对路径（设置后即创建差分盘）
+    pub fn parent<P>(self, parent: &mut Medium<P>, relative_path: impl AsRef<Path>) -> Result<Self>
+    where
+        P: Read + Seek;
     
     /// 完成创建操作
     ///
     /// 失败条件示例：
     /// - 参数违反规范约束 -> Error::InvalidParameter
-    /// - 指定 parent_path 但 Parent Locator 约束不满足 -> Error::ParentNotFound / Error::InvalidFile
-    pub fn finish(self) -> Result<File>;
+    /// - 指定 parent 但 Parent Locator 约束不满足 -> Error::InvalidFile
+    pub fn finish(self) -> Result<Medium<T>>
+    where
+        T: Read + Write + Seek + Len + SetLen + SyncData;
 }
 ```
 
@@ -569,7 +655,7 @@ pub mod validation {
 
     /// 规范一致性校验器（只读）
     ///
-    /// 职责：将 `validate_spec_compliance` 的规则独立在单一模块中，
+    /// 职责：将规范一致性校验规则集中在单一模块中，
     /// 便于按 MS-VHDX 章节维护与测试。
     ///
     /// ⚠️ **已知限制**：本校验器将 `parent_linkage2` 视为冲突。
@@ -577,9 +663,9 @@ pub mod validation {
     /// 但 Microsoft 产品实现在磁盘 merge 过渡期间会暂时写入该字段（merge 完成后解决）。
     /// `validate_parent_locator()` 检测到 parent_linkage2 时将返回错误，
     /// 因此**无法校验处于 merge 进行中的 VHDX 文件**。
-    pub struct SpecValidator<'a>;
+    pub struct SpecValidator;
 
-    impl<'a> SpecValidator<'a> {
+    impl SpecValidator {
         /// 总入口：执行全部结构校验
         ///
         /// 对应 MS-VHDX 规范章节：
@@ -588,7 +674,7 @@ pub mod validation {
         /// - Log: §2.3
         /// - BAT: §2.5
         /// - Metadata: §2.6
-        /// - Differencing: 在 has_parent=true 时覆盖 Parent Locator 校验（含 parent_linkage 约束 + 差分链 GUID 一致性）
+        /// - Differencing: 在 has_parent=true 时覆盖 Parent Locator 结构校验（parent_linkage/path/linkage2 格式）
         ///
         /// 返回 `Vec<ValidationIssue>` 列出所有发现的校验问题，
         /// 空 vec 表示完全合规。第一个导致校验终止的错误通过 `Err` 返回。
@@ -626,14 +712,14 @@ pub mod validation {
         /// 返回 `Vec<ValidationIssue>` 列出所有发现的 Log 校验问题。
         pub fn validate_log(&self) -> Result<Vec<ValidationIssue>>;
 
-        /// 校验 Parent Locator 约束（含 parent_linkage 约束 + 差分链 GUID 一致性）
+        /// 校验 Parent Locator 结构约束（parent_linkage/path/linkage2 格式）
         ///
         /// - parent_linkage 必须存在
         /// - 若存在 parent_linkage2 则返回错误（见 struct 文档的已知限制说明）
         /// - relative_path / volume_path / absolute_win32_path 至少存在一个
-        /// - 若父磁盘可访问，校验子盘 parent_linkage 与父盘 DataWriteGuid 的一致性
+        /// - 不打开父盘；parent_linkage 与父盘 DataWriteGuid 的一致性由 IO 父盘 resolver 路径按需校验
         ///
-        /// 返回 `Vec<ValidationIssue>` 列出所有发现的 Parent Locator / 差分链校验问题。
+        /// 返回 `Vec<ValidationIssue>` 列出所有发现的 Parent Locator 结构校验问题。
         pub fn validate_parent_locator(&self) -> Result<Vec<ValidationIssue>>;
     }
 
@@ -662,26 +748,26 @@ pub mod validation {
 ```rust
 /// VHDX文件中的所有Section的容器
 /// 
-/// 采用懒加载策略：访问具体Section时才从文件读取（I/O 在 File 层缓存）。
-pub struct Sections<'a> {
-    // 内部字段：缓存已加载的sections
+/// Medium::sections() 创建轻量容器；访问具体 Section 时按需加载并缓存底层数据。
+pub struct Sections<'a, T = std::fs::File> {
+    // 内部字段：header 快照、Medium 引用、按需加载的 Arc-backed section snapshots
 }
 
-impl<'a> Sections<'a> {
+impl<'a, T: std::io::Read + std::io::Seek> Sections<'a, T> {
     /// 访问Header Section
-    /// 懒加载：首次调用时从文件读取1MB Header Section
+    /// 从打开时已缓存的 Header Section 返回解析视图
     pub fn header(&self) -> Result<Header<'_>>;
     
     /// 访问BAT Section
-    /// 懒加载：首次调用时从文件读取BAT区域
+    /// 首次访问时按需加载 BAT 区域，并复用缓存快照
     pub fn bat(&self) -> Result<Bat<'_>>;
     
     /// 访问Metadata Section
-    /// 懒加载：首次调用时从文件读取Metadata区域
+    /// 首次访问时按需加载 Metadata 区域，并复用缓存快照
     pub fn metadata(&self) -> Result<Metadata<'_>>;
     
     /// 访问Log Section
-    /// 懒加载：首次调用时从文件读取Log区域
+    /// 首次访问时按需加载 Log 区域，并复用缓存快照
     pub fn log(&self) -> Result<Log<'_>>;
 }
 ```
@@ -881,7 +967,7 @@ pub struct TableEntry<'a> {
 
 impl<'a> TableEntry<'a> {
     /// 获取Entry Flags
-    pub fn flags(&self) -> EntryFlags;
+    pub fn flags(&self) -> EntryFlags<'_>;
 }
 
 /// Entry Flags (TableEntry.flags的包装)
@@ -891,9 +977,9 @@ impl<'a> TableEntry<'a> {
 /// - B=IsVirtualDisk (bit 1, 即 Byte24 bit1)
 /// - C=IsRequired (bit 2, 即 Byte24 bit2)
 /// - 其余位保留（MUST be 0）
-pub struct EntryFlags(pub u32);
+pub struct EntryFlags<'a>;
 
-impl EntryFlags {
+impl EntryFlags<'_> {
     /// 是否为用户元数据 (Bit 0)
     pub fn is_user(&self) -> bool;
     
@@ -982,14 +1068,12 @@ impl<'a> ParentLocator<'a> {
     /// 获取Key-Value数据区域
     pub fn key_value_data(&self) -> &[u8];
 
-    /// 解析父路径
+    /// 按 relative_path -> volume_path -> absolute_win32_path 顺序返回父路径候选。
     ///
-    /// 按规范顺序尝试：relative_path -> volume_path -> absolute_win32_path。
-    /// 返回 owned `PathBuf`：UTF-16LE 解码需要分配内存，无法返回借用视图。
-    ///
-    /// 失败条件：
-    /// - 所有路径均无法访问或丢失 -> Error::ParentNotFound
+    /// Key/Value 均使用 ParentLocator 内部 UTF-16LE 数据解码。
+    /// 失败条件：无标准路径 key -> Error::ParentNotFound；解码失败 -> Error::InvalidParentLocator。
     pub fn resolve_parent_path(&self) -> Result<PathBuf>;
+
 }
 
 /// Locator Header (20字节)
@@ -1028,7 +1112,10 @@ impl<'a> KeyValueEntry<'a> {
 
 /// 标准Metadata Item GUID常量
 ///
-/// 路径：`vhdx::types::StandardItems`
+/// 路径：`vhdx::section::StandardItems`
+///
+/// 注：下方注释为 MS-VHDX 规范中的标准 GUID 文本；`Guid::Display`
+/// 按内部保存的原始 16 字节经 `uuid::Uuid::from_bytes` 输出，显示文本可能不同。
 pub mod StandardItems {
     pub const FILE_PARAMETERS: Guid = Guid::from_bytes([
         0x37, 0x67, 0xA1, 0xCA, 0x36, 0xFA, 0x43, 0x4D,
@@ -1104,7 +1191,7 @@ impl<'a> Entry<'a> {
     ///
     /// 失败条件：
     /// - 索引越界 -> Error::InvalidParameter
-    /// - 签名非法 -> Error::InvalidSignature { position: SignaturePosition::Descriptor, ... }
+    /// - 签名非法 -> Error::LogEntryCorrupted(String)
     pub fn descriptor(&self, index: usize) -> Result<Descriptor<'_>>;
     
     /// 获取所有Descriptors（按原始顺序，按需解析）
@@ -1115,7 +1202,7 @@ impl<'a> Entry<'a> {
     
     /// 获取Data Sectors（按需解析）
     ///
-    /// 零拷贝约束：仅返回对现有 Data Sector 区域的借用视图。
+    /// 返回借用当前 Entry 缓冲区的 DataSector 视图；内部按需建立 DATA descriptor 索引与按扇区缓存。
     pub fn data(&self) -> impl Iterator<Item = DataSector<'_>> + '_;
 }
 
@@ -1124,11 +1211,11 @@ impl<'a> Entry<'a> {
 /// 解析规则（签名判定）：
 /// - 4 字节签名 == `"desc"` -> `Data` 变体
 /// - 4 字节签名 == `"zero"` -> `Zero` 变体
-/// - 其他签名 -> `Error::InvalidSignature { position: SignaturePosition::Descriptor, ... }`
+/// - 其他签名 -> `Error::LogEntryCorrupted(String)`
 ///
 /// 注意：Descriptor 属于日志结构的内核组成部分，出现未知签名
 /// 等价于数据损坏，不受 strict 模式影响——无论 strict=true 还是
-/// strict=false，未知签名均返回 InvalidSignature。
+/// strict=false，未知签名均返回 LogEntryCorrupted。
 /// 对应 CODE：LOG_DESCRIPTOR_SIGNATURE_INVALID（MS-VHDX/2.3.1）
 pub enum Descriptor<'a> {
     Data(DataDescriptor<'a>),
@@ -1182,9 +1269,7 @@ pub struct LogEntryHeader<'a> {
 /// 本结构体仅包含日志文件中的中间段字段；data() 返回的是**拼装后的完整 4KB 原始扇区**
 /// （而非仅日志中存储的 4084 字节中间段）。
 ///
-/// FIXME: "拼装"需要将 LeadingBytes(DataDescriptor) + 中间段(DataSector) + TrailingBytes(DataDescriptor)
-/// 三部分拼接，这意味着 data() 无法单纯借用现有缓冲区返回 &[u8]。若走内部缓存则违反零拷贝约束。
-/// 当前用 Cow 折中：可借用时返回 Borrowed，必须拼装时返回 Owned。实现时需注意分配开销。
+/// `data()` 首次访问时通过每扇区 `OnceLock` 缓存拼装结果；后续返回借用的已拼装 4KB 扇区。
 pub struct DataSector<'a> {
     /// Signature. MUST be `"data"` (0x61746164).
     pub fn signature(&self) -> &'a [u8; 4],
@@ -1195,9 +1280,7 @@ pub struct DataSector<'a> {
     /// 该返回值由 `LeadingBytes(8B) + 日志data区(4084B) + TrailingBytes(4B)`
     /// 拼接而成，与最后一次写入该扇区的原始数据一致。
     ///
-    /// NOTE: 返回 `Cow<'a, [u8]>` 而非 `&'a [u8]`，因为拼装无法零拷贝完成。
-    /// 零拷贝约束 §"禁止构造中间 Vec/Box/String 作为返回流水线"在此处需要豁免，
-    /// 或考虑在 DataSector 内部增加缓存字段以支持后续的借用返回。
+    /// NOTE: 返回 `Cow<'a, [u8]>`；当前实现使用每扇区 `OnceLock` 缓存拼装后的数组，返回 `Cow::Borrowed`。
     pub fn data(&self) -> std::borrow::Cow<'a, [u8]>,
 }
 ```
@@ -1210,12 +1293,12 @@ pub struct DataSector<'a> {
 /// 扇区级读写操作
 ///
 /// 【设计约束（强制）】唯一数据平面入口：
-/// - File 层不提供 read/write/flush
+/// - Medium 层不提供 read/write/flush
 /// - 所有虚拟磁盘读写必须经由 IO::sector -> Sector::read/write
-/// - 禁止在 File 层新增等价的数据读写接口
-pub struct IO<'a>;
+/// - 禁止在 Medium 层新增等价的数据读写接口
+pub struct IO<'a, T = std::fs::File>;
 
-impl<'a> IO<'a> {
+impl<'a, T> IO<'a, T> {
     /// 通过起始扇区号和连续扇区数定位并返回 Sector
     /// 
     /// 参数：
@@ -1226,20 +1309,14 @@ impl<'a> IO<'a> {
     /// 1) 通过 BAT 找到对应块 2) 计算块内扇区偏移
     /// 3) 跨块边界时自动按块拆分读写操作
     /// 
-    /// 懒加载: Sector 缓存按需从文件读取
+    /// 懒加载：通过缓存的 Section 快照、日志回放 overlay 与 Sector 管道按需读取
     ///
     /// 失败条件：
     /// - `count == 0`                       -> Error::InvalidParameter
     /// - `start + count` 算术溢出            -> Error::InvalidParameter
     /// - 扇区范围超出虚拟磁盘范围            -> Error::SectorOutOfBounds
     /// - 文件状态异常（如父链不可用）         -> 对应具体错误
-    pub fn sector(&self, start: u64, count: u64) -> Result<Sector<'_>>;
-
-    /// The size of one logical sector in bytes.
-    pub fn logical_sector_size(&self) -> u32;
-
-    /// The payload block size in bytes.
-    pub fn block_size(&self) -> u32;
+    pub fn sector<'io>(&'io mut self, start: u64, count: u64) -> Result<Sector<'io, 'a, T>>;
 }
 
 /// Sector —— 扇区级定位与操作（游标式 IO）
@@ -1252,7 +1329,7 @@ impl<'a> IO<'a> {
 /// 可通过 `semantics()` 链式方法覆盖策略，不破坏 `std::io::Read` trait 兼容性：
 ///
 /// ```rust,ignore
-/// let sector = io.sector(0, 256)?
+/// let mut sector = io.sector(0, 256)?
 ///     .semantics(ReadSemanticsPolicy::RawDataPreferred);
 /// sector.read(&mut buf)?;  // 使用 RawDataPreferred 语义
 /// ```
@@ -1294,8 +1371,12 @@ impl<'a> IO<'a> {
 /// # 示例
 ///
 /// ```rust,ignore
-/// let file = File::open("disk.vhdx").finish()?;
-/// let io = file.io()?;
+/// let inner = std::fs::OpenOptions::new()
+///     .read(true)
+///     .write(true)
+///     .open("disk.vhdx")?;
+/// let mut file = Medium::open(inner).write().finish()?;
+/// let mut io = file.io()?;
 /// let mut sector = io.sector(0, 256)?;  // 256 sectors = 1MB
 ///
 /// // 写入数据
@@ -1356,7 +1437,6 @@ pub enum Error {
     /// - RegionTable → REGION_SIGNATURE_INVALID（MS-VHDX/2.2.3.1）
     /// - MetadataTable → METADATA_TABLE_SIGNATURE_INVALID（MS-VHDX/2.6.1.1）
     /// - LogEntry → LOG_SIGNATURE_INVALID（MS-VHDX/2.3.1.1）
-    /// - Descriptor → LOG_DESCRIPTOR_SIGNATURE_INVALID（MS-VHDX/2.3.1）
     /// - DataSector → LOG_DATA_SECTOR_INVALID（MS-VHDX/2.3.1.4）
     InvalidSignature {
         position: SignaturePosition,
@@ -1617,7 +1697,7 @@ pub enum Error {
     /// 需要日志回放
     ///
     /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.5
-    /// 在打开路径（File::open → finish()）中，当策略为 Require 且存在可回放日志时，
+    /// 在打开路径（Medium::open → finish()）中，当策略为 Require 且存在可回放日志时，
     /// 此错误阻断打开流程，要求调用方显式设置日志回放策略。
     ///
     /// 注意：在校验路径（validate_log）中，存在可回放日志通常视为状态提示而非硬错误，
@@ -1685,20 +1765,40 @@ pub enum Error {
         max: u64,
     },
 
-    /// 父磁盘未找到（三个路径均不可访问）
+    /// 父磁盘未找到或 ParentLocator 无路径候选
     ///
     /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.6
     /// 对应 CODE：PARENT_LOCATOR_NO_VALID_PATH（MS-VHDX/2.6.2.6.3）
     /// 按规范顺序尝试 relative_path → volume_path → absolute_win32_path 后，
-    /// 三个路径均无法访问或丢失。
+    /// 三个路径均无法访问、丢失，或 ParentLocator 中不存在标准路径 key。
     ParentNotFound,
 
-    /// 父磁盘 GUID 不匹配
+    /// 需要父介质 resolver
+    ///
+    /// 差分盘数据面读取需要访问父盘，但调用方未通过 `OpenOptions::with_parent_resolver()` 提供解析器。
+    ParentResolverRequired,
+
+    /// 父子盘逻辑扇区大小不一致
+    ParentSectorSizeMismatch {
+        child: u32,
+        parent: u32,
+    },
+
+    /// 父磁盘 GUID 不匹配（保留错误变体）
     ///
     /// 标准：docs/Standard/MS-VHDX-校验扩展标准.md §4.6
-    /// 子盘 parent_linkage 记录的父盘 DataWriteGuid 与实际父盘不一致。
-    /// 对应 CODE：PARENT_LOCATOR_GUID_MISMATCH（MS-VHDX/2.6.2.6）
+    /// 当前 IO 父盘解析路径使用 `ParentLocatorGuidMismatch` 表示
+    /// 子盘 parent_linkage 与已解析父盘 DataWriteGuid 不一致。
     ParentMismatch {
+        expected: Guid,
+        actual: Guid,
+    },
+
+    /// parent_linkage 与已解析父盘 DataWriteGuid 不匹配
+    ///
+    /// 差分盘数据面首次需要父盘时，resolver 返回的父介质 DataWriteGuid
+    /// 与子盘 Parent Locator 的 parent_linkage 不一致。
+    ParentLocatorGuidMismatch {
         expected: Guid,
         actual: Guid,
     },
@@ -1732,12 +1832,12 @@ pub enum Error {
 > **Feature gate**: `gpt`。需要在 `Cargo.toml` 中启用：
 > ```toml
 > [dependencies]
-> vhdx = { version = "0.1.0", features = ["gpt"] }
+> vhdx = { package = "vhdx-rs", version = "0.1.0", features = ["gpt"] }
 > ```
 
 ```rust
 pub mod gpt {
-    use crate::{File, error::Error};
+    use crate::{Medium, error::Error};
     use gpt_disk_io::BlockIo;
     use gpt_disk_types::{BlockSize, Lba};
 
@@ -1761,20 +1861,20 @@ pub mod gpt {
     ///
     /// # 数据面
     ///
-    /// 所有读写通过 VHDX 库的扇区级 IO 管道（`File::io()` → `IO::sector()`），
+    /// 所有读写通过 VHDX 库的扇区级 IO 管道（`Medium::io()` → `IO::sector()`），
     /// 自动处理 BAT 解析、块分配、差分盘父盘回退、扇区位图处理和日志回放。
     ///
     /// # 构造
     ///
-    /// 通过 [`VhdxBlockDevice::new`] 从已打开的 `File` 构造。
+    /// 通过 [`VhdxBlockDevice::new`] 从已打开的 `Medium<T>` 构造。
     /// 构造时从 VHDX 元数据中提取并缓存逻辑扇区大小和虚拟磁盘大小，
     /// 后续 `block_size()` 和 `num_blocks()` 调用无额外 IO 开销。
-    pub struct VhdxBlockDevice {
+    pub struct VhdxBlockDevice<T = std::fs::File> {
         // 内部字段已缓存，对外不透明
     }
 
-    impl VhdxBlockDevice {
-        /// 从已打开的 VHDX 文件构造块设备适配器。
+    impl<T> VhdxBlockDevice<T> {
+        /// 从已打开的 VHDX medium 构造块设备适配器。
         ///
         /// 从 VHDX 元数据中提取逻辑扇区大小和虚拟磁盘大小并缓存。
         ///
@@ -1782,21 +1882,23 @@ pub mod gpt {
         ///
         /// - 逻辑扇区大小 < 512 → `Error::InvalidMetadata`
         /// - 元数据不可读 → 向上传播底层错误
-        pub fn new(file: File) -> Result<Self, Error>;
+        pub fn new(medium: Medium<T>) -> Result<Self, Error>
+        where
+            T: Read + Seek;
 
-        /// 访问底层 VHDX [`File`]（只读引用）。
+        /// 访问底层 VHDX [`Medium`]（只读引用）。
         ///
         /// 用于 VHDX 特有操作（校验、section 检查等），
         /// 这些操作不通过 `BlockIo` trait 暴露。
         #[must_use]
-        pub fn file(&self) -> &File;
+        pub fn medium(&self) -> &Medium<T>;
 
-        /// 访问底层 VHDX [`File`]（可变引用）。
-        pub fn file_mut(&mut self) -> &mut File;
+        /// 访问底层 VHDX [`Medium`]（可变引用）。
+        pub fn medium_mut(&mut self) -> &mut Medium<T>;
 
-        /// 解包为底层 VHDX [`File`]，消费适配器。
+        /// 解包为底层 VHDX [`Medium`]，消费适配器。
         #[must_use]
-        pub fn into_file(self) -> File;
+        pub fn into_medium(self) -> Medium<T>;
     }
 
     /// 实现 `gpt_disk_io::BlockIo` trait。
@@ -1805,8 +1907,11 @@ pub mod gpt {
     /// - `num_blocks()` — 返回 `虚拟磁盘大小 / 逻辑扇区大小`
     /// - `read_blocks(start_lba, dst)` — 通过 `IO::sector()` 读取，dst 长度必须是扇区大小的整数倍
     /// - `write_blocks(start_lba, src)` — 通过 `IO::sector()` 写入，src 长度必须是扇区大小的整数倍
-    /// - `flush()` — 调用 `File::inner().sync_all()` 将数据刷到磁盘
-    impl BlockIo for VhdxBlockDevice {
+    /// - `flush()` — 调用 `Medium::get_mut().sync_data()` 将数据刷到介质
+    impl<T> BlockIo for VhdxBlockDevice<T>
+    where
+        T: Read + Write + Seek + Len + SetLen + SyncData,
+    {
         type Error = VhdxBlockIoError;
 
         fn block_size(&self) -> BlockSize;
@@ -1832,36 +1937,28 @@ pub mod gpt;
 
 mod bat;
 pub(crate) mod common;
+pub(crate) mod constants;
 mod error;
-mod file;
 mod header;
 mod io;
 mod log;
 pub(crate) mod log_replay;
+mod medium;
 mod metadata;
-mod sections;
 mod types;
 pub mod validation;
 
 pub use error::{Error, Result, SignaturePosition};
-pub use file::{CreateOptions, File, LogReplayPolicy, OpenOptions, ReadSemanticsPolicy};
 pub use io::{IO, Sector};
-pub use types::Guid;
+pub use medium::{
+    CreateOptions, InnerRef, Len, LogReplayPolicy, Medium, OpenOptions, ParentMedium,
+    ParentRequest, ParentResolver, ReadOnly, ReadSemanticsPolicy, ReadWrite, SetLen, SyncData,
+};
+pub use types::{Crc32c, Guid};
 
-// Section 模块
-pub mod section {
-    pub use sections::Sections;
-    pub use header::{Header, FileTypeIdentifier, HeaderStructure, RegionTable, RegionTableHeader, RegionTableEntry};
-    pub use bat::{Bat, BatEntry, BatState, PayloadBlockState, SectorBitmapState};
-    pub use metadata::{Metadata, MetadataTable, TableHeader, TableEntry, EntryFlags, MetadataItems, FileParameters, ParentLocator, LocatorHeader, KeyValueEntry, StandardItems};
-    pub use log::{Log, Entry, LogEntryHeader, Descriptor, DataDescriptor, ZeroDescriptor, DataSector};
-}
+// section 模块内容由 src/section.rs 重新导出 Sections/Header/Bat/Metadata/Log 视图类型。
 
-// gpt_disk_io 兼容层（可选，需启用 `gpt` feature）
-#[cfg(feature = "gpt")]
-pub mod gpt {
-    pub use gpt::{VhdxBlockDevice, VhdxBlockIoError};
-}
+// gpt_disk_io 兼容层内容由 src/gpt.rs 定义（可选，需启用 `gpt` feature）。
 
 ```
 
@@ -1872,21 +1969,24 @@ pub mod gpt {
 ### 1. 只读打开
 
 ```rust
-use vhdx::{File, LogReplayPolicy};
+use vhdx::{LogReplayPolicy, Medium};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 只读打开（默认）
     // 标准：docs/Standard/MS-VHDX-只读扩展标准.md
-    let file = File::open("disk.vhdx")
+    let inner = std::fs::OpenOptions::new()
+        .read(true)
+        .open("disk.vhdx")?;
+    let mut file = Medium::open(inner)
         // 标准：docs/Standard/MS-VHDX-只读扩展标准.md §4.1（Require）
         .log_replay(LogReplayPolicy::Require)
         .finish()?;
 
     // 使用独立校验器（推荐）
-    file.validator().validate_file()?;
+    file.validator()?.validate_file()?;
     
     // 获取sections容器
-    let sections = file.sections();
+    let sections = file.sections()?;
     
     // 访问Header Section
     let header = sections.header()?;
@@ -1917,17 +2017,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 2. 遍历 BAT
 
 ```rust
-use vhdx::File;
+use vhdx::Medium;
 use vhdx::section::BatState;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let file = File::open("disk.vhdx").finish()?;
-    let bat = file.sections().bat()?;
+    let inner = std::fs::OpenOptions::new().read(true).open("disk.vhdx")?;
+    let mut file = Medium::open(inner).finish()?;
+    let sections = file.sections()?;
+    let bat = sections.bat()?;
     
     // 遍历前10个BAT Entries
-    for i in 0..10.min(bat.len() as u64) {
-        let entry = bat.entry(i)?;
-        match entry.state() {
+    for (i, entry) in bat.entries().take(10).enumerate() {
+        match entry.state()? {
             BatState::Payload(state) => {
                 println!("Block {}: Payload State={:?}, Offset={}MB",
                     i, state, entry.file_offset_mb());
@@ -1946,11 +2047,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 2a. 使用独立校验器（分项校验）
 
 ```rust
-use vhdx::File;
+use vhdx::Medium;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let file = File::open("disk.vhdx").finish()?;
-    let validator = file.validator();
+    let inner = std::fs::OpenOptions::new().read(true).open("disk.vhdx")?;
+    let mut file = Medium::open(inner).finish()?;
+    let validator = file.validator()?;
 
     // 按需分项校验，每项返回 Vec<ValidationIssue>
     let header_issues = validator.validate_header()?;
@@ -1985,11 +2087,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 3. 创建动态磁盘
 
 ```rust
-use vhdx::File;
+use vhdx::Medium;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 创建 10GB 动态磁盘（默认：非固定、无父磁盘）
-    let file = File::create("disk.vhdx")
+    let inner = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open("disk.vhdx")?;
+    let mut file = Medium::create(inner)
         .size(10 * 1024 * 1024 * 1024)
         .logical_sector_size(4096)
         .physical_sector_size(4096)
@@ -1998,13 +2106,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // 写入数据（通过 IO/Sector 执行扇区写）
     use std::io::Write;
-    let io = file.io()?;
+    let mut io = file.io()?;
     let mut sector = io.sector(0, 1)?;
     let data = vec![0u8; 4096];
     sector.write_all(&data)?;
     
     // 验证创建的Metadata
-    let metadata = file.sections().metadata()?;
+    let sections = file.sections()?;
+    let metadata = sections.metadata()?;
     if let Ok(fp) = metadata.items().file_parameters() {
         assert_eq!(fp.block_size(), 32 * 1024 * 1024);
         assert!(!fp.has_parent());
@@ -2018,11 +2127,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 3a. 创建固定磁盘
 
 ```rust
-use vhdx::File;
+use vhdx::Medium;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 创建 10GB 固定磁盘
-    let file = File::create("disk.vhdx")
+    let inner = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open("disk.vhdx")?;
+    let mut file = Medium::create(inner)
         .size(10 * 1024 * 1024 * 1024)
         .fixed(true)  // 固定磁盘
         .logical_sector_size(4096)
@@ -2031,7 +2146,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .finish()?;
     
     // 验证
-    let metadata = file.sections().metadata()?;
+    let sections = file.sections()?;
+    let metadata = sections.metadata()?;
     if let Ok(fp) = metadata.items().file_parameters() {
         assert!(fp.leave_block_allocated());  // 固定磁盘
         assert!(!fp.has_parent());
@@ -2044,13 +2160,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 4. 导出结构化 Section 信息
 
 ```rust
-use vhdx::File;
+use vhdx::Medium;
 use std::fs::File as StdFile;
 use std::io::Write;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let file = File::open("disk.vhdx").finish()?;
-    let sections = file.sections();
+    let inner = std::fs::OpenOptions::new().read(true).open("disk.vhdx")?;
+    let mut file = Medium::open(inner).finish()?;
+    let sections = file.sections()?;
 
     // 导出 Header/Metadata 的结构化摘要
     let header = sections.header()?;
@@ -2076,14 +2193,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 5. 检查磁盘类型
 
 ```rust
-use vhdx::File;
+use vhdx::Medium;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let file = File::open("diff.vhdx")
+    let inner = std::fs::OpenOptions::new().read(true).open("diff.vhdx")?;
+    let mut file = Medium::open(inner)
         // 标准：docs/Standard/MS-VHDX-宽松扩展标准.md §3.1（strict=true）
         .strict(true)
         .finish()?;
-    let sections = file.sections();
+    file.validator()?.validate_parent_locator()?;
+    let sections = file.sections()?;
     let metadata = sections.metadata()?;
     
     if let Ok(fp) = metadata.items().file_parameters() {
@@ -2092,14 +2211,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Block size: {}", fp.block_size());
             
             if let Ok(locator) = metadata.items().parent_locator() {
-                file.validator().validate_parent_locator()?;
                 println!("Parent Locator Entries: {}", locator.header().key_value_count());
                 for (i, entry) in locator.entries().enumerate() {
                     let key = entry.key(locator.key_value_data())?;
                     let value = entry.value(locator.key_value_data())?;
                     println!("  [{}] {}: {}", i, key, value);
                 }
-                println!("Resolved parent path: {:?}", locator.resolve_parent_path()?);
             }
         } else if fp.leave_block_allocated() {
             println!("This is a fixed disk");
@@ -2114,16 +2231,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 6. GPT 分区操作（通过 `gpt_disk_io`）
 
-> 需启用 `gpt` feature：`vhdx = { features = ["gpt"] }`
+> 需启用 `gpt` feature：`vhdx = { package = "vhdx-rs", features = ["gpt"] }`
 
 ```rust
-use vhdx::{File, LogReplayPolicy};
+use vhdx::{LogReplayPolicy, Medium};
 use vhdx::gpt::VhdxBlockDevice;
 use gpt_disk_io::{BlockIo, Disk};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 打开 VHDX 文件（自动回放日志以保证数据一致性）
-    let file = File::open("disk.vhdx")
+    let inner = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("disk.vhdx")?;
+    let file = Medium::open(inner)
+        .write()
         .log_replay(LogReplayPolicy::Auto)
         .finish()?;
 
@@ -2131,24 +2253,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut block_dev = VhdxBlockDevice::new(file)?;
 
     // 查询块几何
-    println!("Block size: {:?}", block_dev.block_size());
+    let block_size = block_dev.block_size();
+    println!("Block size: {:?}", block_size);
     println!("Num blocks: {}", block_dev.num_blocks()?);
 
-    // 通过 gpt_disk_io 的 Disk 类型读取 GPT 分区表
-    let mut disk = Disk::new(block_dev)?;
-    let primary_header = disk.read_primary_gpt_header()?;
-    println!("Disk GUID: {:?}", primary_header.disk_guid);
-
     // 读取第一个扇区（原始访问）
-    let mut buf = vec![0u8; block_dev.block_size().to_usize().unwrap()];
+    let mut buf = vec![0u8; block_size.to_usize().unwrap()];
     block_dev.read_blocks(gpt_disk_types::Lba(0), &mut buf)?;
     println!("First sector bytes: {:?}", &buf[..16]);
 
     // 写回底层文件后刷盘
     block_dev.flush()?;
 
-    // 需要时可解包回 VHDX File
-    let _file = block_dev.into_file();
+    // 需要时可解包回 VHDX Medium
+    let _file = block_dev.into_medium();
+
+    // 也可以将 block device 交给 gpt_disk_io 的 Disk 类型读取 GPT 分区表
+    let mut disk = Disk::new(VhdxBlockDevice::new(_file)?)?;
+    let mut block_buf = vec![0u8; block_size.to_usize().unwrap()];
+    let primary_header = disk.read_primary_gpt_header(&mut block_buf)?;
+    println!("Disk GUID: {:?}", primary_header.disk_guid);
 
     Ok(())
 }
