@@ -48,6 +48,7 @@ uuid = { version = "1.23.2", features = ["v4"] }
 thiserror = "2.0.18"
 bitvec = "1.0.1"
 crc32c = "0.6.8"
+tracing = "0.1"
 gpt_disk_io = { version = "0.16.2", optional = true }
 gpt_disk_types = { version = "0.16.1", optional = true }
 

@@ -52,6 +52,46 @@ fn info_command_json_format() {
         .stdout(predicate::str::contains("\"signature\": \"vhdxfile\""));
 }
 
+#[test]
+fn diagnostics_silent_by_default() {
+    let (path, _dir) = create_temp_valid_vhdx();
+    let mut cmd = Command::cargo_bin("vhdx-tool").unwrap();
+    cmd.arg("info")
+        .arg(path.to_str().unwrap())
+        .env_remove("RUST_LOG");
+
+    cmd.assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Signature: vhdxfile")
+                .and(predicate::str::contains("VHDX file signature validated").not())
+                .and(predicate::str::contains("VHDX log region loaded").not()),
+        )
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn diagnostics_go_to_stderr_when_enabled() {
+    let (path, _dir) = create_temp_valid_vhdx();
+    let mut cmd = Command::cargo_bin("vhdx-tool").unwrap();
+    cmd.arg("info")
+        .arg(path.to_str().unwrap())
+        .env("RUST_LOG", "vhdx=trace,vhdx_tool=debug");
+
+    cmd.assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Signature: vhdxfile")
+                .and(predicate::str::contains("VHDX file signature validated").not())
+                .and(predicate::str::contains("VHDX log region loaded").not()),
+        )
+        .stderr(
+            predicate::str::contains("VHDX file signature validated")
+                .and(predicate::str::contains("VHDX log region loaded"))
+                .and(predicate::str::contains("Signature: vhdxfile").not()),
+        );
+}
+
 // ---------------------------------------------------------------------------
 // 2. Check command on valid files
 // ---------------------------------------------------------------------------
@@ -229,6 +269,7 @@ fn create_temp_valid_vhdx() -> (std::path::PathBuf, tempfile::TempDir) {
         .arg(path.to_str().unwrap())
         .arg("--size")
         .arg("64MB")
+        .env_remove("RUST_LOG")
         .assert()
         .success();
 

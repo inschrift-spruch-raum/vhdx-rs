@@ -24,11 +24,19 @@ impl<T, Mode> OpenOptions<T, Mode> {
     fn validate_policy_compatibility(write: bool, policy: LogReplayPolicy) -> Result<()> {
         match policy {
             LogReplayPolicy::InMemoryOnReadOnly | LogReplayPolicy::ReadOnlyNoReplay if write => {
+                tracing::warn!(
+                    write,
+                    ?policy,
+                    "rejecting log replay policy incompatible with write access"
+                );
                 Err(Error::InvalidParameter(
                     "log replay policy incompatible with write access".into(),
                 ))
             }
-            _ => Ok(()),
+            _ => {
+                tracing::debug!(write, ?policy, "log replay policy accepted for open mode");
+                Ok(())
+            }
         }
     }
 
@@ -62,10 +70,12 @@ impl<T, Mode> OpenOptions<T, Mode> {
     fn validate_file_signature(header_buf: &[u8]) -> Result<()> {
         let sig = &header_buf[..VHDX_SIGNATURE_BYTES.len() / 8];
         if sig.view_bits::<Lsb0>() == *VHDX_SIGNATURE_BYTES {
+            tracing::debug!("VHDX file signature validated");
             return Ok(());
         }
         let mut actual_bytes = [0u8; 8];
         actual_bytes.copy_from_slice(sig);
+        tracing::warn!("invalid VHDX file signature");
         Err(Error::InvalidSignature {
             position: SignaturePosition::FileTypeIdentifier,
             expected: VHDX_SIGNATURE_BYTES.into_inner().to_le_bytes(),
@@ -74,16 +84,28 @@ impl<T, Mode> OpenOptions<T, Mode> {
     }
 
     fn validate_current_header(current: &crate::header::HeaderStructure<'_>) -> Result<()> {
-        if current.version() != 1 {
-            return Err(Error::UnsupportedVersion {
-                version: current.version(),
-            });
+        let version = current.version();
+        let log_version = current.log_version();
+        tracing::trace!(
+            version,
+            log_version,
+            "validating current VHDX header versions"
+        );
+        if version != 1 {
+            tracing::warn!(version, "unsupported VHDX header version");
+            return Err(Error::UnsupportedVersion { version });
         }
-        if current.log_version() != 0 && current.log_guid() != Guid::zero() {
+        if log_version != 0 && current.log_guid() != Guid::zero() {
+            tracing::warn!(log_version, "unsupported VHDX log version");
             return Err(Error::UnsupportedLogVersion {
-                version: current.log_version(),
+                version: log_version,
             });
         }
+        tracing::debug!(
+            version,
+            log_version,
+            "current VHDX header versions validated"
+        );
         Ok(())
     }
 
@@ -93,8 +115,10 @@ impl<T, Mode> OpenOptions<T, Mode> {
     where
         T: Read + Seek,
     {
+        tracing::trace!(strict, "validating VHDX region table entries");
         let rt = header.region_table(0)?;
         Self::validate_region_table_entries(&rt, strict)?;
+        tracing::trace!(strict, "validating VHDX meta table entries");
         Self::validate_unknown_metadata(inner, &rt, strict)
     }
 
@@ -106,16 +130,34 @@ impl<T, Mode> OpenOptions<T, Mode> {
             let file_offset = entry.file_offset();
             let length = entry.length();
             if file_offset % u64::from(MIB) != 0 {
+                tracing::warn!(
+                    strict,
+                    file_offset,
+                    length,
+                    "rejecting region table entry with unaligned file offset"
+                );
                 return Err(Error::InvalidRegionTable(format!(
                     "REGION_ENTRY_ALIGNMENT: entry {i} file_offset {file_offset:#x} not 1MB-aligned"
                 )));
             }
             if file_offset < u64::from(MIB) {
+                tracing::warn!(
+                    strict,
+                    file_offset,
+                    length,
+                    "rejecting region table entry below minimum file offset"
+                );
                 return Err(Error::InvalidRegionTable(format!(
                     "REGION_ENTRY_OFFSET_MINIMUM: entry {i} file_offset {file_offset} < 1MB minimum"
                 )));
             }
             if u64::from(length) % u64::from(MIB) != 0 {
+                tracing::warn!(
+                    strict,
+                    file_offset,
+                    length,
+                    "rejecting region table entry with unaligned length"
+                );
                 return Err(Error::InvalidRegionTable(format!(
                     "REGION_ENTRY_ALIGNMENT: entry {i} length {length} not 1MB-aligned"
                 )));
@@ -124,6 +166,12 @@ impl<T, Mode> OpenOptions<T, Mode> {
             for (j, prev) in entries[..i].iter().enumerate() {
                 let prev_end = prev.file_offset() + u64::from(prev.length());
                 if file_offset < prev_end && prev.file_offset() < end {
+                    tracing::warn!(
+                        strict,
+                        file_offset,
+                        length,
+                        "rejecting overlapping region table entries"
+                    );
                     return Err(Error::InvalidRegionTable(format!(
                         "REGION_ENTRY_OVERLAP: entries {j} and {i} overlap"
                     )));
@@ -131,13 +179,26 @@ impl<T, Mode> OpenOptions<T, Mode> {
             }
             if !is_known_region_guid(&entry.guid()) {
                 if entry.required() {
+                    tracing::warn!(
+                        strict,
+                        file_offset,
+                        length,
+                        "rejecting unknown required region table entry"
+                    );
                     return Err(Error::RegionRequiredUnknown { guid: entry.guid() });
                 }
                 if strict {
+                    tracing::warn!(
+                        strict,
+                        file_offset,
+                        length,
+                        "rejecting unknown optional region table entry in strict mode"
+                    );
                     return Err(Error::RegionOptionalUnknown { guid: entry.guid() });
                 }
             }
         }
+        tracing::debug!(strict, "VHDX region table entries validated");
         Ok(())
     }
 
@@ -151,6 +212,12 @@ impl<T, Mode> OpenOptions<T, Mode> {
             if entry.guid() != METADATA_REGION_GUID {
                 continue;
             }
+            tracing::trace!(
+                strict,
+                file_offset = entry.file_offset(),
+                length = entry.length(),
+                "validating VHDX meta region"
+            );
             let mut meta_data = vec![0u8; entry.length() as usize];
             read_exact_at(inner, entry.file_offset(), &mut meta_data)?;
             let meta = crate::metadata::Metadata::new(&meta_data)?;
@@ -158,6 +225,7 @@ impl<T, Mode> OpenOptions<T, Mode> {
                 if table_entry.flags().is_required()
                     && !is_known_metadata_guid(&table_entry.item_id())
                 {
+                    tracing::warn!(strict, "rejecting unknown required meta item");
                     return Err(Error::MetadataRequiredUnknown {
                         guid: table_entry.item_id(),
                     });
@@ -166,11 +234,16 @@ impl<T, Mode> OpenOptions<T, Mode> {
                     && !table_entry.flags().is_required()
                     && !is_known_metadata_guid(&table_entry.item_id())
                 {
+                    tracing::warn!(
+                        strict,
+                        "rejecting unknown optional meta item in strict mode"
+                    );
                     return Err(Error::MetadataOptionalUnknown {
                         guid: table_entry.item_id(),
                     });
                 }
             }
+            tracing::debug!(strict, "VHDX meta table entries validated");
             break;
         }
         Ok(())
@@ -180,8 +253,10 @@ impl<T, Mode> OpenOptions<T, Mode> {
     where
         T: Read + Seek,
     {
+        tracing::trace!(file_offset = offset, length, "loading VHDX log region");
         let mut log_data = vec![0u8; length as usize];
         read_exact_at(inner, offset, &mut log_data)?;
+        tracing::debug!(file_offset = offset, length, "VHDX log region loaded");
         Ok(log_data)
     }
 
@@ -192,8 +267,10 @@ impl<T, Mode> OpenOptions<T, Mode> {
         T: Write + Seek + SyncData,
     {
         if !write {
+            tracing::trace!(write, "skipping writable header update for read-only open");
             return Ok(());
         }
+        tracing::debug!(write, "updating noncurrent VHDX header for writable open");
         if header_buf.len() < HEADER_BUFFER_SIZE {
             header_buf.resize(HEADER_BUFFER_SIZE, 0);
         }
@@ -211,12 +288,24 @@ impl<T, Mode> OpenOptions<T, Mode> {
         } else {
             u64::from(HEADER2_OFFSET)
         };
+        tracing::trace!(
+            write,
+            current_idx,
+            noncurrent_offset,
+            "selected noncurrent VHDX header for writable update"
+        );
         let current_header = hdr.header(0)?;
         let updated_header = Self::build_updated_header(&current_header);
         write_all_at(inner, noncurrent_offset, &updated_header)?;
         inner.sync_data()?;
         let start = usize::try_from(noncurrent_offset).unwrap();
         header_buf[start..start + HEADER_SIZE as usize].copy_from_slice(&updated_header);
+        tracing::debug!(
+            write,
+            current_idx,
+            noncurrent_offset,
+            "writable VHDX header update completed"
+        );
         Ok(())
     }
 

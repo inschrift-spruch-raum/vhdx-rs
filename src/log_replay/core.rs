@@ -279,6 +279,10 @@ impl ReplayOverlay {
 pub fn detect_active_sequence<'a>(log: &'a Log<'a>, log_guid: &Guid) -> Result<ActiveSequence<'a>> {
     let log_size = log.len();
     if log_size == 0 {
+        tracing::debug!(
+            entry_count = 0usize,
+            "no active log sequence in empty log area"
+        );
         return Err(Error::LogEntryCorrupted(
             "log buffer is empty, no active sequence".into(),
         ));
@@ -303,9 +307,23 @@ pub fn detect_active_sequence<'a>(log: &'a Log<'a>, log_guid: &Guid) -> Result<A
                 Some((entry, seq)) => {
                     // Check sequence continuity
                     if !current_entries.is_empty() && seq != current_seq + 1 {
+                        tracing::trace!(
+                            sequence_number = seq,
+                            expected_sequence_number = current_seq + 1,
+                            entry_count = current_entries.len(),
+                            log_offset = head,
+                            "stopping active sequence scan at non-consecutive entry"
+                        );
                         break; // non-consecutive
                     }
                     let entry_len = entry.header().entry_length() as usize;
+                    tracing::trace!(
+                        sequence_number = seq,
+                        entry_length = entry_len,
+                        descriptor_count = entry.header().descriptor_count(),
+                        log_offset = head,
+                        "accepted log entry while scanning active sequence"
+                    );
                     current_entries.push((head, seq));
                     current_seq = seq;
                     // Advance head past this entry, wrapping at log_size
@@ -332,10 +350,23 @@ pub fn detect_active_sequence<'a>(log: &'a Log<'a>, log_guid: &Guid) -> Result<A
             current_entries.iter().any(|(off, _)| *off == tail)
         };
 
+        tracing::debug!(
+            sequence_number = current_seq,
+            entry_count = current_entries.len(),
+            is_valid,
+            tail_offset = current_tail,
+            "evaluated candidate active log sequence"
+        );
+
         // Step 5: update candidate
         if is_valid && current_seq > candidate_head_seq {
             candidate_entries.clone_from(&current_entries);
             candidate_head_seq = current_seq;
+            tracing::debug!(
+                sequence_number = candidate_head_seq,
+                entry_count = candidate_entries.len(),
+                "selected newer active log sequence candidate"
+            );
         }
 
         // Step 6: advance current_tail
@@ -365,6 +396,7 @@ pub fn detect_active_sequence<'a>(log: &'a Log<'a>, log_guid: &Guid) -> Result<A
 
     // Step 8: check candidate
     if candidate_entries.is_empty() {
+        tracing::debug!(entry_count = 0usize, "no valid active log sequence found");
         return Err(Error::LogEntryCorrupted(
             "no valid active log sequence found".into(),
         ));
@@ -375,6 +407,14 @@ pub fn detect_active_sequence<'a>(log: &'a Log<'a>, log_guid: &Guid) -> Result<A
     let head_entry = log.entry_at(head_entry_offset)?;
     let flushed_file_offset = head_entry.header().flushed_file_offset();
     let last_file_offset = head_entry.header().last_file_offset();
+
+    tracing::debug!(
+        sequence_number = candidate_head_seq,
+        entry_count = candidate_entries.len(),
+        flushed_file_offset,
+        last_file_offset,
+        "active log sequence selected for replay"
+    );
 
     let mut entries = Vec::with_capacity(candidate_entries.len());
     for (offset, _seq) in &candidate_entries {
@@ -403,10 +443,16 @@ pub fn has_pending_log(log: &Log<'_>, log_guid: &Guid) -> bool {
     // Quick check: if log_guid is all zeros, no log operations were ever
     // performed on this file.
     if log_guid.to_bytes() == [0u8; 16] {
+        tracing::debug!(
+            entry_count = 0usize,
+            "no pending log because log guid is zero"
+        );
         return false;
     }
     // Try to detect an active sequence.
-    detect_active_sequence(log, log_guid).is_ok()
+    let has_pending = detect_active_sequence(log, log_guid).is_ok();
+    tracing::debug!(has_pending, "pending log detection completed");
+    has_pending
 }
 
 /// Build an in-memory replay overlay from an active log sequence.
@@ -425,10 +471,28 @@ pub fn has_pending_log(log: &Log<'_>, log_guid: &Guid) -> bool {
 pub fn build_replay_overlay(active: &ActiveSequence<'_>) -> Result<ReplayOverlay> {
     let mut sectors: HashMap<u64, Vec<u8>> = HashMap::new();
     let mut zeros: Vec<(u64, u64)> = Vec::new();
+    let mut data_descriptor_count = 0usize;
+    let mut zero_descriptor_count = 0usize;
 
-    for located in active.entries() {
+    tracing::debug!(
+        entry_count = active.entries().len(),
+        flushed_file_offset = active.flushed_file_offset(),
+        last_file_offset = active.last_file_offset(),
+        "building replay overlay from active log sequence"
+    );
+
+    for (entry_index, located) in active.entries().iter().enumerate() {
         let entry = &located.entry;
         let desc_count = entry.header().descriptor_count();
+
+        tracing::trace!(
+            sequence_number = entry.header().sequence_number(),
+            entry_count = active.entries().len(),
+            entry_index,
+            descriptor_count = desc_count,
+            log_offset = located._offset,
+            "building replay overlay from log entry"
+        );
 
         // Collect data sectors once per entry for indexed access
         let data_sectors: Vec<_> = entry.data().collect();
@@ -447,17 +511,43 @@ pub fn build_replay_overlay(active: &ActiveSequence<'_>) -> Result<ReplayOverlay
                     }
                     let sector = &data_sectors[data_idx];
                     let file_offset = data_desc.file_offset();
+                    tracing::trace!(
+                        sequence_number = entry.header().sequence_number(),
+                        descriptor_index = di,
+                        file_offset,
+                        "adding data descriptor to replay overlay"
+                    );
                     sectors.insert(file_offset, sector.data().to_vec());
+                    data_descriptor_count += 1;
                     data_idx += 1;
                 }
                 Descriptor::Zero(zero_desc) => {
                     let file_offset = zero_desc.file_offset();
                     let zero_length = zero_desc.zero_length();
+                    tracing::trace!(
+                        sequence_number = entry.header().sequence_number(),
+                        descriptor_index = di,
+                        file_offset,
+                        zero_length,
+                        "adding zero descriptor to replay overlay"
+                    );
                     zeros.push((file_offset, zero_length));
+                    zero_descriptor_count += 1;
                 }
             }
         }
     }
+
+    tracing::debug!(
+        entry_count = active.entries().len(),
+        descriptor_count = data_descriptor_count + zero_descriptor_count,
+        data_descriptor_count,
+        zero_descriptor_count,
+        overlay_sector_count = sectors.len(),
+        overlay_zero_count = zeros.len(),
+        last_file_offset = active.last_file_offset(),
+        "replay overlay construction completed"
+    );
 
     Ok(ReplayOverlay {
         sectors,
@@ -488,10 +578,29 @@ pub fn replay_to_file<T>(file: &mut T, active: &ActiveSequence<'_>) -> Result<()
 where
     T: Seek + Write + crate::medium::SetLen,
 {
+    let mut data_descriptor_count = 0usize;
+    let mut zero_descriptor_count = 0usize;
+
+    tracing::debug!(
+        entry_count = active.entries().len(),
+        flushed_file_offset = active.flushed_file_offset(),
+        last_file_offset = active.last_file_offset(),
+        "replaying active log sequence to file"
+    );
+
     // Replay each entry in tail-to-head order
-    for located in active.entries() {
+    for (entry_index, located) in active.entries().iter().enumerate() {
         let entry = &located.entry;
         let desc_count = entry.header().descriptor_count();
+
+        tracing::trace!(
+            sequence_number = entry.header().sequence_number(),
+            entry_count = active.entries().len(),
+            entry_index,
+            descriptor_count = desc_count,
+            log_offset = located._offset,
+            "replaying log entry to file"
+        );
 
         // Collect data sectors once per entry for indexed access
         let data_sectors: Vec<_> = entry.data().collect();
@@ -509,13 +618,28 @@ where
                     let sector = &data_sectors[data_idx];
                     let file_offset = data_desc.file_offset();
 
+                    tracing::trace!(
+                        sequence_number = entry.header().sequence_number(),
+                        descriptor_index = di,
+                        file_offset,
+                        "applying data descriptor during log replay"
+                    );
+
                     write_all_at(file, file_offset, &sector.data())?;
+                    data_descriptor_count += 1;
                     data_idx += 1;
                 }
                 Descriptor::Zero(zero_desc) => {
                     let file_offset = zero_desc.file_offset();
                     let zero_length = usize::try_from(zero_desc.zero_length())
                         .expect("zero descriptor length fits usize");
+                    tracing::trace!(
+                        sequence_number = entry.header().sequence_number(),
+                        descriptor_index = di,
+                        file_offset,
+                        zero_length,
+                        "applying zero descriptor during log replay"
+                    );
                     let zero_buf = vec![0u8; (SECTOR_SIZE as usize).min(zero_length)];
                     let mut written: usize = 0;
                     while written < zero_length {
@@ -527,13 +651,32 @@ where
                         )?;
                         written += chunk;
                     }
+                    zero_descriptor_count += 1;
                 }
             }
         }
     }
 
     // Extend file to at least LastFileOffset
+    tracing::debug!(
+        entry_count = active.entries().len(),
+        descriptor_count = data_descriptor_count + zero_descriptor_count,
+        data_descriptor_count,
+        zero_descriptor_count,
+        flushed_file_offset = active.flushed_file_offset(),
+        last_file_offset = active.last_file_offset(),
+        "setting replayed file length from active log offsets"
+    );
     crate::medium::SetLen::set_len(file, active.last_file_offset())?;
+
+    tracing::debug!(
+        entry_count = active.entries().len(),
+        descriptor_count = data_descriptor_count + zero_descriptor_count,
+        data_descriptor_count,
+        zero_descriptor_count,
+        last_file_offset = active.last_file_offset(),
+        "log replay to file completed"
+    );
 
     Ok(())
 }
@@ -559,16 +702,28 @@ fn try_validate_entry<'a>(
 
     // LogGuid must match
     if entry.header().log_guid() != *log_guid {
+        tracing::trace!(
+            log_offset = offset,
+            "log entry rejected due to log guid mismatch"
+        );
         return None;
     }
 
     // CRC-32C must be valid
     if entry.verify_checksum().is_err() {
+        tracing::trace!(
+            log_offset = offset,
+            "log entry rejected due to checksum failure"
+        );
         return None;
     }
 
     let seq = entry.header().sequence_number();
     if seq == 0 {
+        tracing::trace!(
+            log_offset = offset,
+            "log entry rejected due to zero sequence number"
+        );
         return None;
     }
 

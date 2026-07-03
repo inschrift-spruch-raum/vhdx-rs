@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use tracing_subscriber::EnvFilter;
 use vhdx::{LogReplayPolicy, Medium};
 
 #[derive(Parser)]
@@ -143,6 +144,8 @@ struct CreateArgs {
 }
 
 fn main() {
+    init_tracing();
+
     let cli = Cli::parse();
 
     let result = match cli.command {
@@ -162,6 +165,17 @@ fn main() {
         eprintln!("error: {e}");
         process::exit(1);
     }
+}
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("off"));
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .without_time()
+        .try_init()
+        .ok();
 }
 
 // ---------------------------------------------------------------------------
