@@ -15,7 +15,7 @@ use crate::log_replay::ReplayOverlay;
 use crate::section::Sections;
 use crate::types::Guid;
 
-use super::{CreateOptions, LogReplayPolicy, OpenOptions, ParentResolver, ReadOnly};
+use super::{CreateOptions, LogReplayPolicy, OpenOptions, ParentMedium, ParentResolver, ReadOnly};
 
 pub(crate) fn read_exact_at<T>(inner: &mut T, offset: u64, buf: &mut [u8]) -> std::io::Result<()>
 where
@@ -80,6 +80,12 @@ pub struct Medium<T = std::fs::File> {
     pub(super) replay_overlay: Option<Arc<ReplayOverlay>>,
     /// Resolver used for differencing disk parent reads.
     pub(crate) parent_resolver: Mutex<Option<Box<dyn ParentResolver + Send>>>,
+    /// Resolved differencing disk parent cache.
+    pub(crate) resolved_parent: Mutex<Option<Box<dyn ParentMedium>>>,
+    /// Read-ahead cache for sequential parent-backed differencing disk reads.
+    pub(crate) parent_read_cache: Mutex<ParentReadCache>,
+    /// Read-ahead cache for effective sectors served while this medium is used as a parent.
+    pub(crate) parent_effective_read_cache: Mutex<ParentReadCache>,
     /// Cached validator buffer: assembled region data at correct file offsets.
     pub(super) validator_buf: RwLock<Option<CacheEntry>>,
 }
@@ -97,6 +103,79 @@ impl CacheEntry {
 
     fn valid_bytes(&self, generation: u64) -> Option<Arc<[u8]>> {
         (self.generation == generation).then(|| Arc::clone(&self.bytes))
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct ParentReadCache {
+    logical_sector_size: u32,
+    start_sector: u64,
+    sector_count: u64,
+    bytes: Vec<u8>,
+}
+
+impl ParentReadCache {
+    pub(crate) fn copy_if_contains(
+        &self, start_sector: u64, sector_count: u64, logical_sector_size: u32, buf: &mut [u8],
+    ) -> bool {
+        if self.logical_sector_size != logical_sector_size || self.sector_count == 0 {
+            return false;
+        }
+
+        let Some(end_sector) = start_sector.checked_add(sector_count) else {
+            return false;
+        };
+        let Some(cache_end_sector) = self.start_sector.checked_add(self.sector_count) else {
+            return false;
+        };
+        if start_sector < self.start_sector || end_sector > cache_end_sector {
+            return false;
+        }
+
+        let Some((byte_offset, byte_len)) =
+            self.byte_range(start_sector, sector_count, logical_sector_size)
+        else {
+            return false;
+        };
+        let Some(byte_end) = byte_offset.checked_add(byte_len) else {
+            return false;
+        };
+        if byte_end > self.bytes.len() || buf.len() != byte_len {
+            return false;
+        }
+
+        buf.copy_from_slice(&self.bytes[byte_offset..byte_end]);
+        true
+    }
+
+    pub(crate) fn replace(
+        &mut self, start_sector: u64, sector_count: u64, logical_sector_size: u32, bytes: Vec<u8>,
+    ) {
+        self.logical_sector_size = logical_sector_size;
+        self.start_sector = start_sector;
+        self.sector_count = sector_count;
+        self.bytes = bytes;
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.logical_sector_size = 0;
+        self.start_sector = 0;
+        self.sector_count = 0;
+        self.bytes.clear();
+    }
+
+    fn byte_range(
+        &self, start_sector: u64, sector_count: u64, logical_sector_size: u32,
+    ) -> Option<(usize, usize)> {
+        let sector_offset = start_sector.checked_sub(self.start_sector)?;
+        let logical_sector_size = usize::try_from(logical_sector_size).ok()?;
+        let byte_offset = usize::try_from(sector_offset)
+            .ok()?
+            .checked_mul(logical_sector_size)?;
+        let byte_len = usize::try_from(sector_count)
+            .ok()?
+            .checked_mul(logical_sector_size)?;
+        Some((byte_offset, byte_len))
     }
 }
 
@@ -179,6 +258,15 @@ impl<T> Medium<T> {
         }
         if let Ok(mut cache) = self.validator_buf.write() {
             *cache = None;
+        }
+        if let Ok(mut parent) = self.resolved_parent.lock() {
+            *parent = None;
+        }
+        if let Ok(mut cache) = self.parent_read_cache.lock() {
+            cache.clear();
+        }
+        if let Ok(mut cache) = self.parent_effective_read_cache.lock() {
+            cache.clear();
         }
     }
 

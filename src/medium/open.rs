@@ -430,6 +430,9 @@ impl<T> OpenOptions<T, ReadOnly> {
             log_replay_policy,
             replay_overlay,
             parent_resolver: Mutex::new(self.parent_resolver),
+            resolved_parent: Mutex::new(None),
+            parent_read_cache: Mutex::new(super::ParentReadCache::default()),
+            parent_effective_read_cache: Mutex::new(super::ParentReadCache::default()),
             validator_buf: RwLock::new(None),
         })
     }
@@ -503,6 +506,9 @@ impl<T> OpenOptions<T, ReadWrite> {
             log_replay_policy,
             replay_overlay,
             parent_resolver: Mutex::new(self.parent_resolver),
+            resolved_parent: Mutex::new(None),
+            parent_read_cache: Mutex::new(super::ParentReadCache::default()),
+            parent_effective_read_cache: Mutex::new(super::ParentReadCache::default()),
             validator_buf: RwLock::new(None),
         })
     }

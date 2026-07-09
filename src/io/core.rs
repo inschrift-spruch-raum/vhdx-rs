@@ -18,7 +18,6 @@
 //! MS-VHDX §2.5.1 (BAT state semantics for payload blocks)
 
 use bitvec::prelude::*;
-use std::cell::RefCell;
 use std::sync::Arc;
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -32,6 +31,29 @@ use crate::medium::{
     Len, Medium, ParentMedium, ParentRequest, ParentResolver, SetLen, SyncData, read_exact_at,
 };
 use crate::metadata::Metadata;
+
+const PARENT_READ_AHEAD_BYTES: usize = 4 * MIB as usize;
+
+fn parent_medium_range_buffer_len(sector_count: u64, logical_sector_size: u32) -> Result<usize> {
+    usize::try_from(sector_count)
+        .ok()
+        .and_then(|count| count.checked_mul(logical_sector_size as usize))
+        .ok_or_else(|| {
+            Error::InvalidParameter("sector_count * logical sector size overflow".into())
+        })
+}
+
+fn parent_medium_read_ahead_sector_count(
+    start_sector: u64, sector_count: u64, logical_sector_size: u32, max_sector: u64,
+) -> Result<u64> {
+    let sectors_per_window = (PARENT_READ_AHEAD_BYTES / logical_sector_size as usize).max(1) as u64;
+    let requested = sector_count.max(sectors_per_window);
+    let remaining = max_sector
+        .checked_add(1)
+        .and_then(|sector_count| sector_count.checked_sub(start_sector))
+        .ok_or_else(|| Error::InvalidParameter("parent read-ahead sector range overflow".into()))?;
+    Ok(requested.min(remaining))
+}
 
 // ---------------------------------------------------------------------------
 // IO
@@ -55,7 +77,6 @@ pub struct IO<'a, T = std::fs::File> {
     pub(super) has_parent: bool,
     /// In-memory replay overlay for serving post-replay data through the read path.
     pub(super) overlay: Option<Arc<ReplayOverlay>>,
-    parent_medium: RefCell<Option<Box<dyn ParentMedium>>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -117,7 +138,6 @@ where
             max_sector: max_sector.saturating_sub(1),
             has_parent,
             overlay,
-            parent_medium: RefCell::new(None),
         })
     }
 
@@ -381,16 +401,8 @@ where
     fn read_parent_range(
         &mut self, block_idx: u64, start_sector_in_block: u64, sector_count: u64, buf: &mut [u8],
     ) -> Result<()> {
-        let lss = self.logical_sector_size as usize;
         let spb = self.sectors_per_block();
-        for i in 0..sector_count {
-            let offset = usize::try_from(i).expect("sector offset fits usize") * lss;
-            self.read_from_parent_sector(
-                block_idx * spb + start_sector_in_block + i,
-                &mut buf[offset..offset + lss],
-            )?;
-        }
-        Ok(())
+        self.read_from_parent_range(block_idx * spb + start_sector_in_block, sector_count, buf)
     }
 
     /// Resolve the BAT entry for this sector's block.
@@ -485,8 +497,10 @@ where
 
         let spb = self.sectors_per_block();
         let block_in_chunk = block_idx % self.chunk_ratio;
+        let bits = bitmap.view_bits::<Lsb0>();
 
-        for i in 0..sector_count {
+        let mut i = 0;
+        while i < sector_count {
             let sib = start_sector_in_block + i;
             let sector_in_chunk = block_in_chunk * spb + sib;
             let byte_idx =
@@ -498,8 +512,8 @@ where
                 )));
             }
 
-            let in_child = bitmap.view_bits::<Lsb0>()
-                [usize::try_from(sector_in_chunk).expect("bitmap bit index fits usize")];
+            let in_child =
+                bits[usize::try_from(sector_in_chunk).expect("bitmap bit index fits usize")];
             let offset = usize::try_from(i).expect("sector offset fits usize") * lss;
 
             if in_child {
@@ -509,18 +523,43 @@ where
                     1,
                     &mut buf[offset..offset + lss],
                 )?;
+                i += 1;
             } else {
-                self.read_from_parent_sector(
+                let mut run_len = 1;
+                while i + run_len < sector_count {
+                    let run_sib = start_sector_in_block + i + run_len;
+                    let run_sector_in_chunk = block_in_chunk * spb + run_sib;
+                    let run_byte_idx = usize::try_from(run_sector_in_chunk / 8)
+                        .expect("bitmap byte index fits usize");
+                    if run_byte_idx >= bitmap.len() {
+                        return Err(Error::InvalidMetadata(format!(
+                            "sector bitmap index out of range: byte {run_byte_idx}"
+                        )));
+                    }
+
+                    let run_in_child = bits[usize::try_from(run_sector_in_chunk)
+                        .expect("bitmap bit index fits usize")];
+                    if run_in_child {
+                        break;
+                    }
+                    run_len += 1;
+                }
+
+                let run_bytes =
+                    usize::try_from(run_len).expect("sector run length fits usize") * lss;
+                self.read_from_parent_range(
                     block_idx * spb + start_sector_in_block + i,
-                    &mut buf[offset..offset + lss],
+                    run_len,
+                    &mut buf[offset..offset + run_bytes],
                 )?;
+                i += run_len;
             }
         }
 
         Ok(())
     }
 
-    /// Read a single sector from the parent disk at the given global sector number.
+    /// Read a range of sectors from the parent disk at the given global sector number.
     ///
     /// Resolves and caches the parent medium on first access.
     ///
@@ -528,22 +567,109 @@ where
     ///
     /// Panics if arithmetic overflow occurs during sector/offset conversion.
     /// This should not happen with well-formed VHDX files.
-    fn read_from_parent_sector(&mut self, global_sector: u64, buf: &mut [u8]) -> Result<()> {
-        self.ensure_parent_resolved()?;
-        let mut parent_ref = self.io().parent_medium.borrow_mut();
-        let parent = parent_ref.as_mut().ok_or(Error::ParentResolverRequired)?;
-        let parent_lss = parent.logical_sector_size()?;
-        if parent_lss != self.logical_sector_size {
-            return Err(Error::ParentSectorSizeMismatch {
-                child: self.logical_sector_size,
-                parent: parent_lss,
-            });
+    fn read_from_parent_range(
+        &mut self, global_sector: u64, sector_count: u64, buf: &mut [u8],
+    ) -> Result<()> {
+        self.validate_parent_range_buffer(sector_count, buf)?;
+
+        {
+            let cache = self
+                .io()
+                .file
+                .parent_read_cache
+                .lock()
+                .map_err(|_| Error::InvalidFile("parent read cache lock poisoned".into()))?;
+            if cache.copy_if_contains(global_sector, sector_count, self.logical_sector_size, buf) {
+                return Ok(());
+            }
         }
-        parent.read_sector(global_sector, buf)
+
+        self.ensure_parent_resolved()?;
+        let read_ahead_sectors =
+            self.parent_read_ahead_sector_count(global_sector, sector_count)?;
+        let read_ahead_len =
+            Self::parent_range_buffer_len(read_ahead_sectors, self.logical_sector_size)?;
+        let mut read_ahead = vec![0; read_ahead_len];
+
+        {
+            let mut parent_ref = self
+                .io()
+                .file
+                .resolved_parent
+                .lock()
+                .map_err(|_| Error::InvalidFile("parent medium lock poisoned".into()))?;
+            let parent = parent_ref.as_mut().ok_or(Error::ParentResolverRequired)?;
+            let parent_lss = parent.logical_sector_size()?;
+            if parent_lss != self.logical_sector_size {
+                return Err(Error::ParentSectorSizeMismatch {
+                    child: self.logical_sector_size,
+                    parent: parent_lss,
+                });
+            }
+            parent.read_sector_range(global_sector, read_ahead_sectors, &mut read_ahead)?;
+        }
+
+        buf.copy_from_slice(&read_ahead[..buf.len()]);
+
+        let mut cache = self
+            .io()
+            .file
+            .parent_read_cache
+            .lock()
+            .map_err(|_| Error::InvalidFile("parent read cache lock poisoned".into()))?;
+        cache.replace(
+            global_sector,
+            read_ahead_sectors,
+            self.logical_sector_size,
+            read_ahead,
+        );
+        Ok(())
+    }
+
+    fn validate_parent_range_buffer(&self, sector_count: u64, buf: &[u8]) -> Result<()> {
+        let expected_len = Self::parent_range_buffer_len(sector_count, self.logical_sector_size)?;
+        if buf.len() != expected_len {
+            return Err(Error::InvalidParameter(format!(
+                "parent sector range buffer length must equal sector_count * logical sector size: got {}, expected {expected_len}",
+                buf.len()
+            )));
+        }
+        Ok(())
+    }
+
+    fn parent_range_buffer_len(sector_count: u64, logical_sector_size: u32) -> Result<usize> {
+        usize::try_from(sector_count)
+            .ok()
+            .and_then(|count| count.checked_mul(logical_sector_size as usize))
+            .ok_or_else(|| {
+                Error::InvalidParameter("sector_count * logical sector size overflow".into())
+            })
+    }
+
+    fn parent_read_ahead_sector_count(&self, global_sector: u64, sector_count: u64) -> Result<u64> {
+        let sectors_per_window =
+            (PARENT_READ_AHEAD_BYTES / self.logical_sector_size as usize).max(1) as u64;
+        let requested = sector_count.max(sectors_per_window);
+        let remaining = self
+            .io()
+            .max_sector
+            .checked_add(1)
+            .and_then(|sector_count| sector_count.checked_sub(global_sector))
+            .ok_or_else(|| {
+                Error::InvalidParameter("parent read-ahead sector range overflow".into())
+            })?;
+        Ok(requested.min(remaining))
     }
 
     fn ensure_parent_resolved(&mut self) -> Result<()> {
-        if self.io().parent_medium.borrow().is_some() {
+        if self
+            .io()
+            .file
+            .resolved_parent
+            .lock()
+            .map_err(|_| Error::InvalidFile("parent medium lock poisoned".into()))?
+            .is_some()
+        {
             return Ok(());
         }
 
@@ -573,14 +699,16 @@ where
             child_logical_sector_size: self.logical_sector_size,
             child_virtual_disk_size,
         };
-        let mut resolver_ref = self
-            .io()
-            .file
-            .parent_resolver
-            .lock()
-            .map_err(|_| Error::InvalidFile("parent resolver lock poisoned".into()))?;
-        let resolver = resolver_ref.as_mut().ok_or(Error::ParentResolverRequired)?;
-        let mut parent = resolver.resolve_parent(request)?;
+        let mut parent = {
+            let mut resolver_ref = self
+                .io()
+                .file
+                .parent_resolver
+                .lock()
+                .map_err(|_| Error::InvalidFile("parent resolver lock poisoned".into()))?;
+            let resolver = resolver_ref.as_mut().ok_or(Error::ParentResolverRequired)?;
+            resolver.resolve_parent(request)?
+        };
         if parent.data_write_guid()? != expected_data_write_guid {
             return Err(Error::ParentLocatorGuidMismatch {
                 expected: expected_data_write_guid,
@@ -594,14 +722,85 @@ where
                 parent: parent_lss,
             });
         }
-        *self.io().parent_medium.borrow_mut() = Some(parent);
+        let mut parent_ref = self
+            .io()
+            .file
+            .resolved_parent
+            .lock()
+            .map_err(|_| Error::InvalidFile("parent medium lock poisoned".into()))?;
+        if parent_ref.is_none() {
+            *parent_ref = Some(parent);
+        }
+        Ok(())
+    }
+}
+
+impl<T> Medium<T>
+where
+    T: Read + Seek + Send,
+{
+    fn read_effective_parent_medium_range_with_cache(
+        &mut self, start_sector: u64, sector_count: u64, buf: &mut [u8],
+    ) -> Result<()> {
+        if sector_count == 0 {
+            return Err(Error::InvalidParameter("sector_count must be >= 1".into()));
+        }
+
+        let logical_sector_size = self.logical_sector_size()?;
+        let expected_len = parent_medium_range_buffer_len(sector_count, logical_sector_size)?;
+        if buf.len() != expected_len {
+            return Err(Error::InvalidParameter(format!(
+                "parent sector range buffer length must equal sector_count * logical sector size: got {}, expected {expected_len}",
+                buf.len()
+            )));
+        }
+
+        {
+            let cache = self.parent_effective_read_cache.lock().map_err(|_| {
+                Error::InvalidFile("parent effective read cache lock poisoned".into())
+            })?;
+            if cache.copy_if_contains(start_sector, sector_count, logical_sector_size, buf) {
+                return Ok(());
+            }
+        }
+
+        let (read_ahead_sectors, mut read_ahead) = {
+            let mut io = self.io()?;
+            let read_ahead_sectors = parent_medium_read_ahead_sector_count(
+                start_sector,
+                sector_count,
+                logical_sector_size,
+                io.max_sector,
+            )?;
+            let read_ahead_len =
+                parent_medium_range_buffer_len(read_ahead_sectors, logical_sector_size)?;
+            let mut read_ahead = vec![0; read_ahead_len];
+            let mut sector = io
+                .sector(start_sector, read_ahead_sectors)?
+                .semantics(ReadSemanticsPolicy::EffectiveDataPreferred);
+            sector.read_exact(&mut read_ahead)?;
+            (read_ahead_sectors, read_ahead)
+        };
+
+        buf.copy_from_slice(&read_ahead[..buf.len()]);
+
+        let mut cache = self
+            .parent_effective_read_cache
+            .lock()
+            .map_err(|_| Error::InvalidFile("parent effective read cache lock poisoned".into()))?;
+        cache.replace(
+            start_sector,
+            read_ahead_sectors,
+            logical_sector_size,
+            std::mem::take(&mut read_ahead),
+        );
         Ok(())
     }
 }
 
 impl<T> ParentMedium for Medium<T>
 where
-    T: Read + Seek,
+    T: Read + Seek + Send,
 {
     fn data_write_guid(&mut self) -> Result<crate::types::Guid> {
         let header_buf = self.header_buf_arc()?;
@@ -616,23 +815,20 @@ where
     }
 
     fn read_sector(&mut self, sector: u64, buf: &mut [u8]) -> Result<()> {
-        let logical_sector_size = self.logical_sector_size()?;
-        if buf.len() != logical_sector_size as usize {
-            return Err(Error::InvalidParameter(format!(
-                "parent sector buffer length must equal logical sector size: got {}, expected {logical_sector_size}",
-                buf.len()
-            )));
-        }
-        let mut io = self.io()?;
-        io.sector(sector, 1)?.read_exact(buf)?;
-        Ok(())
+        self.read_effective_parent_medium_range_with_cache(sector, 1, buf)
+    }
+
+    fn read_sector_range(
+        &mut self, start_sector: u64, sector_count: u64, buf: &mut [u8],
+    ) -> Result<()> {
+        self.read_effective_parent_medium_range_with_cache(start_sector, sector_count, buf)
     }
 }
 
 impl<F, T> ParentResolver for F
 where
-    F: Fn(ParentRequest<'_>) -> Result<Medium<T>> + 'static,
-    T: Read + Seek + 'static,
+    F: Fn(ParentRequest<'_>) -> Result<Medium<T>> + Send + 'static,
+    T: Read + Seek + Send + 'static,
 {
     fn resolve_parent(&mut self, request: ParentRequest<'_>) -> Result<Box<dyn ParentMedium>> {
         Ok(Box::new(std::cell::RefCell::new(self(request)?)))

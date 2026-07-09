@@ -1,6 +1,6 @@
 //! File access and log replay policies.
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 // Policies
 // ---------------------------------------------------------------------------
@@ -88,7 +88,7 @@ impl ParentRequest<'_> {
 }
 
 /// A resolved parent medium that can serve effective parent sectors.
-pub trait ParentMedium {
+pub trait ParentMedium: Send {
     /// Parent Data Write GUID used for differencing linkage validation.
     ///
     /// # Errors
@@ -109,6 +109,51 @@ pub trait ParentMedium {
     ///
     /// Returns an error if the requested parent sector cannot be read.
     fn read_sector(&mut self, sector: u64, buf: &mut [u8]) -> Result<()>;
+
+    /// Read a contiguous range of effective parent sectors into `buf`.
+    ///
+    /// The default implementation loops through [`ParentMedium::read_sector`]
+    /// so existing parent implementations only need to override this when they
+    /// can satisfy the range more efficiently.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `buf` does not exactly match the requested sector
+    /// range or if any sector in the range cannot be read.
+    fn read_sector_range(
+        &mut self, start_sector: u64, sector_count: u64, buf: &mut [u8],
+    ) -> Result<()> {
+        if sector_count == 0 {
+            return Err(Error::InvalidParameter("sector_count must be >= 1".into()));
+        }
+
+        let logical_sector_size = usize::try_from(self.logical_sector_size()?).map_err(|_| {
+            Error::InvalidParameter("logical sector size does not fit usize".into())
+        })?;
+        let expected_len = usize::try_from(sector_count)
+            .ok()
+            .and_then(|count| count.checked_mul(logical_sector_size))
+            .ok_or_else(|| {
+                Error::InvalidParameter("sector_count * logical sector size overflow".into())
+            })?;
+        if buf.len() != expected_len {
+            return Err(Error::InvalidParameter(format!(
+                "parent sector range buffer length must equal sector_count * logical sector size: got {}, expected {expected_len}",
+                buf.len()
+            )));
+        }
+
+        for offset_sector in 0..sector_count {
+            let sector = start_sector
+                .checked_add(offset_sector)
+                .ok_or_else(|| Error::InvalidParameter("start_sector + offset overflow".into()))?;
+            let offset = usize::try_from(offset_sector).expect("sector offset fits usize")
+                * logical_sector_size;
+            self.read_sector(sector, &mut buf[offset..offset + logical_sector_size])?;
+        }
+
+        Ok(())
+    }
 }
 
 impl<T> ParentMedium for std::cell::RefCell<T>
@@ -125,6 +170,13 @@ where
 
     fn read_sector(&mut self, sector: u64, buf: &mut [u8]) -> Result<()> {
         self.borrow_mut().read_sector(sector, buf)
+    }
+
+    fn read_sector_range(
+        &mut self, start_sector: u64, sector_count: u64, buf: &mut [u8],
+    ) -> Result<()> {
+        self.borrow_mut()
+            .read_sector_range(start_sector, sector_count, buf)
     }
 }
 

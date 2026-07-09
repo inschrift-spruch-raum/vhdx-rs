@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use vhdx::section::{BatState, PayloadBlockState, SectorBitmapState};
-use vhdx::{LogReplayPolicy, Medium};
+use vhdx::{Guid, LogReplayPolicy, Medium, ParentMedium};
 
 struct ReadOnlyCursor(std::io::Cursor<Vec<u8>>);
 
@@ -140,6 +140,180 @@ fn parent_resolver(
     move |_| Medium::open(std::fs::File::open(&parent_path)?).finish()
 }
 
+#[derive(Clone, Default)]
+struct ParentReadStats {
+    inner: Arc<Mutex<ParentReadState>>,
+}
+
+#[derive(Default)]
+struct ParentReadState {
+    resolver_calls: usize,
+    sector_reads: usize,
+    range_reads: usize,
+    ranges: Vec<(u64, u64)>,
+}
+
+impl ParentReadStats {
+    fn resolver_called(&self) {
+        self.inner
+            .lock()
+            .expect("parent read stats lock poisoned")
+            .resolver_calls += 1;
+    }
+
+    fn resolver_calls(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("parent read stats lock poisoned")
+            .resolver_calls
+    }
+
+    fn sector_reads(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("parent read stats lock poisoned")
+            .sector_reads
+    }
+
+    fn range_reads(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("parent read stats lock poisoned")
+            .range_reads
+    }
+
+    fn ranges(&self) -> Vec<(u64, u64)> {
+        self.inner
+            .lock()
+            .expect("parent read stats lock poisoned")
+            .ranges
+            .clone()
+    }
+}
+
+struct CountingParentMedium {
+    stats: ParentReadStats,
+    data_write_guid: Guid,
+    logical_sector_size: u32,
+}
+
+impl CountingParentMedium {
+    fn new(stats: ParentReadStats, request: &vhdx::ParentRequest<'_>) -> Self {
+        Self {
+            stats,
+            data_write_guid: request.expected_data_write_guid(),
+            logical_sector_size: request.child_logical_sector_size(),
+        }
+    }
+}
+
+impl vhdx::ParentMedium for CountingParentMedium {
+    fn data_write_guid(&mut self) -> vhdx::Result<Guid> {
+        Ok(self.data_write_guid)
+    }
+
+    fn logical_sector_size(&mut self) -> vhdx::Result<u32> {
+        Ok(self.logical_sector_size)
+    }
+
+    fn read_sector(&mut self, sector: u64, buf: &mut [u8]) -> vhdx::Result<()> {
+        self.stats
+            .inner
+            .lock()
+            .expect("parent read stats lock poisoned")
+            .sector_reads += 1;
+        fill_parent_pattern(sector, 1, self.logical_sector_size, buf);
+        Ok(())
+    }
+
+    fn read_sector_range(
+        &mut self, start_sector: u64, sector_count: u64, buf: &mut [u8],
+    ) -> vhdx::Result<()> {
+        let mut stats = self
+            .stats
+            .inner
+            .lock()
+            .expect("parent read stats lock poisoned");
+        stats.range_reads += 1;
+        stats.ranges.push((start_sector, sector_count));
+        drop(stats);
+
+        fill_parent_pattern(start_sector, sector_count, self.logical_sector_size, buf);
+        Ok(())
+    }
+}
+
+fn fill_parent_pattern(
+    start_sector: u64, sector_count: u64, logical_sector_size: u32, buf: &mut [u8],
+) {
+    assert_eq!(
+        buf.len(),
+        usize::try_from(sector_count * u64::from(logical_sector_size))
+            .expect("sector range length fits usize")
+    );
+    for sector_offset in 0..sector_count {
+        let byte = parent_pattern_byte(start_sector + sector_offset);
+        let offset =
+            usize::try_from(sector_offset * u64::from(logical_sector_size)).expect("offset fits");
+        let len = logical_sector_size as usize;
+        buf[offset..offset + len].fill(byte);
+    }
+}
+
+fn parent_pattern_byte(sector: u64) -> u8 {
+    0x40u8.wrapping_add((sector % 127) as u8)
+}
+
+struct CountingParentResolver {
+    stats: ParentReadStats,
+}
+
+impl vhdx::ParentResolver for CountingParentResolver {
+    fn resolve_parent(
+        &mut self, request: vhdx::ParentRequest<'_>,
+    ) -> vhdx::Result<Box<dyn vhdx::ParentMedium>> {
+        self.stats.resolver_called();
+        Ok(Box::new(CountingParentMedium::new(
+            self.stats.clone(),
+            &request,
+        )))
+    }
+}
+
+fn create_differencing_pair_for_parent_tests()
+-> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let parent_path = dir.path().join("parent.vhdx");
+    let child_path = dir.path().join("child.avhdx");
+    let mut parent = create_medium(&parent_path)
+        .size(8 * 1024 * 1024)
+        .block_size(1024 * 1024)
+        .logical_sector_size(4096)
+        .finish()
+        .expect("create parent medium");
+    create_medium(&child_path)
+        .size(8 * 1024 * 1024)
+        .block_size(1024 * 1024)
+        .logical_sector_size(4096)
+        .parent(&mut parent, &parent_path)
+        .expect("configure differencing parent")
+        .finish()
+        .expect("create differencing child");
+    (dir, parent_path, child_path)
+}
+
+fn create_differencing_child_for_parent_tests() -> (tempfile::TempDir, std::path::PathBuf) {
+    let (dir, _parent_path, child_path) = create_differencing_pair_for_parent_tests();
+    (dir, child_path)
+}
+
+fn open_child_with_counting_parent(child_path: &std::path::Path, stats: ParentReadStats) -> Medium {
+    Medium::open(std::fs::File::open(child_path).expect("open child medium"))
+        .with_parent_resolver(CountingParentResolver { stats })
+        .finish()
+        .expect("open child with counting parent")
+}
+
 #[test]
 fn parent_resolver_trait_uses_standard_resolve_parent_method() {
     struct CompileOnlyResolver;
@@ -157,6 +331,192 @@ fn parent_resolver_trait_uses_standard_resolve_parent_method() {
     }
 
     let _ = CompileOnlyResolver;
+}
+
+#[test]
+fn parent_backed_multi_sector_read_uses_single_parent_range_read() {
+    let (_dir, child_path) = create_differencing_child_for_parent_tests();
+    let stats = ParentReadStats::default();
+    let mut child = open_child_with_counting_parent(&child_path, stats.clone());
+    let mut actual = vec![0; 4 * 4096];
+
+    {
+        let mut io = child.io().expect("create child IO");
+        let mut sector = io.sector(0, 4).expect("open parent-backed child range");
+        sector
+            .read_exact(&mut actual)
+            .expect("read parent-backed child range");
+    }
+
+    let mut expected = vec![0; actual.len()];
+    fill_parent_pattern(0, 4, 4096, &mut expected);
+    assert_eq!(actual, expected);
+    assert_eq!(stats.resolver_calls(), 1);
+    assert_eq!(stats.range_reads(), 1);
+    assert_eq!(stats.sector_reads(), 0);
+    assert_eq!(stats.ranges(), vec![(0, 1024)]);
+}
+
+#[test]
+fn resolved_parent_is_reused_across_io_handles() {
+    let (_dir, child_path) = create_differencing_child_for_parent_tests();
+    let stats = ParentReadStats::default();
+    let mut child = open_child_with_counting_parent(&child_path, stats.clone());
+    let mut first = vec![0; 4096];
+    let mut second = vec![0; 4096];
+
+    {
+        let mut io = child.io().expect("create first child IO");
+        let mut sector = io.sector(0, 1).expect("open first child range");
+        sector
+            .read_exact(&mut first)
+            .expect("read first parent-backed range");
+    }
+    {
+        let mut io = child.io().expect("create second child IO");
+        let mut sector = io.sector(1, 1).expect("open second child range");
+        sector
+            .read_exact(&mut second)
+            .expect("read second parent-backed range");
+    }
+
+    assert_eq!(first, vec![parent_pattern_byte(0); 4096]);
+    assert_eq!(second, vec![parent_pattern_byte(1); 4096]);
+    assert_eq!(stats.resolver_calls(), 1);
+    assert_eq!(stats.range_reads(), 1);
+    assert_eq!(stats.sector_reads(), 0);
+    assert_eq!(stats.ranges(), vec![(0, 1024)]);
+}
+
+#[test]
+fn sequential_parent_backed_reads_use_readahead_cache() {
+    let (_dir, child_path) = create_differencing_child_for_parent_tests();
+    let stats = ParentReadStats::default();
+    let mut child = open_child_with_counting_parent(&child_path, stats.clone());
+    let mut first = vec![0; 16 * 4096];
+    let mut second = vec![0; 16 * 4096];
+
+    {
+        let mut io = child.io().expect("create first child IO");
+        let mut sector = io.sector(0, 16).expect("open first child range");
+        sector
+            .read_exact(&mut first)
+            .expect("read first parent-backed range");
+    }
+    {
+        let mut io = child.io().expect("create second child IO");
+        let mut sector = io.sector(16, 16).expect("open second child range");
+        sector
+            .read_exact(&mut second)
+            .expect("read second parent-backed range");
+    }
+
+    let mut expected_first = vec![0; first.len()];
+    let mut expected_second = vec![0; second.len()];
+    fill_parent_pattern(0, 16, 4096, &mut expected_first);
+    fill_parent_pattern(16, 16, 4096, &mut expected_second);
+    assert_eq!(first, expected_first);
+    assert_eq!(second, expected_second);
+    assert_eq!(stats.resolver_calls(), 1);
+    assert_eq!(stats.range_reads(), 1);
+    assert_eq!(stats.sector_reads(), 0);
+    assert_eq!(stats.ranges(), vec![(0, 1024)]);
+}
+
+#[test]
+fn medium_parent_read_sector_uses_effective_readahead_cache() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("parent.vhdx");
+    let mut medium = create_medium(&path)
+        .size(8 * 1024 * 1024)
+        .block_size(1024 * 1024)
+        .logical_sector_size(4096)
+        .finish()
+        .expect("create parent medium");
+    let mut expected = vec![0; 32 * 4096];
+    fill_parent_pattern(0, 32, 4096, &mut expected);
+    {
+        let mut io = medium.io().expect("create parent IO");
+        let mut sector = io.sector(0, 32).expect("open parent sectors");
+        sector
+            .write_all(&expected)
+            .expect("write parent sector pattern");
+    }
+    drop(medium);
+
+    let bytes = std::fs::read(&path).expect("read parent medium bytes");
+    let (cursor, stats) = CountingCursor::new(bytes);
+    let mut parent = Medium::open(cursor)
+        .finish()
+        .expect("open counting parent medium");
+    let mut first = vec![0; 4096];
+    let mut second = vec![0; 4096];
+
+    stats.reset();
+    parent
+        .read_sector(0, &mut first)
+        .expect("read first parent sector");
+    let reads_after_first = stats.reads();
+    assert!(
+        reads_after_first > 0,
+        "first parent sector read should touch the backing medium"
+    );
+    parent
+        .read_sector(1, &mut second)
+        .expect("read second parent sector");
+
+    assert_eq!(first, vec![parent_pattern_byte(0); 4096]);
+    assert_eq!(second, vec![parent_pattern_byte(1); 4096]);
+    assert_eq!(
+        stats.reads(),
+        reads_after_first,
+        "adjacent parent-sector reads should be served from the effective read-ahead cache"
+    );
+}
+
+#[test]
+fn partially_present_child_coalesces_contiguous_parent_ranges() {
+    let (_dir, parent_path, child_path) = create_differencing_pair_for_parent_tests();
+    let child_sector = vec![0xA5; 4096];
+
+    {
+        let mut child = Medium::open(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&child_path)
+                .expect("open writable child"),
+        )
+        .write()
+        .with_parent_resolver(parent_resolver(parent_path))
+        .finish()
+        .expect("open writable child medium");
+        let mut io = child.io().expect("create writable child IO");
+        let mut sector = io.sector(2, 1).expect("open child-owned sector");
+        sector
+            .write_all(&child_sector)
+            .expect("write child-owned sector");
+    }
+
+    let stats = ParentReadStats::default();
+    let mut child = open_child_with_counting_parent(&child_path, stats.clone());
+    let mut actual = vec![0; 4 * 4096];
+    {
+        let mut io = child.io().expect("create child IO");
+        let mut sector = io.sector(0, 4).expect("open mixed parent-child range");
+        sector
+            .read_exact(&mut actual)
+            .expect("read mixed parent-child range");
+    }
+
+    assert_eq!(&actual[0..4096], vec![parent_pattern_byte(0); 4096]);
+    assert_eq!(&actual[4096..8192], vec![parent_pattern_byte(1); 4096]);
+    assert_eq!(&actual[8192..12288], child_sector.as_slice());
+    assert_eq!(&actual[12288..16384], vec![parent_pattern_byte(3); 4096]);
+    assert_eq!(stats.resolver_calls(), 1);
+    assert_eq!(stats.range_reads(), 1);
+    assert_eq!(stats.sector_reads(), 0);
+    assert_eq!(stats.ranges(), vec![(0, 1024)]);
 }
 
 /// Create a test VHDX and return the opened Medium handle along with the

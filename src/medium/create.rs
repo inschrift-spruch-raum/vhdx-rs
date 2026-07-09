@@ -83,7 +83,7 @@ impl<T> CreateOptions<T> {
         mut self, parent: &mut Medium<P>, relative_path: impl AsRef<std::path::Path>,
     ) -> Result<Self>
     where
-        P: Read + Seek,
+        P: Read + Seek + Send,
     {
         self.parent = Some(ParentCreateInfo {
             relative_path: relative_path.as_ref().to_path_buf(),
@@ -271,6 +271,9 @@ impl<T> CreateOptions<T> {
             log_replay_policy: LogReplayPolicy::Require,
             replay_overlay: None,
             parent_resolver: std::sync::Mutex::new(None),
+            resolved_parent: std::sync::Mutex::new(None),
+            parent_read_cache: std::sync::Mutex::new(super::ParentReadCache::default()),
+            parent_effective_read_cache: std::sync::Mutex::new(super::ParentReadCache::default()),
             validator_buf: std::sync::RwLock::new(None),
         })
     }

@@ -6,7 +6,9 @@ mod open;
 mod options;
 mod policies;
 
-pub(crate) use self::core::{CacheEntry, is_known_metadata_guid, is_known_region_guid};
+pub(crate) use self::core::{
+    CacheEntry, ParentReadCache, is_known_metadata_guid, is_known_region_guid,
+};
 pub use self::core::{InnerRef, Medium};
 pub(crate) use self::core::{read_exact_at, write_all_at};
 pub(crate) use self::options::ParentCreateInfo;
