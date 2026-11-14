@@ -215,15 +215,11 @@ impl SpecValidator {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Parse a GUID from a braced lowercase hex string like
-/// `{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}`.
-///
-/// Returns `None` if the string is not in the expected format.
 fn parse_guid_from_braced_string(s: &str) -> Option<Guid> {
     let inner = s.trim().strip_prefix('{')?.strip_suffix('}')?;
-    Guid::parse_braced(inner).ok()
+    let hex = inner.replace('-', "");
+    if hex.len() != 32 {
+        return None;
+    }
+    Guid::parse_braced(&hex).ok()
 }

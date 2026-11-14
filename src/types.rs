@@ -32,7 +32,7 @@ impl fmt::Display for Crc32c {
     }
 }
 
-/// A GUID stored as raw 16 bytes (RFC 4122 / mixed-endian layout as on disk).
+/// A GUID stored as raw 16 bytes in the Windows mixed-endian on-disk layout.
 ///
 /// Internally uses `uuid::Uuid` for display and parsing, but stores `[u8; 16]`
 /// for zero-copy compatibility with disk structures.
@@ -65,7 +65,7 @@ impl Guid {
     pub fn new_v4() -> Self {
         let uuid = uuid::Uuid::new_v4();
         Self {
-            bytes: *uuid.as_bytes(),
+            bytes: uuid.to_bytes_le(),
         }
     }
 
@@ -79,7 +79,7 @@ impl Guid {
         uuid::Uuid::from_bytes_le(self.bytes)
     }
 
-    /// Parse a hyphenated GUID string, with or without surrounding braces.
+    /// Parse a GUID string, with optional hyphens and surrounding braces.
     ///
     /// # Errors
     ///
@@ -182,6 +182,21 @@ mod tests {
         let a = Guid::new_v4();
         let b = Guid::new_v4();
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn guid_new_v4_uses_windows_layout() {
+        // Repeated samples prevent a random byte from masking misplaced version bits.
+        for _ in 0..32 {
+            let guid = Guid::new_v4();
+            let bytes = guid.to_bytes();
+
+            // Windows GUIDs store the version in the high nibble of byte 7.
+            assert_eq!(bytes[7] & 0xf0, 0x40);
+            assert_eq!(bytes[8] & 0xc0, 0x80);
+            assert_eq!(guid.to_uuid().get_version(), Some(uuid::Version::Random));
+            assert_eq!(guid.to_uuid().get_variant(), uuid::Variant::RFC4122);
+        }
     }
 
     #[test]
