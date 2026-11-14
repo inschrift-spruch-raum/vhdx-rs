@@ -32,7 +32,7 @@ impl fmt::Display for Crc32c {
     }
 }
 
-/// A GUID stored as raw 16 bytes (RFC 4122 / mixed-endian layout as on disk).
+/// A GUID stored as raw 16 bytes in the Windows mixed-endian on-disk layout.
 ///
 /// Internally uses `uuid::Uuid` for display and parsing, but stores `[u8; 16]`
 /// for zero-copy compatibility with disk structures.
@@ -65,17 +65,21 @@ impl Guid {
     pub fn new_v4() -> Self {
         let uuid = uuid::Uuid::new_v4();
         Self {
-            bytes: *uuid.as_bytes(),
+            bytes: uuid.to_bytes_le(),
         }
     }
 
     /// Convert to the underlying `uuid::Uuid`.
+    ///
+    /// The on-disk bytes are a Windows GUID: the first three fields are
+    /// little-endian, so `{CAA16737-FA36-4D43-B3B6-33F0AA44E76B}` is stored as
+    /// `37 67 A1 CA 36 FA 43 4D B3 B6 33 F0 AA 44 E7 6B`.
     #[must_use]
     pub fn to_uuid(&self) -> uuid::Uuid {
-        uuid::Uuid::from_bytes(self.bytes)
+        uuid::Uuid::from_bytes_le(self.bytes)
     }
 
-    /// Parse a hyphenated GUID string, with or without surrounding braces.
+    /// Parse a GUID string, with optional hyphens and surrounding braces.
     ///
     /// # Errors
     ///
@@ -87,7 +91,7 @@ impl Guid {
             .and_then(|value| value.strip_suffix('}'))
             .unwrap_or(trimmed);
         uuid::Uuid::parse_str(guid).map(|uuid| Self {
-            bytes: *uuid.as_bytes(),
+            bytes: uuid.to_bytes_le(),
         })
     }
 }
@@ -135,10 +139,34 @@ mod tests {
 
     #[test]
     fn guid_display() {
+        // MS-VHDX 2.6.2.1: the File Parameters item is CAA16737-FA36-4D43-B3B6-33F0AA44E76B.
         let guid = StandardItems::FILE_PARAMETERS;
-        // from_bytes uses raw bytes directly with uuid crate
         let displayed = format!("{guid}");
-        assert_eq!(displayed, "3767a1ca-36fa-434d-b3b6-33f0aa44e76b");
+        assert_eq!(displayed, "caa16737-fa36-4d43-b3b6-33f0aa44e76b");
+    }
+
+    #[test]
+    fn guid_parse_braced_matches_on_disk_bytes() {
+        let guid = Guid::parse_braced("{CAA16737-FA36-4D43-B3B6-33F0AA44E76B}").unwrap();
+        assert_eq!(guid, StandardItems::FILE_PARAMETERS);
+        assert_eq!(
+            Guid::parse_braced("caa16737-fa36-4d43-b3b6-33f0aa44e76b").unwrap(),
+            guid
+        );
+    }
+
+    #[test]
+    fn guid_text_matches_hyper_v_parent_linkage() {
+        // A parent's DataWriteGuid as stored in its header, and the parent_linkage value
+        // Hyper-V (New-VHD -Differencing) wrote for it into the child's parent locator.
+        let on_disk = [
+            0x30, 0x7A, 0x79, 0x8E, 0xA2, 0x8E, 0x4C, 0xE4, 0xA8, 0xF5, 0x96, 0x3C, 0xAC, 0xB2,
+            0xAC, 0xD6,
+        ];
+        let linkage = "{8e797a30-8ea2-e44c-a8f5-963cacb2acd6}";
+        let guid = Guid::from_bytes(on_disk);
+        assert_eq!(Guid::parse_braced(linkage).unwrap(), guid);
+        assert_eq!(format!("{{{guid}}}"), linkage);
     }
 
     #[test]
@@ -154,6 +182,21 @@ mod tests {
         let a = Guid::new_v4();
         let b = Guid::new_v4();
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn guid_new_v4_uses_windows_layout() {
+        // Repeated samples prevent a random byte from masking misplaced version bits.
+        for _ in 0..32 {
+            let guid = Guid::new_v4();
+            let bytes = guid.to_bytes();
+
+            // Windows GUIDs store the version in the high nibble of byte 7.
+            assert_eq!(bytes[7] & 0xf0, 0x40);
+            assert_eq!(bytes[8] & 0xc0, 0x80);
+            assert_eq!(guid.to_uuid().get_version(), Some(uuid::Version::Random));
+            assert_eq!(guid.to_uuid().get_variant(), uuid::Variant::RFC4122);
+        }
     }
 
     #[test]
